@@ -14,6 +14,7 @@ this.prev_key_states, this.presets, this.preset_names, this.string_buffer = {}, 
 this.current_preset_name, this.previous_preset_name, this.new_preset_name, this.rename_temp_name = "", "", "", ""
 this.initialized, this.rename_mode, this.create_new_mode, this.delete_confirm_name = false, false, false, false
 this.key_ready, this.save_pending, this.save_timer, this.config = nil, nil, nil, nil
+this.tooltip_timer, this.tooltip_msg = 0, ""
 
 -- Utils
 
@@ -171,25 +172,31 @@ local function reverse_pairs(aTable)
 		return keys[n], aTable[keys[n]] end
 end
 
-local function get_screen_dimensions(vtl, vtr, vbl, vbr)
+
+local function get_vectors(rect)
+	local posX, posY = rect.OffsetX.v / 6553600.0, rect.OffsetY.v / 6553600.0
+	local sclX, sclY = rect.SizeX.v / 6553600.0 * 2, rect.SizeY.v / 6553600.0 * 2
+	posX, posY = posX - sclX / 2, posY - sclY / 2
+	local vTL = Vector3f.new(posX - sclX / 2,  posY + sclY / 2, 0)
+	local vTR = Vector3f.new(posX + sclX / 2,  posY + sclY / 2, 0)
+	local vBL = Vector3f.new(posX - sclX / 2,  posY - sclY / 2, 0)
+	local vBR = Vector3f.new(posX + sclX / 2,  posY - sclY / 2, 0)
+	return vTL, vTR, vBL, vBR
+end
+
+local function get_dimensions(vTL, vTR, vBL, vBR)
 	local dw = draw.world_to_screen
-	local tl, tr, bl, br = dw(vtl), dw(vtr), dw(vbl), dw(vbr)
+	local tl, tr, bl, br = dw(vTL), dw(vTR), dw(vBL), dw(vBR)
 	if not (tl and tr and bl and br) then return nil, nil, nil, nil end
 	return (tl.x + tr.x) / 2, (bl.y + tl.y) / 2, (tr.x - tl.x), (tl.y - bl.y)
 end
 
 local function draw_hitboxes(work, actParam, player_config)
     local col = actParam.Collision
-    for j, rect in reverse_pairs(col.Infos._items) do
+    for _, rect in reverse_pairs(col.Infos._items) do
         if rect ~= nil then
-            local posX, posY = rect.OffsetX.v / 6553600.0, rect.OffsetY.v / 6553600.0
-            local sclX, sclY = rect.SizeX.v / 6553600.0 * 2, rect.SizeY.v / 6553600.0 * 2
-            posX, posY = posX - sclX / 2, posY - sclY / 2
-			local vTL = Vector3f.new(posX - sclX / 2,  posY + sclY / 2, 0)
-			local vTR = Vector3f.new(posX + sclX / 2,  posY + sclY / 2, 0)
-			local vBL = Vector3f.new(posX - sclX / 2,  posY - sclY / 2, 0)
-			local vBR = Vector3f.new(posX + sclX / 2,  posY - sclY / 2, 0)
-			local finalPosX, finalPosY, finalSclX, finalSclY = get_screen_dimensions(vTL, vTR, vBL, vBR)
+			local vTL, vTR, vBL, vBR = get_vectors(rect)
+			local finalPosX, finalPosY, finalSclX, finalSclY = get_dimensions(vTL, vTR, vBL, vBR)
 			if (finalPosX and finalPosY and finalSclX and finalSclY) then
 				if rect:get_field("HitPos") ~= nil then
 					if rect.TypeFlag > 0 then
@@ -440,6 +447,28 @@ local function is_disabled_state()
 	return not this.config.p1.toggle.toggle_show and not this.config.p2.toggle.toggle_show
 end
 
+-- Notifications
+
+local function action_notify(msg)
+	this.tooltip_msg = msg; this.tooltip_timer = 60
+end
+
+local function tooltip_handler()
+	if this.tooltip_timer > 0 then this.tooltip_timer = this.tooltip_timer - 1 end
+end
+
+local function draw_action_notify()
+	local display = imgui.get_display_size()
+	imgui.set_next_window_pos(Vector2f.new(display.x * 0.5, display.y - 60), 1 << 0)
+	imgui.set_next_window_size(Vector2f.new(0, 0), 0, 1 << 1)
+	if this.tooltip_timer <= 0 then return end
+	imgui.begin_window("Notification", true, 1|2|4|8|16|43|64|65536|131072)
+	imgui.push_font(imgui.load_font(nil, 30))
+	imgui.text(this.tooltip_msg)
+	imgui.pop_font()
+	imgui.end_window()
+end
+
 -- Presets
 
 local function is_preset_loaded(preset_name)
@@ -473,6 +502,7 @@ local function save_current_preset(name)
 	this.presets[name] = {p1 = deep_copy(this.config.p1), p2 = deep_copy(this.config.p2)}
 	rebuild_preset_names()
 	this.current_preset_name, this.previous_preset_name = name, ""
+	action_notify("Preset Saved: " .. name)
 	mark_for_save(); return true, "Saved"
 end
 
@@ -595,6 +625,7 @@ end
 
 local function switch_preset(preset_name)
 	load_preset(preset_name)
+	action_notify("Loaded Preset: " .. preset_name)
 	this.create_new_mode, this.rename_mode, this.new_preset_name, this.rename_temp_name = false, false, "", ""
 end
 
@@ -624,8 +655,10 @@ local function save_new_preset()
 		rebuild_preset_names()
 		this.config.p1 = deep_copy(default.p1)
 		this.config.p2 = deep_copy(default.p2)
-		this.current_preset_name, this.previous_preset_name = this.new_preset_name, ""
+		local created_name = this.new_preset_name
+		this.current_preset_name, this.previous_preset_name = created_name, ""
 		this.create_new_mode, this.new_preset_name = false, ""
+		action_notify("Preset Created: " .. created_name)
 		mark_for_save()
 	end
 end
@@ -946,7 +979,10 @@ end
 local function build_reload_preset_button()
 	if not is_disabled_state() or this.current_preset_name == "" or not this.presets[this.current_preset_name] then return end
 	imgui.same_line()
-	if imgui.button("Reload##reload_nav") then load_preset(this.current_preset_name) end
+	if imgui.button("Reload##reload_nav") then 
+		load_preset(this.current_preset_name)
+		action_notify("Reloaded Preset: " .. this.current_preset_name)
+	end
 	if imgui.is_item_hovered() then imgui.set_tooltip("Reset to saved values") end
 end
 
@@ -957,7 +993,10 @@ local function build_save_changes_buttons()
 		if imgui.button("Save##save_nav") then save_current_preset(this.current_preset_name) end
 		if imgui.is_item_hovered() then imgui.set_tooltip("Save Changes (Ctrl + Space)") end
 		imgui.same_line()
-		if imgui.button("x##disc_nav") then load_preset(this.current_preset_name) end
+		if imgui.button("x##disc_nav") then 
+			load_preset(this.current_preset_name)
+			action_notify("Changes Discarded")
+		end
 	end
 end
 
@@ -1085,6 +1124,7 @@ local function initialize()
 	this.initialized = true
 end
 
+
 -- Hotkeys
 
 local function setup_hotkeys()
@@ -1094,14 +1134,17 @@ local function setup_hotkeys()
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_1) then
 		this.config.p1.toggle.toggle_show = not this.config.p1.toggle.toggle_show
+		action_notify("P1 Hitboxes " .. (this.config.p1.toggle.toggle_show and "Enabled" or "Disabled"))
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_2) then
 		this.config.p2.toggle.toggle_show = not this.config.p2.toggle.toggle_show
+		action_notify("P2 Hitboxes " .. (this.config.p2.toggle.toggle_show and "Enabled" or "Disabled"))
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_3) then
 		local any_active = this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show
 		this.config.p1.toggle.toggle_show = not any_active
 		this.config.p2.toggle.toggle_show = not any_active
+		action_notify("All Hitboxes " .. (not any_active and "Enabled" or "Disabled"))
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_LEFT) then
 		load_previous_preset()
@@ -1127,6 +1170,6 @@ end)
 
 re.on_frame(function()
 	if not gBattle then gBattle = sdk.find_type_definition("gBattle") else
-		save_handler(); setup_hotkeys(); build_gui()
+		save_handler(); setup_hotkeys(); build_gui(); tooltip_handler(); draw_action_notify()
 	end
 end)

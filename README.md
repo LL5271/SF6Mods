@@ -8,6 +8,7 @@ Usage:
 * **F1**: Toggle options menu
 * **Ctrl+1**: Toggle P1 hitboxes
 * **Ctrl+2**: Toggle P2 hitboxes
+* **Ctrl+3**: Toggle both hitboxes
 * **Ctrl+Left Arrow**: Load previous preset
 * **Ctrl+Right Arrow**: Load next preset
 * **Ctrl+Space**: Save current preset

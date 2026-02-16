@@ -436,6 +436,10 @@ local function process_hitboxes()
         if player.mpActParam then process_entity(player, player.mpActParam) end end
 end
 
+local function is_disabled_state()
+	return not this.config.p1.toggle.toggle_show and not this.config.p2.toggle.toggle_show
+end
+
 -- Presets
 
 local function is_preset_loaded(preset_name)
@@ -671,7 +675,12 @@ end
 
 local function format_preset_with_color(preset_name)
 	if preset_name == this.current_preset_name then
-		local color = preset_has_unsaved_changes() and 0xFF00FFFF or 0xFF00FF00
+		local color = 0xFF00FF00 -- Green
+		if is_disabled_state() then
+			color = 0xFF0000FF -- Red
+		elseif preset_has_unsaved_changes() then
+			color = 0xFF00FFFF -- Yellow
+		end
 		imgui.text_colored(preset_name, color)
 	else
 		imgui.text(preset_name)
@@ -860,7 +869,7 @@ local function build_preset_action_column(preset_name)
 	imgui.table_set_column_index(1)
 	if this.rename_mode == preset_name then
 		if imgui.button("Rename##conf_" .. preset_name, {0, 0}) then save_rename(preset_name) end
-	elseif preset_name ~= this.current_preset_name then
+	elseif is_disabled_state() or preset_name ~= this.current_preset_name then
 		if imgui.button("Load##load_" .. preset_name, {0, 0}) then switch_preset(preset_name) end
 	end
 end
@@ -934,7 +943,15 @@ local function build_current_preset_status()
 	imgui.same_line(); format_preset_with_color(this.current_preset_name)
 end
 
+local function build_reload_preset_button()
+	if not is_disabled_state() or this.current_preset_name == "" or not this.presets[this.current_preset_name] then return end
+	imgui.same_line()
+	if imgui.button("Reload##reload_nav") then load_preset(this.current_preset_name) end
+	if imgui.is_item_hovered() then imgui.set_tooltip("Reset to saved values") end
+end
+
 local function build_save_changes_buttons()
+	if is_disabled_state() then return end
 	if preset_has_unsaved_changes() then
 		imgui.same_line()
 		if imgui.button("Save##save_nav") then save_current_preset(this.current_preset_name) end
@@ -945,7 +962,7 @@ local function build_save_changes_buttons()
 end
 
 local function build_new_preset_button()
-	if not preset_has_unsaved_changes() then
+	if is_disabled_state() or not preset_has_unsaved_changes() then
 		imgui.same_line(); if imgui.button("New##create_new") then start_create_new_mode() end
 	end
 end
@@ -955,6 +972,7 @@ local function build_preset_navigation()
 	build_preset_switcher()
 	build_current_preset_status()
 	build_save_changes_buttons()
+	build_reload_preset_button()
 	build_new_preset_button()
 end
 

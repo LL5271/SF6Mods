@@ -4,12 +4,9 @@ local SAVE_DELAY = 0.5
 local LEFT_CLICK = 0x01
 local RIGHT_CLICK = 0x02
 local F2_KEY = 0x71
+local CTRL_KEY = 0x11
 
-local Config = {}
-local Utils = {}
-local GameObjects = {}
-local ComboData = {}
-local UI = {}
+local Config, Utils, GameObjects, ComboData, UI = {}, {}, {}, {}, {}
 
 -------------------------
 -- Config
@@ -178,12 +175,12 @@ UI.key_ready = false
 UI.right_click_this_frame = false
 UI.combo_window_fixed_width = 0
 UI.large_font = 28
-UI.medium_font = 20
-UI.small_font = 13
+UI.medium_font = 22
+UI.small_font = 15
 UI.header_labels = {
     "Damage","P1 Drive","P1 Super","P2 Drive","P2 Super", "P1 Carry","P2 Carry","Gap", "Adv"}
 UI.gradient_max = {100, 10000, 60000, 30000, 60000, 30000, 1530, 1530, 490, 80} -- First value is padding
-UI.col_widths = {55, 62, 62, 62, 62, 62, 47, 47, 47, 62} -- First value is padding
+UI.col_widths = {55, 70, 70, 70, 70, 70, 53, 53, 53, 70} -- First value is padding
 
 for _, w in ipairs(UI.col_widths) do
     UI.combo_window_fixed_width = UI.combo_window_fixed_width + w
@@ -377,7 +374,13 @@ end
 
 function UI.handle_hotkeys()
     if UI.was_key_down(F2_KEY) then
-        Config.settings.toggle_all = not Config.settings.toggle_all
+        if reframework:is_key_down(CTRL_KEY) then
+            local new_state = not Config.settings.toggle_minimal_view_p1
+            Config.settings.toggle_minimal_view_p1 = new_state
+            Config.settings.toggle_minimal_view_p2 = new_state
+        else
+            Config.settings.toggle_all = not Config.settings.toggle_all
+        end
         UI.mark_for_save()
     end
 end

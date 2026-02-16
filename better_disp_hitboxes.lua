@@ -466,17 +466,21 @@ local function tooltip_handler()
 end
 
 local function draw_action_notify()
-	if this.tooltip_timer <= 0 then return end  -- Move this check to the TOP
-	
-	local display = imgui.get_display_size()
-	imgui.set_next_window_pos(Vector2f.new(display.x * 0.5, display.y - 60), 1 << 0)
-	imgui.set_next_window_size(Vector2f.new(0, 0), 0, 1 << 1)
-	
-	imgui.begin_window("Notification", true, 1|2|4|8|16|43|64|65536|131072)
-	imgui.push_font(imgui.load_font(nil, 30))
-	imgui.text(this.tooltip_msg)
-	imgui.pop_font()
-	imgui.end_window()
+    if this.tooltip_timer <= 0 then return end 
+    
+    local display = imgui.get_display_size()
+    imgui.set_next_window_pos(
+        Vector2f.new(display.x * 0.5, display.y - 100), 
+        1 << 0, 
+        Vector2f.new(0.5, 0.5)
+    )
+    
+    imgui.set_next_window_size(Vector2f.new(0, 0), 1 << 0)
+    imgui.begin_window("Notification", true, 1|2|4|8|16|43|64|65536|131072)
+    imgui.push_font(imgui.load_font(nil, 30))
+    imgui.text(this.tooltip_msg)
+    imgui.pop_font()
+    imgui.end_window()
 end
 
 -- Presets

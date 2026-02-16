@@ -466,10 +466,12 @@ local function tooltip_handler()
 end
 
 local function draw_action_notify()
+	if this.tooltip_timer <= 0 then return end  -- Move this check to the TOP
+	
 	local display = imgui.get_display_size()
 	imgui.set_next_window_pos(Vector2f.new(display.x * 0.5, display.y - 60), 1 << 0)
 	imgui.set_next_window_size(Vector2f.new(0, 0), 0, 1 << 1)
-	if this.tooltip_timer <= 0 then return end
+	
 	imgui.begin_window("Notification", true, 1|2|4|8|16|43|64|65536|131072)
 	imgui.push_font(imgui.load_font(nil, 30))
 	imgui.text(this.tooltip_msg)
@@ -493,7 +495,7 @@ local function is_preset_loaded(preset_name)
 end
 
 local function preset_has_unsaved_changes()
-	if this.current_preset_name == "" or not this.presets[this.current_preset_name] then return false end
+	if this.current_preset_name == "" or not this.presets[this.current_preset_name] then return end
 	return not is_preset_loaded(this.current_preset_name)
 end
 
@@ -740,7 +742,7 @@ end
 local function build_toggle_header(player_int, func)
 	if player_int == 2 then col_index = 3 else col_index = 1 end
 	imgui.table_set_column_index(col_index)
-	if not player_int then return false end
+	if not player_int then return end
 	local imgui_text, header_name = string.format("P%.0f", player_int), string.format("##p%.0f_HideAllHeader", player_int)
 	imgui.text(imgui_text); imgui.same_line()
 	local cursor_pos = imgui.get_cursor_pos()
@@ -884,8 +886,8 @@ end
 
 local function build_toggle_menu()
 	imgui.set_next_item_open(true, 1 << 3)
-	if not imgui.begin_table("ToggleTable", 4) then return false end
-
+	if not imgui.begin_table("ToggleTable", 4) then return end
+	
 	build_menu_columns({160, 100, 0, 125}, nil, {"", "P1", "P2"})
 	imgui.table_next_row()
 	build_toggle_headers()
@@ -1077,7 +1079,7 @@ local function build_copy_options_rows()
 end
 
 local function build_copy_options() -- imgui.set_next_item_open(true, 1 << 3)
-	if not imgui.tree_node("Copy") then return false end
+	if not imgui.tree_node("Copy") then return end
 	build_copy_options_rows()
 	imgui.tree_pop()
 end
@@ -1100,8 +1102,8 @@ local function build_reset_options_rows()
 end
 
 local function build_reset_options() -- imgui.set_next_item_open(true, 1 << 3)
-	if not imgui.tree_node("Reset") then return false end
-	if not imgui.begin_table("ResetTable", 4) then return false end
+	if not imgui.tree_node("Reset") then return end
+	if not imgui.begin_table("ResetTable", 4) then return end
 	build_reset_options_rows()
 	imgui.end_table()
 	imgui.tree_pop()
@@ -1127,7 +1129,7 @@ local function build_show_alerts_options_checkbox()
 end
 
 local function build_alerts_options() -- imgui.set_next_item_open(true, 1 << 3)
-	if not imgui.tree_node("Alerts") then return false end
+	if not imgui.tree_node("Alerts") then return end
 	build_show_alerts_options_checkbox()
 	if not this.config.options.hide_all_alerts then
 		build_alerts_options_rows()
@@ -1136,7 +1138,7 @@ local function build_alerts_options() -- imgui.set_next_item_open(true, 1 << 3)
 end
 
 local function build_options_menu() -- imgui.set_next_item_open(true, 1 << 3)
-    if not imgui.tree_node("Options") then return false end
+    if not imgui.tree_node("Options") then return end
 	imgui.unindent(15)
 	build_copy_options(); build_reset_options(); build_alerts_options()
 	imgui.tree_pop()
@@ -1198,7 +1200,7 @@ end
 if not this.initialized then initialize() end
 
 re.on_draw_ui(function()
-	if not imgui.tree_node("Hitbox Viewer") then return false end
+	if not imgui.tree_node("Hitbox Viewer") then return end
 	local changed
 	changed, this.config.options.display_menu = toggle_setter("Display Options Menu (F1)", this.config.options.display_menu)
 	imgui.tree_pop()

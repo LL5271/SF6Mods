@@ -58,7 +58,13 @@ local function create_default_config()
 	}
 
 	return {
-		options = {display_menu = true},
+		options = {
+			display_menu = true,
+			hide_all_alerts = false,
+			alert_on_toggle = true,
+			alert_on_presets = true,
+			alert_on_save = true
+		},
 		p1 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)},
 		p2 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)}
 	}
@@ -449,7 +455,9 @@ end
 
 -- Notifications
 
-local function action_notify(msg)
+local function action_notify(msg, category_toggle)
+	if this.config.options.hide_all_alerts then return end
+	if category_toggle ~= nil and not this.config.options[category_toggle] then return end
 	this.tooltip_msg = msg; this.tooltip_timer = 60
 end
 
@@ -502,7 +510,7 @@ local function save_current_preset(name)
 	this.presets[name] = {p1 = deep_copy(this.config.p1), p2 = deep_copy(this.config.p2)}
 	rebuild_preset_names()
 	this.current_preset_name, this.previous_preset_name = name, ""
-	action_notify("Preset Saved: " .. name)
+	action_notify("Preset Saved: " .. name, "alert_on_save")
 	mark_for_save(); return true, "Saved"
 end
 
@@ -625,7 +633,7 @@ end
 
 local function switch_preset(preset_name)
 	load_preset(preset_name)
-	action_notify("Loaded Preset: " .. preset_name)
+	action_notify("Loaded Preset: " .. preset_name, "alert_on_presets")
 	this.create_new_mode, this.rename_mode, this.new_preset_name, this.rename_temp_name = false, false, "", ""
 end
 
@@ -658,7 +666,7 @@ local function save_new_preset()
 		local created_name = this.new_preset_name
 		this.current_preset_name, this.previous_preset_name = created_name, ""
 		this.create_new_mode, this.new_preset_name = false, ""
-		action_notify("Preset Created: " .. created_name)
+		action_notify("Preset Created: " .. created_name, "alert_on_presets")
 		mark_for_save()
 	end
 end
@@ -981,7 +989,7 @@ local function build_reload_preset_button()
 	imgui.same_line()
 	if imgui.button("Reload##reload_nav") then 
 		load_preset(this.current_preset_name)
-		action_notify("Reloaded Preset: " .. this.current_preset_name)
+		action_notify("Reloaded Preset: " .. this.current_preset_name, "alert_on_presets")
 	end
 	if imgui.is_item_hovered() then imgui.set_tooltip("Reset to saved values") end
 end
@@ -995,7 +1003,7 @@ local function build_save_changes_buttons()
 		imgui.same_line()
 		if imgui.button("x##disc_nav") then 
 			load_preset(this.current_preset_name)
-			action_notify("Changes Discarded")
+			action_notify("Changes Discarded", "alert_on_presets")
 		end
 	end
 end
@@ -1057,15 +1065,32 @@ local function build_presets_menu()
 	imgui.tree_pop()
 end
 
+local function build_copy_options_rows()
+	imgui.same_line()
+	if imgui.button("P1 to P2##p1_to_p2", {nil, 16}) then 
+		this.config.p2 = deep_copy(this.config.p1)
+	end
+	imgui.same_line()
+	if imgui.button("P2 to P1##p2_to_p1", {nil, 16}) then 
+		this.config.p1 = deep_copy(this.config.p2)
+	end
+end
+
+local function build_copy_options() -- imgui.set_next_item_open(true, 1 << 3)
+	if not imgui.tree_node("Copy") then return false end
+	build_copy_options_rows()
+	imgui.tree_pop()
+end
+
 local function build_reset_options_row(col_name, func)
 	local handler_str = "P%.0f##%s_p%.0f"
 	local handler_p1, handler_p2 = string.format(handler_str, 1, string.lower(col_name), 1), string.format(handler_str, 2, string.lower(col_name), 2)
 	local handler_all = string.format("All##%s_all", string.lower(col_name))
 	imgui.table_next_row()
 	imgui.table_set_column_index(0); imgui.text(col_name)
-	imgui.table_set_column_index(1); if imgui.button(handler_p1) then func('p1') end
-	imgui.table_set_column_index(2); if imgui.button(handler_p2) then func('p2') end
-	imgui.table_set_column_index(3); if imgui.button(handler_all) then func() end
+	imgui.table_set_column_index(1); if imgui.button(handler_p1, {nil, 16}) then func('p1') end
+	imgui.table_set_column_index(2); if imgui.button(handler_p2, {nil, 16}) then func('p2') end
+	imgui.table_set_column_index(3); if imgui.button(handler_all, {nil, 16}) then func() end
 end
 
 local function build_reset_options_rows()
@@ -1074,8 +1099,7 @@ local function build_reset_options_rows()
 	build_reset_options_row("All", reset_all_default)
 end
 
-local function build_reset_options()
-	imgui.set_next_item_open(true, 1 << 3)
+local function build_reset_options() -- imgui.set_next_item_open(true, 1 << 3)
 	if not imgui.tree_node("Reset") then return false end
 	if not imgui.begin_table("ResetTable", 4) then return false end
 	build_reset_options_rows()
@@ -1083,33 +1107,45 @@ local function build_reset_options()
 	imgui.tree_pop()
 end
 
-local function build_copy_options_rows()
-	if imgui.button("P1 to P2##p1_to_p2", {nil, 20}) then 
-		this.config.p2 = deep_copy(this.config.p1)
-	end
-	imgui.same_line()
-	if imgui.button("P2 to P1##p2_to_p1", {nil, 20}) then 
-		this.config.p1 = deep_copy(this.config.p2)
-	end
+local function build_alerts_options_row(label, config_key)
+	local changed
+	changed, this.config.options[config_key] = toggle_setter(label .. "##" .. config_key, this.config.options[config_key])
 end
 
-local function build_copy_options()
-	imgui.set_next_item_open(true, 1 << 3)
-	if not imgui.tree_node("Copy") then return false end
-	build_copy_options_rows()
+local function build_alerts_options_rows()
+	build_alerts_options_row("Toggle Overlay", "alert_on_toggle")
+	imgui.same_line()
+	build_alerts_options_row("Preset Switch", "alert_on_presets")
+	imgui.same_line()
+	build_alerts_options_row("Save", "alert_on_save")
+end
+
+local function build_show_alerts_options_checkbox()
+	imgui.same_line()
+	if not imgui.checkbox("Hide All##hide_all_alerts", this.config.options.hide_all_alerts) then return end
+	this.config.options.hide_all_alerts = not this.config.options.hide_all_alerts
+end
+
+local function build_alerts_options() -- imgui.set_next_item_open(true, 1 << 3)
+	if not imgui.tree_node("Alerts") then return false end
+	build_show_alerts_options_checkbox()
+	if not this.config.options.hide_all_alerts then
+		build_alerts_options_rows()
+	end
 	imgui.tree_pop()
 end
 
-local function build_options_menu()
+local function build_options_menu() -- imgui.set_next_item_open(true, 1 << 3)
     if not imgui.tree_node("Options") then return false end
 	imgui.unindent(15)
-	build_reset_options(); build_copy_options()
+	build_copy_options(); build_reset_options(); build_alerts_options()
 	imgui.tree_pop()
+	imgui.indent(15)
 end
 
 local function build_menu()
 	imgui.begin_window("Hitboxes", true, 64)
-	build_toggle_menu(); build_presets_menu(); build_options_menu()
+	build_toggle_menu(); build_presets_menu(); build_options_menu();
 	imgui.end_window()
 end
 
@@ -1134,17 +1170,17 @@ local function setup_hotkeys()
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_1) then
 		this.config.p1.toggle.toggle_show = not this.config.p1.toggle.toggle_show
-		action_notify("P1 Hitboxes " .. (this.config.p1.toggle.toggle_show and "Enabled" or "Disabled"))
+		action_notify("P1 Hitboxes " .. (this.config.p1.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_2) then
 		this.config.p2.toggle.toggle_show = not this.config.p2.toggle.toggle_show
-		action_notify("P2 Hitboxes " .. (this.config.p2.toggle.toggle_show and "Enabled" or "Disabled"))
+		action_notify("P2 Hitboxes " .. (this.config.p2.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_3) then
 		local any_active = this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show
 		this.config.p1.toggle.toggle_show = not any_active
 		this.config.p2.toggle.toggle_show = not any_active
-		action_notify("All Hitboxes " .. (not any_active and "Enabled" or "Disabled"))
+		action_notify("All Hitboxes " .. (not any_active and "Enabled" or "Disabled"), "alert_on_toggle")
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_LEFT) then
 		load_previous_preset()

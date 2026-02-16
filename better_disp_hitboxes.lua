@@ -761,16 +761,20 @@ local function build_toggle_headers()
 end
 
 local function build_toggle_column(player_index, visible_func, toggle_func, opacity_func, config_suffix, opacity_suffix)
-	imgui.table_set_column_index(player_index)
-	if visible_func then
-		local id = string.format("##p%.0f_", player_index) .. config_suffix
-		local changed
-		changed, toggle_func[config_suffix] = toggle_setter(id, toggle_func[config_suffix])
-		if opacity_suffix and opacity_func[opacity_suffix] ~= nil and toggle_func[config_suffix] then
-			imgui.same_line(); imgui.push_item_width(70)
-			changed, this.config.p1.opacity[opacity_suffix] = opacity_setter(string.format("##p%.0f_", player_index) .. opacity_suffix .. "Opacity", this.config.p1.opacity[opacity_suffix], 0.5, 0, 100)
-		imgui.pop_item_width(); end
-	end
+    imgui.table_set_column_index(player_index)
+    if visible_func then
+        local id = string.format("##p%.0f_", player_index) .. config_suffix
+        local changed
+        changed, toggle_func[config_suffix] = toggle_setter(id, toggle_func[config_suffix])
+        if opacity_suffix and opacity_func[opacity_suffix] ~= nil and toggle_func[config_suffix] then
+            imgui.same_line(); imgui.push_item_width(70)
+            changed, opacity_func[opacity_suffix] = opacity_setter(
+                string.format("##p%.0f_", player_index) .. opacity_suffix .. "Opacity",
+                opacity_func[opacity_suffix], 0.5, 0, 100
+            )
+            imgui.pop_item_width()
+        end
+    end
 end
 
 local function build_toggle_columns(label, config_suffix, opacity_suffix)

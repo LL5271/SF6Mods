@@ -19,7 +19,9 @@ Detailed info for current combo, including total damage, net Drive gain, Super g
 
 Usage:
 * **F2**: Toggle display
-* **Ctrl + F2 / Right Click**: Toggle detailed view
+* **Ctrl + F2**: Toggle detailed view
+* **Ctrl + 4 / Right Click**: Toggle P1 minimal view
+* **Ctrl + 5 / Right Click**: Toggle P2 minimal view
 
 **TODO**: Fix advantage calculation on knockdowns
 

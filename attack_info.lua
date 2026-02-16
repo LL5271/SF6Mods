@@ -1,10 +1,10 @@
-
 local CONFIG_PATH = "attack_info.json"
 local SAVE_DELAY = 0.5
 local LEFT_CLICK = 0x01
 local RIGHT_CLICK = 0x02
 local F2_KEY = 0x71
 local CTRL_KEY = 0x11
+local KEY_4, KEY_5 = 0x34, 0x35
 
 local Config, Utils, GameObjects, ComboData, UI = {}, {}, {}, {}, {}
 
@@ -22,6 +22,9 @@ Config.settings = {
     toggle_show_empty_p1 = false,
     toggle_show_empty_p2 = false,
     combo_timer_duration = 10,
+    hide_all_alerts = false,
+    alert_on_toggle = true,
+    alert_on_minimal = true,
 }
 
 function Config.load()
@@ -172,6 +175,8 @@ UI.prev_key_states = {}
 UI.save_pending = false
 UI.save_timer = 0
 UI.key_ready = false
+UI.tooltip_timer = 0
+UI.tooltip_msg = ""
 UI.right_click_this_frame = false
 UI.combo_window_fixed_width = 0
 UI.large_font = 28
@@ -196,6 +201,29 @@ end
 function UI.mark_for_save()
     UI.save_pending = true
     UI.save_timer = SAVE_DELAY
+end
+
+function UI.action_notify(msg, category_toggle)
+    if Config.settings.hide_all_alerts then return end
+    if category_toggle ~= nil and not Config.settings[category_toggle] then return end
+    UI.tooltip_msg = msg
+    UI.tooltip_timer = 60
+end
+
+function UI.tooltip_handler()
+    if UI.tooltip_timer > 0 then UI.tooltip_timer = UI.tooltip_timer - 1 end
+end
+
+function UI.draw_action_notify()
+    if UI.tooltip_timer <= 0 then return end
+    local display = imgui.get_display_size()
+    imgui.set_next_window_pos(Vector2f.new(display.x * 0.5, display.y - 60), 1 << 0, Vector2f.new(0.5, 0))
+    imgui.set_next_window_size(Vector2f.new(0, 0), 0, 1 << 1)
+    imgui.begin_window("Notification##attack_info", true, 1|2|4|8|16|43|64|65536|131072)
+    imgui.push_font(imgui.load_font(nil, 30))
+    imgui.text(UI.tooltip_msg)
+    imgui.pop_font()
+    imgui.end_window()
 end
 
 function UI.save_handler()
@@ -378,10 +406,26 @@ function UI.handle_hotkeys()
             local new_state = not Config.settings.toggle_minimal_view_p1
             Config.settings.toggle_minimal_view_p1 = new_state
             Config.settings.toggle_minimal_view_p2 = new_state
+            UI.action_notify("Minimal View " .. (new_state and "Enabled" or "Disabled"), "alert_on_minimal")
         else
             Config.settings.toggle_all = not Config.settings.toggle_all
+            UI.action_notify("Display " .. (Config.settings.toggle_all and "Enabled" or "Disabled"), "alert_on_toggle")
         end
         UI.mark_for_save()
+    end
+
+    if reframework:is_key_down(CTRL_KEY) then
+        local changed = false
+        if UI.was_key_down(KEY_4) then
+            Config.settings.toggle_minimal_view_p1 = not Config.settings.toggle_minimal_view_p1
+            UI.action_notify("P1 Minimal View " .. (Config.settings.toggle_minimal_view_p1 and "Enabled" or "Disabled"), "alert_on_minimal")
+            changed = true
+        elseif UI.was_key_down(KEY_5) then
+            Config.settings.toggle_minimal_view_p2 = not Config.settings.toggle_minimal_view_p2
+            UI.action_notify("P2 Minimal View " .. (Config.settings.toggle_minimal_view_p2 and "Enabled" or "Disabled"), "alert_on_minimal")
+            changed = true
+        end
+        if changed then UI.mark_for_save() end
     end
 end
 
@@ -478,6 +522,20 @@ function UI.render_settings()
             changed = imgui.button("Clear Now")
             if changed then ComboData.default_state() end
         end
+        if imgui.tree_node("Alerts##attack_info") then
+            local changed_alert = false
+            imgui.same_line()
+            changed_alert, Config.settings.hide_all_alerts = imgui.checkbox("Hide All##hide_all_alerts_atk", Config.settings.hide_all_alerts)
+            if changed_alert then UI.mark_for_save() end
+            if not Config.settings.hide_all_alerts then
+                changed_alert, Config.settings.alert_on_toggle = imgui.checkbox("Toggle Display##alert_toggle_atk", Config.settings.alert_on_toggle)
+                if changed_alert then UI.mark_for_save() end
+                imgui.same_line()
+                changed_alert, Config.settings.alert_on_minimal = imgui.checkbox("Minimal View##alert_minimal_atk", Config.settings.alert_on_minimal)
+                if changed_alert then UI.mark_for_save() end
+            end
+            imgui.tree_pop()
+        end
         imgui.tree_pop()
     end
 end
@@ -488,19 +546,19 @@ end
 
 Config.init()
 
-re.on_draw_ui(function()
-    UI.render_settings()
-end)
+re.on_draw_ui(function() UI.render_settings() end)
 
 re.on_frame(function()
     local sPlayer, cPlayer, cTeam = GameObjects.get_objects()
     if not sPlayer then return end
 
     UI.update_combo_timers()
+    UI.tooltip_handler()
     if sPlayer.prev_no_push_bit ~= 0 then
         local p1, p2 = GameObjects.map_player_data(cPlayer, cTeam)
         ComboData.update_state(p1, p2)
         UI.render_windows()
+        UI.draw_action_notify()
         UI.save_handler()
     end
 end)

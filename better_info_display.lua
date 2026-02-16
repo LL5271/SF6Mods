@@ -852,7 +852,6 @@ local function player_data_handler()
 	p1.advantage = p1.stun_frame_int
 	p1.drive = cPlayer[0].focus_new
 	p1.drive_cooldown = cPlayer[0].focus_wait
-	p1.
 	p1.super = cTeam[0].mSuperGauge
 	p1.buff = cPlayer[0].style_timer
 	p1.debuff_timer = cPlayer[0].damage_cond.timer
@@ -1265,7 +1264,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 end
 
 local function build_player_info_window()
-	imgui.set_next_window_size({200, 0})
+	imgui.set_next_window_size({220, 0})
 	imgui.begin_window("Player Info", true, 8|64)
 	build_vitals_section()
 	build_player_section(0, p1, p1_hit_dt)

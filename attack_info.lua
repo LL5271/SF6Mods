@@ -149,7 +149,7 @@ function ComboData.update_state(p1, p2)
         local atk, def = (i == 0 and p1 or p2), (i == 0 and p2 or p1)
         local def_prev = (i == 0 and ComboData.p2_prev or ComboData.p1_prev)
 
-        if not state.started and atk.combo_count > 0 then
+        if not state.started and atk.combo_count > 0 and ComboData.p1_prev.hp_current then
             state.started, state.finished = true, false
             state.start = { p1 = Utils.deep_copy(ComboData.p1_prev), p2 = Utils.deep_copy(ComboData.p2_prev) }
         end
@@ -229,19 +229,17 @@ end
 function UI.value_to_hex_color(v, max_val)
     max_val = max_val or 7500
     local t = math.max(0, math.min(v / max_val, 1))
-    local u
-    if t < 0.2 then
-        u = t / 0.2
+    local r, g, b = 0, 0, 0
+    
+    if t < 0.25 then
+        r = 255
+        g = math.floor((t / 0.25) * 255)
     else
-        u = math.min((t - 0.2) / 0.3, 1)
+        r = math.floor((1 - (t - 0.25) / 0.75) * 255)
+        g = 255
     end
-    local smooth_u = u * u * (3 - 2 * u)
-    local r = t < 0.2 and 255 or 255 * (1 - smooth_u)^0.5
-    local g = t < 0.2 and 255 * (t / 0.2) or 255 * (smooth_u^0.5 + 0.2)
-    r = math.max(0, math.min(255, r))
-    g = math.max(0, math.min(255, g))
-    local b = 0
-    return 0xFF000000 + (math.floor(b) << 16) + (math.floor(g) << 8) + math.floor(r)
+    
+    return 0xFF000000 + (b << 16) + (g << 8) + r
 end
 
 function UI.process_columns(values, is_color)
@@ -300,13 +298,13 @@ function UI.render_combo_window_table(state)
         if not minimal_view then
             UI.get_medium_font()
             UI.process_columns({
-                is_p1 and state.start.p2.hp_current or state.start.p1.hp_current,
-                state.start.p1.drive_adjusted,
-                state.start.p1.super,
-                state.start.p2.drive_adjusted,
-                state.start.p2.super,
-                state.start.p1.pos_x,
-                state.start.p2.pos_x,
+                (is_p1 and state.start.p2.hp_current or state.start.p1.hp_current) or 0,
+                state.start.p1.drive_adjusted or 0,
+                state.start.p1.super or 0,
+                state.start.p2.drive_adjusted or 0,
+                state.start.p2.super or 0,
+                state.start.p1.pos_x or 0,
+                state.start.p2.pos_x or 0,
                 0, 0
             }, false)
             imgui.pop_font()
@@ -314,13 +312,13 @@ function UI.render_combo_window_table(state)
             imgui.table_next_row()
             UI.get_medium_font()
             UI.process_columns({
-                is_p1 and state.finish.p2.hp_current or state.finish.p1.hp_current,
-                state.finish.p1.drive_adjusted,
-                state.finish.p1.super,
-                state.finish.p2.drive_adjusted,
-                state.finish.p2.super,
-                state.finish.p1.pos_x,
-                state.finish.p2.pos_x,
+                (is_p1 and state.finish.p2.hp_current or state.finish.p1.hp_current) or 0,
+                state.finish.p1.drive_adjusted or 0,
+                state.finish.p1.super or 0,
+                state.finish.p2.drive_adjusted or 0,
+                state.finish.p2.super or 0,
+                state.finish.p1.pos_x or 0,
+                state.finish.p2.pos_x or 0,
                 0, 0
             }, false)
             imgui.pop_font()
@@ -337,15 +335,15 @@ function UI.render_combo_window_table(state)
             return finish - start
         end
         UI.process_columns({
-            is_p1 and state.finish.p1.combo_damage or state.finish.p2.combo_damage,
-            adjust_finish(state.finish.p1.drive_adjusted, state.start.p1.drive_adjusted),
-            state.finish.p1.super - state.start.p1.super,
-            adjust_finish(state.finish.p2.drive_adjusted, state.start.p2.drive_adjusted),
-            state.finish.p2.super - state.start.p2.super,
-            math.abs(state.finish.p1.pos_x - state.start.p1.pos_x),
-            math.abs(state.finish.p2.pos_x - state.start.p2.pos_x),
-            is_p1 and state.finish.p1.gap or state.finish.p2.gap,
-            is_p1 and state.finish.p1.advantage or state.finish.p2.advantage,
+            (is_p1 and state.finish.p1.combo_damage or state.finish.p2.combo_damage) or 0,
+            adjust_finish(state.finish.p1.drive_adjusted or 0, state.start.p1.drive_adjusted or 0),
+            (state.finish.p1.super or 0) - (state.start.p1.super or 0),
+            adjust_finish(state.finish.p2.drive_adjusted or 0, state.start.p2.drive_adjusted or 0),
+            (state.finish.p2.super or 0) - (state.start.p2.super or 0),
+            math.abs((state.finish.p1.pos_x or 0) - (state.start.p1.pos_x or 0)),
+            math.abs((state.finish.p2.pos_x or 0) - (state.start.p2.pos_x or 0)),
+            (is_p1 and state.finish.p1.gap or state.finish.p2.gap) or 0,
+            (is_p1 and state.finish.p1.advantage or state.finish.p2.advantage) or 0,
         }, true)
         imgui.pop_font()
 

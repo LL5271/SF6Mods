@@ -19,9 +19,9 @@ Detailed info for current combo, including total damage, net Drive gain, Super g
 
 Usage:
 * **F2**: Toggle display
-* **Ctrl + F2**: Toggle detailed view
-* **Ctrl + 4 / Right Click**: Toggle P1 minimal view
-* **Ctrl + 5 / Right Click**: Toggle P2 minimal view
+* **Ctrl + F2**: Toggle details
+* **Ctrl + 4 / Right Click**: Toggle P1 details
+* **Ctrl + 5 / Right Click**: Toggle P2 details
 
 **TODO**: Fix advantage calculation on knockdowns
 
@@ -30,7 +30,7 @@ Usage:
 Quickly copy the currently playing Replay ID with a click or hotkey. 
 
 Usage:
-* **Ctrl + N/Click**: Copy ID
+* **Ctrl + N / Click**: Copy ID
 * **Ctrl + M**: Toggle ID display
 
 **TODO**: Show ID during replays entered from Training Mode and post-match screen

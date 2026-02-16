@@ -6,6 +6,7 @@ local KEY_1 = 0x31
 local KEY_2 = 0x32
 local KEY_LEFT = 0x25
 local KEY_RIGHT = 0x27
+local KEY_3 = 0x33
 local KEY_SPACE = 0x20
 
 local this, gBattle, pause_manager = {}
@@ -24,6 +25,99 @@ local function deep_copy(obj)
 end
 
 local function bitand(a, b) return (a % (b + b) >= b) and b or 0 end
+
+-- Config
+
+local function mark_for_save() this.save_pending = true; this.save_timer = SAVE_DELAY; end
+
+local function create_default_config()
+	local toggle_options = {
+		toggle_show = true,
+		hitboxes = true, hitboxes_outline = true,
+		hurtboxes = true, hurtboxes_outline = true,
+		pushboxes = true, pushboxes_outline = true,
+		throwboxes = true, throwboxes_outline = true,
+		throwhurtboxes = true, throwhurtboxes_outline = true,
+		proximityboxes = true, proximityboxes_outline = true,
+		clashboxes = true, clashboxes_outline = true,
+		uniqueboxes = true, uniqueboxes_outline = true,
+		properties = true, position = true	
+	}
+
+	local opacity_options = {
+		hitbox = 25, hitbox_outline = 25,
+		hurtbox = 25, hurtbox_outline = 25,
+		pushbox = 25, pushbox_outline = 25,
+		throwbox = 25, throwbox_outline = 25,
+		throwhurtbox = 25, throwhurtbox_outline = 25,
+		proximitybox = 25, proximitybox_outline = 25,
+		clashbox = 25, clashbox_outline = 25,
+		uniquebox = 25, uniquebox_outline = 25,
+		properties = 100, position = 100
+	}
+
+	return {
+		options = {display_menu = true},
+		p1 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)},
+		p2 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)}
+	}
+end
+
+local function validate_config(cfg)
+	if not cfg.options then cfg.options = { display_menu = true } end
+	if not cfg.p1 then cfg.p1 = { toggle = {}, opacity = {} } end
+	if not cfg.p2 then cfg.p2 = { toggle = {}, opacity = {} } end
+	local default = create_default_config()
+	for _, player in ipairs({"p1", "p2"}) do
+		if not cfg[player].toggle then cfg[player].toggle = {} end
+		if not cfg[player].opacity then cfg[player].opacity = {} end
+		for k, v in pairs(default[player].toggle) do
+			if cfg[player].toggle[k] == nil then cfg[player].toggle[k] = v end end
+		for k, v in pairs(default[player].opacity) do
+			if cfg[player].opacity[k] == nil then cfg[player].opacity[k] = v end end
+	end
+	for k, v in pairs(default.options) do
+		if cfg.options[k] == nil then cfg.options[k] = v end end
+	return cfg
+end
+
+local function save_config()
+	local data_to_save = {
+		presets = this.presets,
+		current_preset = this.current_preset_name,
+		config = this.config
+	}; json.dump_file(CONFIG_PATH, data_to_save); this.save_pending = false
+end
+
+local function rebuild_preset_names()
+	this.preset_names = {}
+	for name, _ in pairs(this.presets) do table.insert(this.preset_names, name) end
+	table.sort(this.preset_names, function(a, b) return string.lower(a) < string.lower(b) end)
+end
+
+local function load_config()
+	local loaded = json.load_file(CONFIG_PATH)
+	if loaded then
+		if loaded.presets then
+			this.presets = loaded.presets
+			rebuild_preset_names()
+		end
+		if loaded.current_preset then this.current_preset_name = loaded.current_preset end
+		if loaded.config then this.config = validate_config(loaded.config)
+		else this.config = validate_config(loaded) end
+	else
+		this.config = create_default_config()
+		this.presets, this.current_preset_name, this.preset_names = {}, "", {}
+		mark_for_save()
+	end
+end
+
+local function save_handler()
+	if this.save_pending then
+		this.save_timer = this.save_timer - (1.0 / 60.0)
+		if this.save_timer <= 0 then save_config() end
+	end
+end
 
 local function reset_all_default(player)
 	local default = create_default_config()
@@ -340,99 +434,6 @@ local function process_hitboxes()
         if obj.mpActParam and not obj:get_IsR0Die() then process_entity(obj) end end
     for _, player in pairs(sPlayer.mcPlayer) do
         if player.mpActParam then process_entity(player, player.mpActParam) end end
-end
-
--- Config
-
-local function mark_for_save() this.save_pending = true; this.save_timer = SAVE_DELAY; end
-
-local function create_default_config()
-	local toggle_options = {
-		toggle_show = true,
-		hitboxes = true, hitboxes_outline = true,
-		hurtboxes = true, hurtboxes_outline = true,
-		pushboxes = true, pushboxes_outline = true,
-		throwboxes = true, throwboxes_outline = true,
-		throwhurtboxes = true, throwhurtboxes_outline = true,
-		proximityboxes = true, proximityboxes_outline = true,
-		clashboxes = true, clashboxes_outline = true,
-		uniqueboxes = true, uniqueboxes_outline = true,
-		properties = true, position = true	
-	}
-
-	local opacity_options = {
-		hitbox = 25, hitbox_outline = 25,
-		hurtbox = 25, hurtbox_outline = 25,
-		pushbox = 25, pushbox_outline = 25,
-		throwbox = 25, throwbox_outline = 25,
-		throwhurtbox = 25, throwhurtbox_outline = 25,
-		proximitybox = 25, proximitybox_outline = 25,
-		clashbox = 25, clashbox_outline = 25,
-		uniquebox = 25, uniquebox_outline = 25,
-		properties = 100, position = 100
-	}
-
-	return {
-		options = {display_menu = true},
-		p1 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)},
-		p2 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)}
-	}
-end
-
-local function validate_config(cfg)
-	if not cfg.options then cfg.options = { display_menu = true } end
-	if not cfg.p1 then cfg.p1 = { toggle = {}, opacity = {} } end
-	if not cfg.p2 then cfg.p2 = { toggle = {}, opacity = {} } end
-	local default = create_default_config()
-	for _, player in ipairs({"p1", "p2"}) do
-		if not cfg[player].toggle then cfg[player].toggle = {} end
-		if not cfg[player].opacity then cfg[player].opacity = {} end
-		for k, v in pairs(default[player].toggle) do
-			if cfg[player].toggle[k] == nil then cfg[player].toggle[k] = v end end
-		for k, v in pairs(default[player].opacity) do
-			if cfg[player].opacity[k] == nil then cfg[player].opacity[k] = v end end
-	end
-	for k, v in pairs(default.options) do
-		if cfg.options[k] == nil then cfg.options[k] = v end end
-	return cfg
-end
-
-local function save_config()
-	local data_to_save = {
-		presets = this.presets,
-		current_preset = this.current_preset_name,
-		config = this.config
-	}; json.dump_file(CONFIG_PATH, data_to_save); this.save_pending = false
-end
-
-local function rebuild_preset_names()
-	this.preset_names = {}
-	for name, _ in pairs(this.presets) do table.insert(this.preset_names, name) end
-	table.sort(this.preset_names, function(a, b) return string.lower(a) < string.lower(b) end)
-end
-
-local function load_config()
-	local loaded = json.load_file(CONFIG_PATH)
-	if loaded then
-		if loaded.presets then
-			this.presets = loaded.presets
-			rebuild_preset_names()
-		end
-		if loaded.current_preset then this.current_preset_name = loaded.current_preset end
-		if loaded.config then this.config = validate_config(loaded.config)
-		else this.config = validate_config(loaded) end
-	else
-		this.config = create_default_config()
-		this.presets, this.current_preset_name, this.preset_names = {}, "", {}
-		mark_for_save()
-	end
-end
-
-local function save_handler()
-	if this.save_pending then
-		this.save_timer = this.save_timer - (1.0 / 60.0)
-		if this.save_timer <= 0 then save_config() end
-	end
 end
 
 -- Presets
@@ -1069,7 +1070,7 @@ end
 -- Hotkeys
 
 local function setup_hotkeys()
-	if not this.key_ready and not reframework:is_key_down(KEY_1) and not reframework:is_key_down(KEY_2) and not reframework:is_key_down(KEY_F1) and not reframework:is_key_down(KEY_LEFT) and not reframework:is_key_down(KEY_RIGHT) and not reframework:is_key_down(KEY_SPACE) then this.key_ready = true end
+	if not this.key_ready and not reframework:is_key_down(KEY_1) and not reframework:is_key_down(KEY_2) and not reframework:is_key_down(KEY_3) and not reframework:is_key_down(KEY_F1) and not reframework:is_key_down(KEY_LEFT) and not reframework:is_key_down(KEY_RIGHT) and not reframework:is_key_down(KEY_SPACE) then this.key_ready = true end
 	if this.key_ready and reframework:is_key_down(KEY_F1) then
 		this.config.options.display_menu = not this.config.options.display_menu
 		this.key_ready = false; mark_for_save() end
@@ -1078,6 +1079,11 @@ local function setup_hotkeys()
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_2) then
 		this.config.p2.toggle.toggle_show = not this.config.p2.toggle.toggle_show
+		this.key_ready = false; mark_for_save() end
+	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_3) then
+		local any_active = this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show
+		this.config.p1.toggle.toggle_show = not any_active
+		this.config.p2.toggle.toggle_show = not any_active
 		this.key_ready = false; mark_for_save() end
 	if this.key_ready and reframework:is_key_down(KEY_CTRL) and reframework:is_key_down(KEY_LEFT) then
 		load_previous_preset()

@@ -30,7 +30,7 @@ Usage:
 Quickly copy the currently playing Replay ID with a click or hotkey. 
 
 Usage:
-* **Ctrl + N/Click**: Copy ID
+* **Ctrl + N / Click**: Copy ID
 * **Ctrl + M**: Toggle ID display
 
 **TODO**: Show ID during replays entered from Training Mode and post-match screen

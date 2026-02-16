@@ -6,22 +6,12 @@ More customizable version of WistfulHopes' original [hitbox display script](http
 
 Usage:
 * **F1**: Toggle options menu
-* **Ctrl+1**: Toggle P1 hitboxes
-* **Ctrl+2**: Toggle P2 hitboxes
-* **Ctrl+3**: Toggle both hitboxes
-* **Ctrl+Left Arrow**: Load previous preset
-* **Ctrl+Right Arrow**: Load next preset
-* **Ctrl+Space**: Save current preset
-
-## Replay ID To Clipboard
-
-Quickly copy the currently playing Replay ID with a click or hotkey. 
-
-Usage:
-* **Ctrl+N/Click**: Copy ID
-* **Ctrl+M**: Toggle ID display
-
-**TODO**: Show ID during replays entered from Training Mode and post-match screen
+* **Ctrl + 1**: Toggle P1 hitboxes
+* **Ctrl + 2**: Toggle P2 hitboxes
+* **Ctrl + 3**: Toggle both hitboxes
+* **Ctrl + Left Arrow**: Load previous preset
+* **Ctrl + Right Arrow**: Load next preset
+* **Ctrl + Space**: Save current preset
 
 ## Attack Info
 
@@ -29,9 +19,19 @@ Detailed info for current combo, including total damage, net Drive gain, Super g
 
 Usage:
 * **F2**: Toggle display
-* **Right Click**: Toggle minimal/detailed view
+* **Ctrl + F2 / Right Click**: Toggle detailed view
 
 **TODO**: Fix advantage calculation on knockdowns
+
+## Replay ID To Clipboard
+
+Quickly copy the currently playing Replay ID with a click or hotkey. 
+
+Usage:
+* **Ctrl + N/Click**: Copy ID
+* **Ctrl + M**: Toggle ID display
+
+**TODO**: Show ID during replays entered from Training Mode and post-match screen
 
 ## Attack History
 

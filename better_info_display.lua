@@ -1,9 +1,5 @@
-local MOD_NAME = "Better Info Display"
-local CONFIG_PATH = "better_info_display.json"
-local SAVE_DELAY = 0.5
-
 -- 
--- Begin Hotkeys.lua
+-- Begin HK
 -- 
 
 local kb, mouse, pad
@@ -554,8 +550,12 @@ hk = hk or {
 }
 
 -- 
--- End Hotkeys.lua
+-- End HK
 -- 
+
+local MOD_NAME = "Better Info Display"
+local CONFIG_PATH = "better_info_display.json"
+local SAVE_DELAY = 0.5
 
 local initialized, changed, p1_hit_dt, p2_hit_dt, training_manager, pause_manager, display_data
 local config, p1, p2 = {}, {}, {}

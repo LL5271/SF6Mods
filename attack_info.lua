@@ -1,3 +1,4 @@
+local MOD_NAME = "Attack Info"
 local CONFIG_PATH = "attack_info.json"
 local SAVE_DELAY = 0.5
 local LEFT_CLICK = 0x01
@@ -207,8 +208,9 @@ end
 function UI.action_notify(msg, category_toggle)
     if Config.settings.hide_all_alerts then return end
     if category_toggle ~= nil and not Config.settings[category_toggle] then return end
-    UI.tooltip_msg = msg
-    UI.tooltip_timer = 60
+    local prepended_msg = MOD_NAME .. ': ' .. msg
+    UI.tooltip_msg = prepended_msg
+    UI.tooltip_timer = 40
 end
 
 function UI.tooltip_handler()
@@ -366,7 +368,7 @@ function UI.render_player_combo_window(player_index, title, x, y, toggle_setting
             
             -- Added action_notify for visual feedback
             local side = (player_index == 0) and "P1 " or "P2 "
-            local status = Config.settings[minimal_setting] and "Enabled" or "Disabled"
+            local status = Config.settings[minimal_setting] and "Disabled" or "Enabled"
             UI.action_notify(side .. "Minimal View " .. status, "alert_on_minimal")
             
             UI.mark_for_save()
@@ -443,26 +445,49 @@ end
 function UI.render_settings()
     if imgui.tree_node("Attack Info") then
         local changed = false
+        
         imgui.text("Enable (F2)")
         imgui.same_line()
         changed, Config.settings.toggle_all = imgui.checkbox("##enable", Config.settings.toggle_all)
-        if changed then UI.mark_for_save() end
+        if changed then 
+            UI.action_notify("Display " .. (Config.settings.toggle_all and "Enabled" or "Disabled"), "alert_on_toggle")
+            UI.mark_for_save() 
+        end
         
         if Config.settings.toggle_all then
             imgui.text("Show/Hide")
             imgui.same_line()
-            changed, Config.settings.toggle_p1 = imgui.checkbox("P1##show_p1", Config.settings.toggle_p1)
+            local changed_p1, changed_p2 = false, false
+            changed_p1, Config.settings.toggle_p1 = imgui.checkbox("P1##show_p1", Config.settings.toggle_p1)
             imgui.same_line()
-            changed, Config.settings.toggle_p2 = imgui.checkbox("P2##show_p2", Config.settings.toggle_p2)
-            if changed then UI.mark_for_save() end
+            changed_p2, Config.settings.toggle_p2 = imgui.checkbox("P2##show_p2", Config.settings.toggle_p2)
+            
+            if changed_p1 then
+                UI.action_notify("P1 Window " .. (Config.settings.toggle_p1 and "Shown" or "Hidden"), "alert_on_toggle")
+                UI.mark_for_save()
+            end
+            if changed_p2 then
+                UI.action_notify("P2 Window " .. (Config.settings.toggle_p2 and "Shown" or "Hidden"), "alert_on_toggle")
+                UI.mark_for_save()
+            end
             
             imgui.text("Minimal View")
             imgui.same_line()
-            changed, Config.settings.toggle_minimal_view_p1 = imgui.checkbox("P1##minimal_p1", Config.settings.toggle_minimal_view_p1)
+            local m_changed_p1, m_changed_p2 = false, false
+            m_changed_p1, Config.settings.toggle_minimal_view_p1 = imgui.checkbox("P1##minimal_p1", Config.settings.toggle_minimal_view_p1)
             imgui.same_line()
-            changed, Config.settings.toggle_minimal_view_p2 = imgui.checkbox("P2##minimal_p2", Config.settings.toggle_minimal_view_p2)
-            if changed then UI.mark_for_save() end
+            m_changed_p2, Config.settings.toggle_minimal_view_p2 = imgui.checkbox("P2##minimal_p2", Config.settings.toggle_minimal_view_p2)
             
+            if m_changed_p1 then
+                UI.action_notify("P1 Minimal View " .. (Config.settings.toggle_minimal_view_p1 and "Enabled" or "Disabled"), "alert_on_minimal")
+                UI.mark_for_save()
+            end
+            if m_changed_p2 then
+                UI.action_notify("P2 Minimal View " .. (Config.settings.toggle_minimal_view_p2 and "Enabled" or "Disabled"), "alert_on_minimal")
+                UI.mark_for_save()
+            end
+            
+            -- Timer Duration
             imgui.text("Clear After:")
             imgui.same_line(); imgui.push_item_width(30)
             changed, Config.settings.combo_timer_duration = imgui.drag_int("##combo_timer_duration", Config.settings.combo_timer_duration, 1, 0, 120)
@@ -470,7 +495,10 @@ function UI.render_settings()
             if changed then UI.mark_for_save() end
             
             imgui.same_line()
-            if imgui.button("Clear Now") then ComboData.default_state() end
+            if imgui.button("Clear Now") then 
+                ComboData.default_state() 
+                UI.action_notify("Data Cleared", "alert_on_toggle")
+            end
         end
         imgui.tree_pop()
     end

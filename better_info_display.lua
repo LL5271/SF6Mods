@@ -568,6 +568,7 @@ local sPlayer = gBattle:get_field("Player"):get_data(nil)
 local cPlayer = sPlayer.mcPlayer
 local BattleTeam = gBattle:get_field("Team"):get_data(nil)
 local cTeam = BattleTeam.mcTeam
+local BattleChronos = gBattle:get_field("Chronos"):get_data(nil)
 
 local default_config = { 
 	options = { 
@@ -783,6 +784,104 @@ local function get_hitbox_range(player, actParam, list)
 	end
 end
 
+local function extract_player_data(player_index, player_table, engine, opponent_cplayer, display_meter_index)
+	local cplayer = cPlayer[player_index]
+	local team = cTeam[player_index]
+	local charge_info = player_index == 0 and p1ChargeInfo or p2ChargeInfo
+	
+	-- Action Engine Data
+	player_table.mActionId = engine:get_ActionID()
+	player_table.mActionFrame = engine:get_ActionFrame()
+	player_table.mEndFrame = engine:get_ActionFrameNum()
+	player_table.mMarginFrame = engine:get_MarginFrame()
+	player_table.mMainFrame = engine.mParam.action.ActionFrame.MainFrame
+	player_table.mFollowFrame = engine.mParam.action.ActionFrame.FollowFrame
+	
+	-- Frame Meter Data
+	local meter_data = display_data.FrameMeterSSData.MeterDatas[display_meter_index]
+	player_table.whole_frame = meter_data.WholeFrame or ""
+	player_table.meaty_frame = meter_data.MeatyFrame or ""
+	player_table.apper_frame = meter_data.ApperFrame or ""
+	player_table.apper_frame_str = string.gsub(player_table.apper_frame, "F", "")
+	player_table.apper_frame_int = tonumber(player_table.apper_frame_str) or 0
+	player_table.stun_frame = meter_data.StunFrame or ""
+	player_table.stun_frame_str = string.gsub(player_table.stun_frame, "F", "")
+	player_table.stun_frame_int = tonumber(player_table.stun_frame_str) or 0
+
+	-- Basic Player Data
+	player_table.HP_cap = cplayer.heal_new
+	player_table.current_HP = cplayer.vital_new
+	player_table.HP_cooldown = cplayer.healing_wait
+	player_table.dir = bitand(cplayer.BitValue, 128) == 128
+	player_table.curr_hitstop = cplayer.hit_stop
+	player_table.max_hitstop = cplayer.hit_stop_org
+	player_table.curr_hitstun = cplayer.damage_time
+	player_table.max_hitstun = cplayer.damage_info.time
+	player_table.curr_blockstun = cplayer.guard_time
+	player_table.stance = cplayer.pose_st
+	player_table.throw_invuln = cplayer.catch_muteki
+	player_table.full_invuln = cplayer.muteki_time
+	player_table.juggle = cplayer.combo_dm_air
+	player_table.burnout = cplayer.incapacitated or false
+	
+	-- Frame Data
+	player_table.startup_frames = player_table.apper_frame_int
+	player_table.active_frames = player_table.mFollowFrame - player_table.mMainFrame
+	player_table.recovery_frames = read_sfix(player_table.mMarginFrame) - player_table.mFollowFrame
+	player_table.total_frames = read_sfix(player_table.mMarginFrame)
+	player_table.advantage = player_table.stun_frame_int
+	
+	-- Meter Data
+	player_table.drive = cplayer.focus_new
+	player_table.drive_cooldown = cplayer.focus_wait
+	player_table.super = team.mSuperGauge
+	player_table.buff = cplayer.style_timer
+	player_table.debuff_timer = cplayer.damage_cond.timer
+	player_table.chargeInfo = charge_info
+	
+	-- Position and Movement
+	player_table.posX = cplayer.pos.x.v / 65536.0
+	player_table.posY = cplayer.pos.y.v / 65536.0
+	player_table.spdX = cplayer.speed.x.v / 65536.0
+	player_table.spdY = cplayer.speed.y.v / 65536.0
+	player_table.aclX = cplayer.alpha.x.v / 65536.0
+	player_table.aclY = cplayer.alpha.y.v / 65536.0
+	player_table.pushback = cplayer.vector_zuri.speed.v / 65536.0
+	player_table.self_pushback = cplayer.vs_vec_zuri.zuri.speed.v / 65536.0
+	player_table.gap = cplayer.vs_distance.v / 65536.0
+
+	-- Time stop data
+	player_table.timestop_frame = BattleChronos.WorldNotch
+	player_table.timestop_frames = BattleChronos.WorldElapsed
+	
+	-- Gap percentage (only for P1)
+	player_table.gap_pct = ((player_table.gap - 70) / 420) * 100
+	
+	-- Combo Data (from opponent)
+	player_table.combo_attack_count = opponent_cplayer.combo_scale.count
+	player_table.combo_hit_count = opponent_cplayer.combo_dm_cnt
+	player_table.combo_scale_now = opponent_cplayer.combo_scale.now
+	player_table.combo_scale_start = opponent_cplayer.combo_scale.start
+	player_table.combo_scale_buff = opponent_cplayer.combo_scale.buff
+	
+	-- Burnout Adjustment
+	if player_table.burnout then
+		player_table.drive_adjusted = player_table.drive - 60000
+	else
+		player_table.drive_adjusted = player_table.drive
+	end
+	
+	-- Blockstun Tracking
+	if player_table.max_blockstun == nil then
+		player_table.max_blockstun = 0
+	end
+	if player_table.curr_blockstun > player_table.max_blockstun then
+		player_table.max_blockstun = player_table.curr_blockstun
+	elseif player_table.curr_blockstun == 0 then
+		player_table.max_blockstun = 0
+	end
+end
+
 local function player_data_handler()
 	training_manager = sdk.get_managed_singleton("app.training.TrainingManager")
 	local snap = training_manager
@@ -792,158 +891,18 @@ local function player_data_handler()
 			display_data = t_common.SnapShotDatas[0]._DisplayData or {}
 		end
 	end
-	-- Action Engine
+	
+	-- Get action engines
 	local p1Engine = cPlayer[0].mpActParam.ActionPart._Engine
 	local p2Engine = cPlayer[1].mpActParam.ActionPart._Engine
-	-- P1 ActID, Current Frame, Final Frame, IASA Frame
-	p1.mActionId = p1Engine:get_ActionID()
-	p1.mActionFrame = p1Engine:get_ActionFrame()
-	p1.mEndFrame = p1Engine:get_ActionFrameNum()
-	p1.mMarginFrame = p1Engine:get_MarginFrame()
-	-- P2 ActID, Current Frame, Final Frame, IASA Frame
-	p2.mActionId = p2Engine:get_ActionID()
-	p2.mActionFrame = p2Engine:get_ActionFrame()
-	p2.mEndFrame = p2Engine:get_ActionFrameNum()
-	p2.mMarginFrame = p2Engine:get_MarginFrame()
-	-- P1 Startup/Active/Recovery Frame
-	p1.mMainFrame = p1Engine.mParam.action.ActionFrame.MainFrame
-	p1.mFollowFrame = p1Engine.mParam.action.ActionFrame.FollowFrame
-	-- P2 Startup/Active/Recovery Frame
-	p2.mMainFrame = p2Engine.mParam.action.ActionFrame.MainFrame
-	p2.mFollowFrame = p2Engine.mParam.action.ActionFrame.FollowFrame
-	-- KD Info from Frame Meter
-	p1.whole_frame = display_data.FrameMeterSSData.MeterDatas[0].WholeFrame or ""
-	p1.meaty_frame = display_data.FrameMeterSSData.MeterDatas[0].MeatyFrame or ""
-	p1.apper_frame = display_data.FrameMeterSSData.MeterDatas[0].ApperFrame or ""
-	p1.apper_frame_str = string.gsub(p1.apper_frame, "F", "")
-	p1.apper_frame_int = tonumber(p1.apper_frame_str) or 0
-	p1.stun_frame = display_data.FrameMeterSSData.MeterDatas[0].StunFrame or ""
-	p1.stun_frame_str = string.gsub(p1.stun_frame, "F", "")
-	p1.stun_frame_int = tonumber(p1.stun_frame_str) or 0
-	p2.whole_frame = display_data.FrameMeterSSData.MeterDatas[1].WholeFrame or ""
-	p2.meaty_frame = display_data.FrameMeterSSData.MeterDatas[1].MeatyFrame or ""
-	p2.apper_frame = display_data.FrameMeterSSData.MeterDatas[1].ApperFrame or ""
-	p2.apper_frame_str = string.gsub(p2.apper_frame, "F", "")
-	p2.apper_frame_int = tonumber(p2.apper_frame_str) or 0
-	p2.stun_frame = display_data.FrameMeterSSData.MeterDatas[1].StunFrame or ""
-	p2.stun_frame_str = string.gsub(p2.stun_frame, "F", "")
-	p2.stun_frame_int = tonumber(p2.stun_frame_str) or 0
 	
+	-- Set hit data
 	p1_hit_dt = cPlayer[1].pDmgHitDT
 	p2_hit_dt = cPlayer[0].pDmgHitDT
 	
-	-- P1 Data
-	p1.HP_cap = cPlayer[0].heal_new
-	p1.current_HP = cPlayer[0].vital_new
-	p1.HP_cooldown = cPlayer[0].healing_wait
-	p1.dir = bitand(cPlayer[0].BitValue, 128) == 128
-	p1.curr_hitstop = cPlayer[0].hit_stop
-	p1.max_hitstop = cPlayer[0].hit_stop_org
-	p1.curr_hitstun = cPlayer[0].damage_time
-	p1.max_hitstun = cPlayer[0].damage_info.time
-	p1.curr_blockstun = cPlayer[0].guard_time
-	p1.stance = cPlayer[0].pose_st
-	p1.throw_invuln = cPlayer[0].catch_muteki
-	p1.full_invuln = cPlayer[0].muteki_time
-	p1.juggle = cPlayer[0].combo_dm_air
-	p1.burnout =cPlayer[0].incapacitated or false
-	p1.startup_frames = p1.apper_frame_int
-	p1.active_frames = p1.mFollowFrame - p1.mMainFrame -- TODO Make reliable
-	p1.recovery_frames = read_sfix(p1.mMarginFrame) - p1.mFollowFrame -- TODO Make reliable
-	p1.total_frames = read_sfix(p1.mMarginFrame) -- TODO Make reliable
-	p1.advantage = p1.stun_frame_int
-	p1.drive = cPlayer[0].focus_new
-	p1.drive_cooldown = cPlayer[0].focus_wait
-	p1.super = cTeam[0].mSuperGauge
-	p1.buff = cPlayer[0].style_timer
-	p1.debuff_timer = cPlayer[0].damage_cond.timer
-	p1.chargeInfo = p1ChargeInfo
-	p1.posX = cPlayer[0].pos.x.v / 65536.0
-	p1.posY = cPlayer[0].pos.y.v / 65536.0
-	p1.spdX = cPlayer[0].speed.x.v / 65536.0
-	p1.spdY = cPlayer[0].speed.y.v / 65536.0
-	p1.aclX = cPlayer[0].alpha.x.v / 65536.0
-	p1.aclY = cPlayer[0].alpha.y.v / 65536.0
-	p1.pushback = cPlayer[0].vector_zuri.speed.v / 65536.0
-	p1.self_pushback = cPlayer[0].vs_vec_zuri.zuri.speed.v / 65536.0
-	p1.gap = cPlayer[0].vs_distance.v / 65536.0
-	p1.gap_pct = ((p1.gap - 70) / 420) * 100
-	p1.combo_attack_count = cPlayer[1].combo_scale.count
-	p1.combo_hit_count = cPlayer[1].combo_dm_cnt
-	p1.combo_scale_now = cPlayer[1].combo_scale.now
-	p1.combo_scale_start = cPlayer[1].combo_scale.start
-	p1.combo_scale_buff = cPlayer[1].combo_scale.buff
-	
-	-- P2 Data
-	p2.HP_cap = cPlayer[1].heal_new
-	p2.current_HP = cPlayer[1].vital_new
-	p2.HP_cooldown = cPlayer[1].healing_wait
-	p2.dir = bitand(cPlayer[1].BitValue, 128) == 128
-	p2.curr_hitstop = cPlayer[1].hit_stop
-	p2.max_hitstop = cPlayer[1].hit_stop_org
-	p2.curr_hitstun = cPlayer[1].damage_time
-	p2.max_hitstun = cPlayer[1].damage_info.time
-	p2.curr_blockstun = cPlayer[1].guard_time
-	p2.stance = cPlayer[1].pose_st
-	p2.throw_invuln = cPlayer[1].catch_muteki
-	p2.full_invuln = cPlayer[1].muteki_time
-	p2.juggle = cPlayer[1].combo_dm_air
-	p2.burnout =cPlayer[1].incapacitated or false
-	p1.startup_frames = p1.apper_frame_int
-	p2.active_frames = p2.mFollowFrame - p2.mMainFrame -- TODO Make reliable
-	p2.recovery_frames = read_sfix(p2.mMarginFrame) - p2.mFollowFrame -- TODO Make reliable
-	p2.total_frames = read_sfix(p2.mMarginFrame) -- TODO Make reliable
-	p1.advantage = p1.stun_frame_int
-	p2.drive = cPlayer[1].focus_new
-	p2.drive_cooldown = cPlayer[1].focus_wait
-	p2.super = cTeam[1].mSuperGauge
-	p2.buff = cPlayer[1].style_timer
-	p2.debuff_timer = cPlayer[1].damage_cond.timer
-	p2.chargeInfo = p2ChargeInfo
-	p2.posX = cPlayer[1].pos.x.v / 65536.0
-	p2.posY = cPlayer[1].pos.y.v / 65536.0
-	p2.spdX = cPlayer[1].speed.x.v / 65536.0
-	p2.spdY = cPlayer[1].speed.y.v / 65536.0
-	p2.aclX = cPlayer[1].alpha.x.v / 65536.0
-	p2.aclY = cPlayer[1].alpha.y.v / 65536.0
-	p2.pushback = cPlayer[1].vector_zuri.speed.v / 65536.0
-	p2.self_pushback = cPlayer[1].vs_vec_zuri.zuri.speed.v / 65536.0
-	p2.gap = cPlayer[1].vs_distance.v / 65536.0
-	p2.combo_attack_count = cPlayer[0].combo_scale.count
-	p2.combo_hit_count = cPlayer[0].combo_dm_cnt
-	p2.combo_scale_now = cPlayer[0].combo_scale.now
-	p2.combo_scale_start = cPlayer[0].combo_scale.start
-	p2.combo_scale_buff = cPlayer[0].combo_scale.buff
-
-	if p1.burnout then
-		p1.drive_adjusted = p1.drive - 60000
-	else
-		p1.drive_adjusted = p1.drive
-	end
-
-	if p2.burnout then
-		p2.drive_adjusted = p2.drive - 60000
-	else
-		p2.drive_adjusted = p2.drive
-	end
-	
-	if p1.max_blockstun == nil then
-		p1.max_blockstun = 0
-	end
-	if p1.curr_blockstun > p1.max_blockstun then
-		p1.max_blockstun = p1.curr_blockstun
-	elseif p1.curr_blockstun == 0 then
-		p1.max_blockstun = 0
-	end
-
-	if p2.max_blockstun == nil then
-		p2.max_blockstun = 0
-	end
-	if p2.curr_blockstun > p2.max_blockstun then
-		p2.max_blockstun = p2.curr_blockstun
-	elseif p2.curr_blockstun == 0 then
-		p2.max_blockstun = 0
-	end
+	-- Extract data for both players
+	extract_player_data(0, p1, p1Engine, cPlayer[1], 0)
+	extract_player_data(1, p2, p2Engine, cPlayer[0], 1)
 end
 
 local indentation_unit = 9
@@ -1090,6 +1049,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 		imgui.indent(indentation_unit)
 		imgui.multi_color("Action ID:", player_data.mActionId)
 		imgui.multi_color("Frame:", math.floor(read_sfix(player_data.mActionFrame)) .. " / " .. math.floor(read_sfix(player_data.mMarginFrame)) .. " (" .. math.floor(read_sfix(player_data.mEndFrame)) .. ")")
+		imgui.multi_color("Timestop:", player_data.timestop_frame .. " / " .. player_data.timestop_frames)
 		imgui.multi_color("Hitstop:", player_data.curr_hitstop .. " / " .. player_data.max_hitstop)
 		imgui.multi_color("Hitstun:", player_data.curr_hitstun .. " / " .. player_data.max_hitstun)
 		imgui.multi_color("Blockstun:", player_data.curr_blockstun .. " / " .. player_data.max_blockstun)

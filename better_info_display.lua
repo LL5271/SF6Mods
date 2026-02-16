@@ -485,7 +485,7 @@ local function update_states()
 	
 	if mouse then 
 		m_up, m_down, m_trig = mouse:call("get_ButtonUp"), mouse:call("get_Button"), mouse:call("get_ButtonDown")
-		for button, state in pairs(mb_state.released) do 
+		for button, state in pairs(mb_state.released) do
 			mb_state.released[button]	= ((m_up | button) == m_up) 
 			mb_state.down[button] 		= ((m_down | button) == m_down) 
 			mb_state.triggered[button]  = ((m_trig | button) == m_trig)

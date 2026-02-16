@@ -1162,7 +1162,6 @@ local function initialize()
 	this.initialized = true
 end
 
-
 -- Hotkeys
 
 local function setup_hotkeys()

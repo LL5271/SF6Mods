@@ -211,8 +211,8 @@ local function reset_from_defaults_tbl(default_hotkey_table)
 end
 
 local function update_hotkey_table(hotkey_table)
-	for key, value in pairs(hotkey_table) do
-		hotkey_table[key] = hotkeys[key]
+	for key, value in pairs(hotkeys) do
+		hotkey_table[key] = value
 	end
 end
 
@@ -567,7 +567,37 @@ local cPlayer = sPlayer.mcPlayer
 local BattleTeam = gBattle:get_field("Team"):get_data(nil)
 local cTeam = BattleTeam.mcTeam
 
-local default_config = { options = { display_player_info = true }, hotkeys = { toggle_player_info = "F5" } }
+local default_config = { 
+	options = { 
+		display_player_info = true, 
+		display_vitals = true,
+		display_p1_section = true,
+		display_p2_section = true,
+		display_p1_general = true,
+		display_p2_general = true,
+		display_p1_state = true,
+		display_p2_state = true,
+		display_p1_movement = true,
+		display_p2_movement = true,
+		display_p1_attack = true,
+		display_p2_attack = true,
+		display_p1_latest_attack = true,
+		display_p2_latest_attack = true,
+		display_p1_charge = false,
+		display_p2_charge = false,
+		display_p1_projectiles = false,
+		display_p2_projectiles = false
+	},
+	hotkeys = { 
+		toggle_player_info = "F5", 
+		toggle_vitals = "V", 
+		["toggle_vitals_$"] = "Control",
+		toggle_p1 = "1",
+		["toggle_p1_$"] = "Shift",
+		toggle_p2 = "2",
+		["toggle_p2_$"] = "Shift"
+	}
+}
 
 local left_wall_dr_splat_pos = -585.2
 local right_wall_dr_splat_pos = 585.2
@@ -608,7 +638,12 @@ local function initialize()
 		local init_config = json.load_file(CONFIG_PATH)
 		if not init_config then config = default_config; mark_for_save()
 		else config = init_config end
-		hk.setup_hotkeys({}, config.hotkeys or default_config.hotkeys)
+		config = hk.recurse_def_settings(config, default_config)
+		for k, v in pairs(default_config.hotkeys) do
+			if config.hotkeys[k] == nil then config.hotkeys[k] = v end
+		end
+
+		hk.setup_hotkeys(config.hotkeys, default_config.hotkeys)
 		initialized = true
 	end
 end
@@ -705,7 +740,6 @@ local function get_super_color(super)
 end
 
 local function get_hitbox_range(player, actParam, list)
-	-- if not (player or actParam or list) then return false end
 	local facingRight = bitand(player.BitValue, 128) == 128
 	local maxHitboxEdgeX = nil
 	if actParam ~= nil then
@@ -740,8 +774,6 @@ local function get_hitbox_range(player, actParam, list)
 		end
 		if maxHitboxEdgeX ~= nil then
 			local playerPosX = player.pos.x.v / 65536.0
-			-- Replace start_pos because it can fail to track the actual starting location of an action (e.g., DJ 2MK)
-			-- local playerStartPosX = player.start_pos.x.v / 65536.0
 			local playerStartPosX = player.act_root.x.v / 65536.0
             list.absolute_range = abs(maxHitboxEdgeX - playerStartPosX)
             list.relative_range = abs(maxHitboxEdgeX - playerPosX)
@@ -749,7 +781,7 @@ local function get_hitbox_range(player, actParam, list)
 	end
 end
 
-local function handle_player_data()
+local function player_data_handler()
 	training_manager = sdk.get_managed_singleton("app.training.TrainingManager")
 	local snap = training_manager
 	if snap then
@@ -820,6 +852,7 @@ local function handle_player_data()
 	p1.advantage = p1.stun_frame_int
 	p1.drive = cPlayer[0].focus_new
 	p1.drive_cooldown = cPlayer[0].focus_wait
+	p1.
 	p1.super = cTeam[0].mSuperGauge
 	p1.buff = cPlayer[0].style_timer
 	p1.debuff_timer = cPlayer[0].damage_cond.timer
@@ -881,12 +914,11 @@ local function handle_player_data()
 	p2.combo_scale_start = cPlayer[0].combo_scale.start
 	p2.combo_scale_buff = cPlayer[0].combo_scale.buff
 
-	-- Adjusted Drive to account for Burnout
 	if p1.burnout then
 		p1.drive_adjusted = p1.drive - 60000
 	else
-	end
 		p1.drive_adjusted = p1.drive
+	end
 
 	if p2.burnout then
 		p2.drive_adjusted = p2.drive - 60000
@@ -894,7 +926,6 @@ local function handle_player_data()
 		p2.drive_adjusted = p2.drive
 	end
 	
-	-- Max blockstun tracker
 	if p1.max_blockstun == nil then
 		p1.max_blockstun = 0
 	end
@@ -914,6 +945,101 @@ local function handle_player_data()
 	end
 end
 
+local indentation_unit = 9
+
+local function build_options()
+	changed, config.options.display_player_info = imgui.checkbox(string.format("Display Main Window", hk.hotkeys.toggle_player_info), config.options.display_player_info)
+	if changed then mark_for_save() end
+	imgui.same_line(); if hk.hotkey_setter("toggle_player_info", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
+
+	changed, config.options.display_vitals = imgui.checkbox(string.format("Display Vitals", hk.hotkeys.toggle_vitals), config.options.display_vitals)
+	if changed then mark_for_save() end
+	imgui.same_line(); if hk.hotkey_setter("toggle_vitals", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
+
+	changed, config.options.display_p1_section = imgui.checkbox(string.format("Display P1 Section", hk.hotkeys.toggle_p1), config.options.display_p1_section)
+	if changed then mark_for_save() end
+	imgui.same_line(); if hk.hotkey_setter("toggle_p1", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
+
+	changed, config.options.display_p2_section = imgui.checkbox(string.format("Display P2 Section", hk.hotkeys.toggle_p2), config.options.display_p2_section)
+	if changed then mark_for_save() end
+	imgui.same_line(); if hk.hotkey_setter("toggle_p2", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
+end
+
+local function build_options_menu()
+    if not imgui.tree_node("Info Display") then return end
+	build_options()
+	imgui.tree_pop()
+end
+
+local function build_vitals_section()
+	local hk_str = hk.get_button_string("toggle_vitals") or ""
+	local subbed = string.gsub(hk_str, "%s*Alpha%s*", "")
+	
+	if not config.options.display_vitals then
+		if imgui.button("Vitals (" .. subbed .. ")") then
+			config.options.display_vitals = true
+			mark_for_save()
+		end
+		return
+	else
+		if imgui.button("Hide Vitals (" .. subbed .. ")") then
+			config.options.display_vitals = false
+			mark_for_save()
+		end
+	end
+	
+	imgui.indent(indentation_unit)
+	imgui.multi_color("Gap:", string.format("%.0f", p1.gap) .. " (" .. string.format("%.0f", p1.gap_pct) .. "%)")
+	imgui.multi_color("Advantage:", p1.advantage)
+	if (p1.dir and p1.posX <= left_wall_dr_splat_pos) or (not p1.dir and p1.posX >= right_wall_dr_splat_pos) then
+		imgui.multi_color("P1 Pos:", string.format("%.1f", p1.posX) or "", 0XFFFFEA00)
+	else
+		imgui.multi_color("P1 Pos:", string.format("%.1f", p1.posX) or "")
+	end
+	imgui.multi_color("P1 Drive:", p1.drive_adjusted, get_drive_color(p1.drive_adjusted))
+	imgui.multi_color("P1 Super:", p1.super, get_super_color(p2.super))
+	if (p2.dir and p2.posX <= left_wall_dr_splat_pos) or (not p2.dir and p2.posX >= right_wall_dr_splat_pos) then
+		imgui.multi_color("P2 Pos:", string.format("%.1f", p2.posX) or "", 0XFFFFEA00)
+	else
+		imgui.multi_color("P2 Pos:", string.format("%.1f", p2.posX) or "")
+	end
+	imgui.multi_color("P2 Drive:", p2.drive_adjusted, get_drive_color(p2.drive_adjusted))
+	imgui.multi_color("P2 Super:", p2.super, get_super_color(p2.super))
+end
+
+local function build_player_show_buttons(player_index, func)
+	local player_name = "P" .. (player_index + 1)
+	local hk_name = player_index == 0 and "toggle_p1" or "toggle_p2"
+	
+	local hk_str = hk.get_button_string(hk_name) or ""
+	local subbed = string.gsub(hk_str, "%s*Alpha%s*", "")
+	build_visibility_toggle_buttons(player_name, func, hk_name)
+end
+
+local function build_general_section(player_name, general_config_key, player_data)
+	if imgui.button(string.format("General (%s)##%s_general_info", config.options[general_config_key] and "Hide" or "Show", player_name)) then
+		config.options[general_config_key] = not config.options[general_config_key]
+		mark_for_save()
+	end
+
+	if config.options[general_config_key] then
+		imgui.indent(indentation_unit)
+		imgui.multi_color("HP Current:", player_data.current_HP)
+		imgui.multi_color("HP Cap:", player_data.HP_cap)
+		imgui.multi_color("HP Percent:", string.format("%.1f", player_data.current_HP / player_data.HP_cap * 100))
+		imgui.multi_color("HP Regen Cooldown:", player_data.HP_cooldown)
+		imgui.multi_color("Burnout:", tostring(player_data.burnout))
+		imgui.multi_color("Drive Gauge:", player_data.drive_adjusted)
+		imgui.multi_color("Drive Percentage:", string.format("%.1f", player_data.drive_adjusted / 60000 * 100))
+		imgui.multi_color("Drive Cooldown:", player_data.drive_cooldown)
+		imgui.multi_color("Super Gauge:", player_data.super)
+		imgui.multi_color("Buff Duration:", player_data.buff)
+		imgui.multi_color("Debuff Duration:", player_data.debuff_timer)
+		imgui.unindent(indentation_unit)
+	end
+	imgui.unindent(indentation_unit)
+end
+
 local function build_player_section(player_index, player_data, hit_dt)
 	local cplayer = cPlayer[player_index]
 	local cteam = cTeam[player_index]
@@ -922,191 +1048,259 @@ local function build_player_section(player_index, player_data, hit_dt)
 	local opp_player_data = player_index == 0 and p2 or p1
 	local projectile_filter = player_index
 	
-	if imgui.tree_node(player_name) then
-		if imgui.tree_node("General Info") then
-			imgui.multi_color("Current HP:", player_data.current_HP)
-			imgui.multi_color("HP Cap:", player_data.HP_cap)
-			imgui.multi_color("HP Regen Cooldown:", player_data.HP_cooldown)
-			imgui.multi_color("Burnout:", tostring(player_data.burnout))
-			imgui.multi_color("Drive Gauge:", player_data.drive_adjusted)
-			imgui.multi_color("Drive Cooldown:", player_data.drive_cooldown)
-			imgui.multi_color("Super Gauge:", player_data.super)
-			imgui.multi_color("Buff Duration:", player_data.buff)
-			imgui.multi_color("Debuff Duration:", player_data.debuff_timer)
-			imgui.tree_pop()
+	local config_key = player_index == 0 and "display_p1_section" or "display_p2_section"
+	local opp_config_key = player_index == 0 and "display_p2_section" or "display_p1_section"
+	local hk_name = player_index == 0 and "toggle_p1" or "toggle_p2"
+	
+	local hk_str = hk.get_button_string(hk_name) or ""
+	local subbed = string.gsub(hk_str, "%s*[Aa]lpha%s*", "")
+	
+	if not config.options[config_key] then
+		if imgui.button(player_name .. " (" .. subbed .. ")") then
+			config.options[config_key] = true
+			mark_for_save()
 		end
-		if imgui.tree_node("State Info") then
-			imgui.multi_color("Action ID:", player_data.mActionId)
-			imgui.multi_color("Action Frame:", math.floor(read_sfix(player_data.mActionFrame)) .. " / " .. math.floor(read_sfix(player_data.mMarginFrame)) .. " (" .. math.floor(read_sfix(player_data.mEndFrame)) .. ")")
-			imgui.multi_color("Current Hitstop:", player_data.curr_hitstop .. " / " .. player_data.max_hitstop)
-			imgui.multi_color("Current Hitstun:", player_data.curr_hitstun .. " / " .. player_data.max_hitstun)
-			imgui.multi_color("Current Blockstun:", player_data.curr_blockstun .. " / " .. player_data.max_blockstun)
-			imgui.multi_color("Throw Protection Timer:", player_data.throw_invuln)
-			imgui.multi_color("Intangible Timer:", player_data.full_invuln)
-			imgui.tree_pop()
+		if not config.options[opp_config_key] and not config.options[config_key] then
+			imgui.same_line()
 		end
-		if imgui.tree_node("Movement Info") then
-			if player_data.dir == true then
-				imgui.multi_color("Facing:", "Right") else imgui.multi_color("Facing:", "Left")
-			end
-			if player_data.stance == 0 then
-				imgui.multi_color("Stance:", "Standing")
-			elseif player_data.stance == 1 then
-				imgui.multi_color("Stance:", "Crouching")
-			else
-				imgui.multi_color("Stance:", "Jumping")
-			end
-			imgui.multi_color("Position X:", string.format("%.2f", player_data.posX))
-			imgui.multi_color("Position Y:", string.format("%.2f", player_data.posY))
-			imgui.multi_color("Speed X:", string.format("%.2f", player_data.spdX))
-			imgui.multi_color("Speed Y:", string.format("%.2f", player_data.spdY))
-			imgui.multi_color("Acceleration X:", string.format("%.2f", player_data.aclX))
-			imgui.multi_color("Acceleration Y:", string.format("%.2f", player_data.aclY))
-			imgui.multi_color("Pushback:", string.format("%.2f", player_data.pushback))
-			imgui.multi_color("Self Pushback:", string.format("%.2f", player_data.self_pushback))
-			imgui.multi_color("Distance Between Players:", player_data.gap)
-			imgui.tree_pop()
+		return
+	else
+		if imgui.button("Hide " .. player_name .. " (" .. subbed .. ")") then
+			config.options[config_key] = false
+			mark_for_save()
 		end
-		if imgui.tree_node("Attack Info") then
-			get_hitbox_range(cplayer, cplayer.mpActParam, player_data or nil)
-			imgui.multi_color("Startup Frames:", player_data.startup_frames)
-			imgui.multi_color("Active Frames:", player_data.active_frames)
-			imgui.multi_color("Recovery Frames:", string.format("%.0f", player_data.recovery_frames))
-			imgui.multi_color("Total Frames:", string.format("%.0f", player_data.total_frames))
-			imgui.multi_color("Advantage:", player_data.advantage)
-			imgui.multi_color("Absolute Range:", string.format("%.2f", player_data.absolute_range or 0))
-			imgui.multi_color("Relative Range:", string.format("%.2f", player_data.relative_range or 0))
-			imgui.multi_color("Juggle Counter:", opp_player_data.juggle)
-			imgui.multi_color("Combo Hit Count:", player_data.combo_hit_count)
-			imgui.multi_color("Combo Attack Count:", player_data.combo_attack_count)
-			imgui.multi_color("Combo Starter Scaling:", 100 - player_data.combo_scale_start .. "%")
-			imgui.multi_color("Current Hit Scaling:", player_data.combo_scale_now .. "%")
-
-			local next_hit_scaling_calc = 100
-			if player_data.combo_attack_count == 1 then
-				if player_data.combo_scale_buff == 10 then
-					next_hit_scaling_calc = (100 - player_data.combo_scale_start)
-				else
-					next_hit_scaling_calc = (100 - player_data.combo_scale_start) - player_data.combo_scale_buff
-				end
-			elseif player_data.combo_attack_count > 1 then
-				next_hit_scaling_calc = (100 - player_data.combo_scale_start) - player_data.combo_scale_buff
-			else
-				next_hit_scaling_calc = 100 - player_data.combo_scale_buff
-			end
-			imgui.multi_color("Next Hit Scaling:", next_hit_scaling_calc .. "%")
-
-			if imgui.tree_node("Latest Attack Info") then
-				if hit_dt == nil then
-					imgui.text_colored("No hit yet", 0xFFAAFFFF)
-				else
-					imgui.multi_color("Damage:", hit_dt.DmgValue)
-					imgui.multi_color("Self Drive Gain:", hit_dt.FocusOwn)
-					imgui.multi_color("Opponent Drive Gain:", hit_dt.FocusTgt)
-					imgui.multi_color("Self Super Gain:", hit_dt.SuperOwn)
-					imgui.multi_color("Opponent Super Gain:", hit_dt.SuperTgt)
-					imgui.multi_color("Self Hitstop:", hit_dt.HitStopOwner)
-					imgui.multi_color("Opponent Hitstop:", hit_dt.HitStopTarget)
-					imgui.multi_color("Stun:", hit_dt.HitStun)
-					imgui.multi_color("Knockdown Duration:", hit_dt.DownTime)
-					imgui.multi_color("Juggle Limit:", hit_dt.JuggleLimit)
-					imgui.multi_color("Juggle Increase:", hit_dt.JuggleAdd)
-					imgui.multi_color("Juggle Start:", hit_dt.Juggle1st)
-				end
-				imgui.tree_pop()
-			end
-			imgui.tree_pop()
-		end
-		if player_data.chargeInfo:get_Count() > 0 then
-			if imgui.tree_node("Charge Info") then
-				for i=0,player_data.chargeInfo:get_Count() - 1 do
-					local value = player_data.chargeInfo:get_Values()._dictionary._entries[i].value
-					if value ~= nil then
-						imgui.multi_color("Move " .. i + 1 .. " Charge Time:", value.charge_frame)
-						imgui.multi_color("Move " .. i + 1 .. " Charge Keep Time:", value.keep_frame)
-					end
-				end
-				imgui.tree_pop()
-			end
-		end
-		if imgui.tree_node("Projectiles") then
-			for i, obj in pairs(cWork) do
-				if obj.owner_add ~= nil and obj.pl_no == projectile_filter then
-					local objEngine = obj.mpActParam.ActionPart._Engine
-					if imgui.tree_node("Projectile " .. i) then
-						imgui.multi_color("Action ID:", obj.mActionId)
-						imgui.multi_color("Action Frame:", math.floor(read_sfix(objEngine:get_ActionFrame())) .. " / " .. math.floor(read_sfix(objEngine:get_MarginFrame())) .. " (" .. math.floor(read_sfix(objEngine:get_ActionFrameNum())) .. ")")
-						imgui.multi_color("Position X:", obj.pos.x.v / 65536.0)
-						imgui.multi_color("Position Y:", obj.pos.y.v / 65536.0)
-						imgui.multi_color("Speed X:", obj.speed.x.v / 65536.0)
-						imgui.multi_color("Speed Y:", obj.speed.y.v / 65536.0)
-						imgui.multi_color("Current Hitstop:", obj.hit_stop .. " / " .. obj.hit_stop_org)
-						imgui.tree_pop()
-					end
-				end
-			end
-			imgui.tree_pop()
-		end
-		imgui.tree_pop()
 	end
+	
+	local general_config_key = player_index == 0 and "display_p1_general" or "display_p2_general"
+	imgui.indent(indentation_unit)
+	build_general_section(player_name, general_config_key, player_data)
+
+	local state_config_key = player_index == 0 and "display_p1_state" or "display_p2_state"
+
+	imgui.indent(indentation_unit)
+	local label = string.format("State (%s)##%s_state_info", config.options[state_config_key] and "Hide" or "Show", player_name)
+	local subbed = label.gsub(label, " (Show)", "")
+	if imgui.button(subbed) then
+		config.options[state_config_key] = not config.options[state_config_key]
+		mark_for_save()
+	end
+	
+	if config.options[state_config_key] then
+		imgui.indent(indentation_unit)
+		imgui.multi_color("Action ID:", player_data.mActionId)
+		imgui.multi_color("Frame:", math.floor(read_sfix(player_data.mActionFrame)) .. " / " .. math.floor(read_sfix(player_data.mMarginFrame)) .. " (" .. math.floor(read_sfix(player_data.mEndFrame)) .. ")")
+		imgui.multi_color("Hitstop:", player_data.curr_hitstop .. " / " .. player_data.max_hitstop)
+		imgui.multi_color("Hitstun:", player_data.curr_hitstun .. " / " .. player_data.max_hitstun)
+		imgui.multi_color("Blockstun:", player_data.curr_blockstun .. " / " .. player_data.max_blockstun)
+		imgui.multi_color("Throw Invul Timer:", player_data.throw_invuln)
+		imgui.multi_color("Intangible Timer:", player_data.full_invuln)
+		imgui.unindent(indentation_unit)
+	end
+	imgui.unindent(indentation_unit)
+	
+	local movement_config_key = player_index == 0 and "display_p1_movement" or "display_p2_movement"
+	
+	imgui.indent(indentation_unit)
+	if imgui.button(string.format("Movement (%s)##%s_movement_info", config.options[movement_config_key] and "Hide" or "Show", player_name)) then
+		config.options[movement_config_key] = not config.options[movement_config_key]
+		mark_for_save()
+	end
+	
+	if config.options[movement_config_key] then
+		imgui.indent(indentation_unit)
+		if player_data.dir == true then
+			imgui.multi_color("Facing:", "Right") 
+		else 
+			imgui.multi_color("Facing:", "Left")
+		end
+		if player_data.stance == 0 then
+			imgui.multi_color("Stance:", "Standing")
+		elseif player_data.stance == 1 then
+			imgui.multi_color("Stance:", "Crouching")
+		else
+			imgui.multi_color("Stance:", "Jumping")
+		end
+		imgui.multi_color("Position X:", string.format("%.2f", player_data.posX))
+		imgui.multi_color("Position Y:", string.format("%.2f", player_data.posY))
+		imgui.multi_color("Speed X:", string.format("%.2f", player_data.spdX))
+		imgui.multi_color("Speed Y:", string.format("%.2f", player_data.spdY))
+		imgui.multi_color("Accel X:", string.format("%.2f", player_data.aclX))
+		imgui.multi_color("Accel Y:", string.format("%.2f", player_data.aclY))
+		imgui.multi_color("Pushback:", string.format("%.2f", player_data.pushback))
+		imgui.multi_color("Self Pushback:", string.format("%.2f", player_data.self_pushback))
+		imgui.multi_color("Opponent Gap:", player_data.gap)
+		imgui.unindent(indentation_unit)
+	end
+	imgui.unindent(indentation_unit)
+
+	local attack_config_key = player_index == 0 and "display_p1_attack" or "display_p2_attack"
+
+	imgui.indent(indentation_unit)
+	if imgui.button(string.format("Attack (%s)##%s_attack_info", config.options[attack_config_key] and "Hide" or "Show", player_name)) then
+		config.options[attack_config_key] = not config.options[attack_config_key]
+		mark_for_save()
+	end
+	
+	if config.options[attack_config_key] then
+		imgui.indent(indentation_unit)
+		get_hitbox_range(cplayer, cplayer.mpActParam, player_data or nil)
+		imgui.multi_color("Startup Frames:", player_data.startup_frames)
+		imgui.multi_color("Active Frames:", player_data.active_frames)
+		imgui.multi_color("Recovery Frames:", string.format("%.0f", player_data.recovery_frames))
+		imgui.multi_color("Total Frames:", string.format("%.0f", player_data.total_frames))
+		imgui.multi_color("Advantage:", player_data.advantage)
+		imgui.multi_color("Absolute Range:", string.format("%.2f", player_data.absolute_range or 0))
+		imgui.multi_color("Relative Range:", string.format("%.2f", player_data.relative_range or 0))
+		imgui.multi_color("Juggle Counter:", opp_player_data.juggle)
+		imgui.multi_color("Combo Hit Count:", player_data.combo_hit_count)
+		imgui.multi_color("Combo Attack Count:", player_data.combo_attack_count)
+		imgui.multi_color("Starter Scaling:", 100 - player_data.combo_scale_start .. "%")
+		imgui.multi_color("Current Scaling:", player_data.combo_scale_now .. "%")
+
+		local next_hit_scaling_calc = 100
+		if player_data.combo_attack_count == 1 then
+			if player_data.combo_scale_buff == 10 then
+				next_hit_scaling_calc = (100 - player_data.combo_scale_start)
+			else
+				next_hit_scaling_calc = (100 - player_data.combo_scale_start) - player_data.combo_scale_buff
+			end
+		elseif player_data.combo_attack_count > 1 then
+			next_hit_scaling_calc = (100 - player_data.combo_scale_start) - player_data.combo_scale_buff
+		else
+			next_hit_scaling_calc = 100 - player_data.combo_scale_buff
+		end
+		imgui.multi_color("Next Hit Scaling:", next_hit_scaling_calc .. "%")
+		imgui.unindent(indentation_unit)
+	end
+	imgui.unindent(indentation_unit)
+
+	local latest_attack_config_key = player_index == 0 and "display_p1_latest_attack" or "display_p2_latest_attack"
+	
+	if config.options[attack_config_key] then
+		imgui.indent(indentation_unit)
+		if imgui.button(string.format("Latest Attack (%s)##%s_latest_attack_info", config.options[latest_attack_config_key] and "Hide" or "Show", player_name)) then
+			config.options[latest_attack_config_key] = not config.options[latest_attack_config_key]
+			mark_for_save()
+		end
+		
+		if config.options[latest_attack_config_key] then
+			imgui.indent(indentation_unit)
+			if hit_dt == nil then
+				imgui.text_colored("No hit yet", 0xFFAAFFFF)
+			else
+				imgui.multi_color("Damage:", hit_dt.DmgValue)
+				imgui.multi_color("Self Drive Gain:", hit_dt.FocusOwn)
+				imgui.multi_color("Opponent Drive Gain:", hit_dt.FocusTgt)
+				imgui.multi_color("Self Super Gain:", hit_dt.SuperOwn)
+				imgui.multi_color("Opponent Super Gain:", hit_dt.SuperTgt)
+				imgui.multi_color("Self Hitstop:", hit_dt.HitStopOwner)
+				imgui.multi_color("Opponent Hitstop:", hit_dt.HitStopTarget)
+				imgui.multi_color("Stun:", hit_dt.HitStun)
+				imgui.multi_color("Knockdown Duration:", hit_dt.DownTime)
+				imgui.multi_color("Juggle Limit:", hit_dt.JuggleLimit)
+				imgui.multi_color("Juggle Increase:", hit_dt.JuggleAdd)
+				imgui.multi_color("Juggle Start:", hit_dt.Juggle1st)
+			end
+			imgui.unindent(indentation_unit)
+		end
+		imgui.unindent(indentation_unit)
+	end
+
+	if player_data.chargeInfo:get_Count() > 0 then
+		local charge_config_key = player_index == 0 and "display_p1_charge" or "display_p2_charge"
+		
+		imgui.indent(indentation_unit)
+		if imgui.button(string.format("Charge (%s)##%s_charge_info", config.options[charge_config_key] and "Hide" or "Show", player_name)) then
+			config.options[charge_config_key] = not config.options[charge_config_key]
+			mark_for_save()
+		end
+		
+		if config.options[charge_config_key] then
+			imgui.indent(indentation_unit)
+			for i=0,player_data.chargeInfo:get_Count() - 1 do
+				local value = player_data.chargeInfo:get_Values()._dictionary._entries[i].value
+				if value ~= nil then
+					imgui.unindent(5)
+					imgui.multi_color("","Move " .. i + 1)
+					imgui.indent(10)
+					imgui.multi_color("Charge Time:", value.charge_frame)
+					imgui.multi_color("Keep Time:", value.keep_frame)
+					imgui.unindent(10)
+					imgui.indent(5)
+				end
+			end
+			imgui.unindent(indentation_unit)
+		end
+		imgui.unindent(indentation_unit)
+	end
+
+	local projectiles_config_key = player_index == 0 and "display_p1_projectiles" or "display_p2_projectiles"
+	
+	imgui.indent(indentation_unit)
+	if imgui.button(string.format("Projectiles (%s)##%s_projectiles", config.options[projectiles_config_key] and "Hide" or "Show", player_name)) then
+		config.options[projectiles_config_key] = not config.options[projectiles_config_key]
+		mark_for_save()
+	end
+	
+	if config.options[projectiles_config_key] then
+		imgui.indent(indentation_unit)
+		for i, obj in pairs(cWork) do
+			if obj.owner_add ~= nil and obj.pl_no == projectile_filter then
+				local objEngine = obj.mpActParam.ActionPart._Engine
+				imgui.text("Projectile " .. i)
+				imgui.indent(indentation_unit)
+				imgui.multi_color("Action ID:", obj.mActionId)
+				imgui.multi_color("Action Frame:", math.floor(read_sfix(objEngine:get_ActionFrame())) .. " / " .. math.floor(read_sfix(objEngine:get_MarginFrame())) .. " (" .. math.floor(read_sfix(objEngine:get_ActionFrameNum())) .. ")")
+				imgui.multi_color("Position X:", obj.pos.x.v / 65536.0)
+				imgui.multi_color("Position Y:", obj.pos.y.v / 65536.0)
+				imgui.multi_color("Speed X:", obj.speed.x.v / 65536.0)
+				imgui.multi_color("Speed Y:", obj.speed.y.v / 65536.0)
+				imgui.multi_color("Current Hitstop:", obj.hit_stop .. " / " .. obj.hit_stop_org)
+				imgui.unindent(indentation_unit)
+			end
+		end
+		imgui.unindent(indentation_unit)
+	end
+	imgui.unindent(indentation_unit)
 end
 
-local function build_toggles()
-	changed, config.options.display_player_info = imgui.checkbox(string.format("Display Main Window", hk.hotkeys.toggle_player_info), config.options.display_player_info)
-	if changed then mark_for_save() end
-	imgui.same_line(); hk.hotkey_setter("toggle_player_info", nil, "")
+local function build_player_info_window()
+	imgui.set_next_window_size({200, 0})
+	imgui.begin_window("Player Info", true, 8|64)
+	build_vitals_section()
+	build_player_section(0, p1, p1_hit_dt)
+	build_player_section(1, p2, p2_hit_dt)
+	imgui.end_window()
 end
 
-local function build_options_menu()
-    if not imgui.tree_node("Info Display") then return false end
-	build_toggles()
-	imgui.tree_pop()
+local function build_handler()
+	if config.options.display_player_info and not is_paused() then build_player_info_window() end
 end
 
-initialize()
-
-re.on_draw_ui(function()
-	build_options_menu()
-end)
-
-re.on_frame(function()
-	save_handler()
+local function hotkey_handler()
 	if hk.check_hotkey("toggle_player_info") then
 		config.options.display_player_info = not config.options.display_player_info
 		mark_for_save()
 	end
+	if hk.check_hotkey("toggle_vitals") then
+		config.options.display_vitals = not config.options.display_vitals
+		mark_for_save()
+	end
+	if hk.check_hotkey("toggle_p1") then
+		config.options.display_p1_section = not config.options.display_p1_section
+		mark_for_save()
+	end
+	if hk.check_hotkey("toggle_p2") then
+		config.options.display_p2_section = not config.options.display_p2_section
+		mark_for_save()
+	end
+end
 
-    if sPlayer.prev_no_push_bit ~= 0 then
-		handle_player_data()
-		
-		if config.options.display_player_info and not is_paused() then
-			imgui.begin_window("Player Data", true, 1|8)
-			-- Vitals info
-			imgui.set_next_item_open(true, 2)
-			if not imgui.tree_node("Vitals") then return false end
-			imgui.multi_color("Gap:", string.format("%.0f", p1.gap) .. " (" .. string.format("%.0f", p1.gap_pct) .. "%)")
-			imgui.multi_color("Advantage:", p1.advantage)
-			if (p1.dir and p1.posX <= left_wall_dr_splat_pos) or (not p1.dir and p1.posX >= right_wall_dr_splat_pos) then
-				imgui.multi_color("P1 Pos:", string.format("%.1f", p1.posX) or "", 0XFFFFEA00)
-			else
-				imgui.multi_color("P1 Pos:", string.format("%.1f", p1.posX) or "")
-			end
-			imgui.multi_color("P1 Drive:", p1.drive_adjusted, get_drive_color(p1.drive_adjusted))
-			imgui.multi_color("P1 Super:", p1.super, get_super_color(p2.super))
-			if (p2.dir and p2.posX <= left_wall_dr_splat_pos) or (not p2.dir and p2.posX >= right_wall_dr_splat_pos) then
-				imgui.multi_color("P2 Pos:", string.format("%.1f", p2.posX) or "", 0XFFFFEA00)
-			else
-				imgui.multi_color("P2 Pos:", string.format("%.1f", p2.posX) or "")
-			end
-			imgui.multi_color("P2 Drive:", p2.drive_adjusted, get_drive_color(p2.drive_adjusted))
-			imgui.multi_color("P2 Super:", p2.super, get_super_color(p2.super))
-			imgui.tree_pop()
-			
-			-- Player 1 Info
-			build_player_section(0, p1, p1_hit_dt)
-			build_player_section(1, p2, p2_hit_dt)
-			
-		imgui.end_window()
-		end
-    end
+initialize()
+
+re.on_draw_ui(function() build_options_menu() end)
+
+re.on_frame(function()
+    if sPlayer.prev_no_push_bit == 0 then return end
+	save_handler(); hotkey_handler(); player_data_handler(); build_handler()
 end)

@@ -95,15 +95,22 @@ function GameObjects.map_player_data(cPlayer, cTeam)
     local data_vals = {}
     for player_index = 0, 1 do
         local player = cPlayer[player_index]
-        if not player then 
-            data_vals[player_index] = { hp_current = 0, hp_max = 0, combo_count = 0 }
+        if not player then
+            data_vals[player_index] = { hp_current = 0, hp_max = 0, combo_count = 0, incapacitated = false }
         else
             local team = cTeam and cTeam[player_index] or nil
             local data = {}
             data.hp_current = player.vital_new or 0
             data.hp_max = player.vital_max or 0
             data.dir = Utils.bitand(player.BitValue or 0, 128) == 128
-            data.drive_adjusted = (player.incapacitated) and (player.focus_new - 60000) or player.focus_new
+            -- Store incapacitated so drive delta can detect burnout-boundary crossings.
+            data.incapacitated = player.incapacitated or false
+            -- drive_adjusted encodes two different quantities:
+            --   normal:  focus_new (drive gauge, 0–60000)
+            --   burnout: focus_new - 60000 (recovery timer shifted negative)
+            -- Keeping the shift so existing display code is unchanged; the delta
+            -- calculation now uses the incapacitated flag to handle this correctly.
+            data.drive_adjusted = data.incapacitated and (player.focus_new - 60000) or player.focus_new
             data.stance = player.pose_st
             data.super = team and team.mSuperGauge or 0
             data.combo_count = team and team.mComboCount or 0
@@ -231,8 +238,8 @@ end
 function UI.save_handler()
     if UI.save_pending then
         UI.save_timer = UI.save_timer - (1.0 / 60.0)
-        if UI.save_timer <= 0 then 
-            Config.save() 
+        if UI.save_timer <= 0 then
+            Config.save()
             UI.save_pending = false
         end
     end
@@ -275,7 +282,7 @@ function UI.process_columns(values, is_color)
         imgui.table_set_column_index(i - 1)
         local w = UI.col_widths[i]
         local text = (v == 0) and "--" or string.format("%.0f", v)
-        
+
         UI.center_text(text, w, function()
             if is_color and v ~= 0 then
                 local color = UI.value_to_hex_color(v, UI.gradient_max[i + 1])
@@ -326,18 +333,44 @@ function UI.render_combo_window_table(state)
             imgui.pop_font()
         end
 
-        local function adjust_finish(finish, start)
-            if finish < 0 then finish = finish + 60000 end
-            return finish - start
+        -- Drive delta helper.
+        --
+        -- drive_adjusted stores two fundamentally different quantities:
+        --   • Normal state:  the drive gauge value  (0 – 60 000)
+        --   • Burnout state: the recovery timer shifted by -60 000  (–60 000 – 0)
+        --
+        -- A plain finish-minus-start breaks in three situations:
+        --   1. Combo ends in burnout  → finish < 0, old code added 60 000 to "fix" it, but
+        --      that actually cancels the -60 000 shift and returns the raw timer, not a gauge delta.
+        --   2. Burnout entered mid-combo → start is a gauge value, finish is a timer value;
+        --      the numbers are incommensurable.
+        --   3. Burnout exits mid-combo → same incommensurability in reverse.
+        --
+        -- Fix: when both endpoints share the same incapacitated state the -60 000 shift cancels
+        -- in the subtraction and finish-minus-start is correct.  When the state changed the two
+        -- values cannot be meaningfully compared, so we return 0 (displayed as "--").
+        local function adjust_drive(finish_val, start_val, finish_incap, start_incap)
+            if finish_incap ~= start_incap then return 0 end
+            return finish_val - start_val
         end
 
         imgui.table_next_row()
         UI.get_large_font()
         UI.process_columns({
             (is_p1 and state.finish.p1.combo_damage or state.finish.p2.combo_damage) or 0,
-            adjust_finish(state.finish.p1.drive_adjusted or 0, state.start.p1.drive_adjusted or 0),
+            adjust_drive(
+                state.finish.p1.drive_adjusted or 0,
+                state.start.p1.drive_adjusted or 0,
+                state.finish.p1.incapacitated,
+                state.start.p1.incapacitated
+            ),
             (state.finish.p1.super or 0) - (state.start.p1.super or 0),
-            adjust_finish(state.finish.p2.drive_adjusted or 0, state.start.p2.drive_adjusted or 0),
+            adjust_drive(
+                state.finish.p2.drive_adjusted or 0,
+                state.start.p2.drive_adjusted or 0,
+                state.finish.p2.incapacitated,
+                state.start.p2.incapacitated
+            ),
             (state.finish.p2.super or 0) - (state.start.p2.super or 0),
             math.abs((state.finish.p1.pos_x or 0) - (state.start.p1.pos_x or 0)),
             math.abs((state.finish.p2.pos_x or 0) - (state.start.p2.pos_x or 0)),
@@ -352,7 +385,7 @@ end
 function UI.render_player_combo_window(player_index, title, x, y, toggle_setting, minimal_setting)
     local state = ComboData.player_states[player_index]
     if not state or not (state.started or state.finished) then return end
-    
+
     if UI.should_hide_combo_window(state) then
         state.finished = false
         state.timer_remaining = nil
@@ -365,12 +398,11 @@ function UI.render_player_combo_window(player_index, title, x, y, toggle_setting
     if imgui.begin_window(title, true, 1 | 8 | 32) then
         if UI.is_toggle_view_clicked() then
             Config.settings[minimal_setting] = not Config.settings[minimal_setting]
-            
-            -- Added action_notify for visual feedback
+
             local side = (player_index == 0) and "P1 " or "P2 "
             local status = Config.settings[minimal_setting] and "Disabled" or "Enabled"
             UI.action_notify(side .. "Minimal View " .. status, "alert_on_minimal")
-            
+
             UI.mark_for_save()
         end
         UI.render_combo_window_table(state)
@@ -445,15 +477,15 @@ end
 function UI.render_settings()
     if imgui.tree_node("Attack Info") then
         local changed = false
-        
+
         imgui.text("Enable (F2)")
         imgui.same_line()
         changed, Config.settings.toggle_all = imgui.checkbox("##enable", Config.settings.toggle_all)
-        if changed then 
+        if changed then
             UI.action_notify("Display " .. (Config.settings.toggle_all and "Enabled" or "Disabled"), "alert_on_toggle")
-            UI.mark_for_save() 
+            UI.mark_for_save()
         end
-        
+
         if Config.settings.toggle_all then
             imgui.text("Show/Hide")
             imgui.same_line()
@@ -461,7 +493,7 @@ function UI.render_settings()
             changed_p1, Config.settings.toggle_p1 = imgui.checkbox("P1##show_p1", Config.settings.toggle_p1)
             imgui.same_line()
             changed_p2, Config.settings.toggle_p2 = imgui.checkbox("P2##show_p2", Config.settings.toggle_p2)
-            
+
             if changed_p1 then
                 UI.action_notify("P1 Window " .. (Config.settings.toggle_p1 and "Shown" or "Hidden"), "alert_on_toggle")
                 UI.mark_for_save()
@@ -470,14 +502,14 @@ function UI.render_settings()
                 UI.action_notify("P2 Window " .. (Config.settings.toggle_p2 and "Shown" or "Hidden"), "alert_on_toggle")
                 UI.mark_for_save()
             end
-            
+
             imgui.text("Minimal View")
             imgui.same_line()
             local m_changed_p1, m_changed_p2 = false, false
             m_changed_p1, Config.settings.toggle_minimal_view_p1 = imgui.checkbox("P1##minimal_p1", Config.settings.toggle_minimal_view_p1)
             imgui.same_line()
             m_changed_p2, Config.settings.toggle_minimal_view_p2 = imgui.checkbox("P2##minimal_p2", Config.settings.toggle_minimal_view_p2)
-            
+
             if m_changed_p1 then
                 UI.action_notify("P1 Minimal View " .. (Config.settings.toggle_minimal_view_p1 and "Enabled" or "Disabled"), "alert_on_minimal")
                 UI.mark_for_save()
@@ -486,17 +518,17 @@ function UI.render_settings()
                 UI.action_notify("P2 Minimal View " .. (Config.settings.toggle_minimal_view_p2 and "Enabled" or "Disabled"), "alert_on_minimal")
                 UI.mark_for_save()
             end
-            
+
             -- Timer Duration
             imgui.text("Clear After:")
             imgui.same_line(); imgui.push_item_width(30)
             changed, Config.settings.combo_timer_duration = imgui.drag_int("##combo_timer_duration", Config.settings.combo_timer_duration, 1, 0, 120)
             imgui.pop_item_width(); imgui.same_line(); imgui.text("Seconds")
             if changed then UI.mark_for_save() end
-            
+
             imgui.same_line()
-            if imgui.button("Clear Now") then 
-                ComboData.default_state() 
+            if imgui.button("Clear Now") then
+                ComboData.default_state()
                 UI.action_notify("Data Cleared", "alert_on_toggle")
             end
         end
@@ -516,7 +548,7 @@ end)
 
 re.on_frame(function()
     local sPlayer, cPlayer, cTeam = GameObjects.get_objects()
-    
+
     UI.handle_hotkeys()
     UI.update_combo_timers()
     UI.tooltip_handler()

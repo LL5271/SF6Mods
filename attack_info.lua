@@ -95,42 +95,35 @@ function GameObjects.map_player_data(cPlayer, cTeam)
     local data_vals = {}
     for player_index = 0, 1 do
         local player = cPlayer[player_index]
-        if not player then
-            data_vals[player_index] = { hp_current = 0, hp_max = 0, combo_count = 0, incapacitated = false }
-        else
-            local team = cTeam and cTeam[player_index] or nil
-            local data = {}
-            data.hp_current = player.vital_new or 0
-            data.hp_max = player.vital_max or 0
-            data.dir = Utils.bitand(player.BitValue or 0, 128) == 128
-            -- Store incapacitated so drive delta can detect burnout-boundary crossings.
-            data.incapacitated = player.incapacitated or false
-            -- drive_adjusted encodes two different quantities:
-            --   normal:  focus_new (drive gauge, 0–60000)
-            --   burnout: focus_new - 60000 (recovery timer shifted negative)
-            -- Keeping the shift so existing display code is unchanged; the delta
-            -- calculation now uses the incapacitated flag to handle this correctly.
-            data.drive_adjusted = data.incapacitated and (player.focus_new - 60000) or player.focus_new
-            data.stance = player.pose_st
-            data.super = team and team.mSuperGauge or 0
-            data.combo_count = team and team.mComboCount or 0
-            data.death_count = team and team.mDeathCount or 0
-            data.combo_damage = team and team.mComboDamage or 0
-            data.down_count = team and team.mDownCount or 0
-            data.pos_x = player.pos and (player.pos.x.v / 65536.0) or 0
-            data.gap = (player.vs_distance and player.vs_distance.v or 0) / 65536.0
-            data.advantage = 0
-            if GameObjects.TrainingManager and GameObjects.TrainingManager._tCommon then
-                local snap = GameObjects.TrainingManager._tCommon.SnapShotDatas
-                if snap and snap[0] then
-                    local meter = snap[0]._DisplayData.FrameMeterSSData.MeterDatas
-                    if meter and meter[player_index] then
-                        local stun_str = string.gsub(meter[player_index].StunFrame or "0", "F", "")
-                        data.advantage = tonumber(stun_str) or 0
-                    end
+        -- if not player then
+        --     data_vals[player_index] = { hp_current = 0, hp_max = 0, combo_count = 0, incapacitated = false }
+        -- else
+        local team = cTeam and cTeam[player_index] or nil
+        local data = {}
+        data.hp_current = player.vital_new or 0
+        data.hp_max = player.vital_max or 0
+        data.dir = Utils.bitand(player.BitValue or 0, 128) == 128
+        data.incapacitated = player.incapacitated or false
+        data.drive_adjusted = data.incapacitated and (player.focus_new - 60000) or player.focus_new
+        data.stance = player.pose_st or ""
+        data.super = team and team.mSuperGauge or 0
+        data.combo_count = team and team.mComboCount or 0
+        data.death_count = team and team.mDeathCount or 0
+        data.combo_damage = team and team.mComboDamage or 0
+        data.down_count = team and team.mDownCount or 0
+        data.pos_x = player.pos and (player.pos.x.v / 65536.0) or 0
+        data.gap = (player.vs_distance and player.vs_distance.v or 0) / 65536.0
+        data.advantage = 0
+        if GameObjects.TrainingManager and GameObjects.TrainingManager._tCommon then
+            local snap = GameObjects.TrainingManager._tCommon.SnapShotDatas
+            if snap and snap[0] then
+                local meter = snap[0]._DisplayData.FrameMeterSSData.MeterDatas
+                if meter and meter[player_index] then
+                    local stun_str = string.gsub(meter[player_index].StunFrame or "0", "F", "")
+                    data.advantage = tonumber(stun_str) or 0
                 end
             end
-            data_vals[player_index] = data
+        data_vals[player_index] = data
         end
     end
     return data_vals[0], data_vals[1]
@@ -189,9 +182,9 @@ UI.tooltip_timer = 0
 UI.tooltip_msg = ""
 UI.right_click_this_frame = false
 UI.combo_window_fixed_width = 0
-UI.large_font = 28
+UI.large_font = 30
 UI.medium_font = 22
-UI.small_font = 15
+UI.small_font = 17
 UI.header_labels = {"Damage","P1 Drive","P1 Super","P2 Drive","P2 Super", "P1 Carry","P2 Carry","Gap", "Adv"}
 UI.gradient_max = {100, 10000, 60000, 30000, 60000, 30000, 1530, 1530, 490, 80}
 UI.col_widths = {55, 70, 70, 70, 70, 70, 53, 53, 53, 70}
@@ -268,11 +261,9 @@ function UI.value_to_hex_color(v, max_val)
     local t = math.max(0, math.min(v / max_val, 1))
     local r, g = 0, 0
     if t < 0.25 then
-        r = 255
-        g = math.floor((t / 0.25) * 255)
+        r = 255; g = math.floor((t / 0.25) * 255)
     else
-        r = math.floor((1 - (t - 0.25) / 0.75) * 255)
-        g = 255
+        r = math.floor((1 - (t - 0.25) / 0.75) * 255); g = 255
     end
     return 0xFF000000 + (g << 8) + r
 end
@@ -281,7 +272,7 @@ function UI.process_columns(values, is_color)
     for i, v in ipairs(values) do
         imgui.table_set_column_index(i - 1)
         local w = UI.col_widths[i]
-        local text = (v == 0) and "--" or string.format("%.0f", v)
+        local text = (v == 0) and "-" or string.format("%.0f", v)
 
         UI.center_text(text, w, function()
             if is_color and v ~= 0 then
@@ -553,10 +544,10 @@ re.on_frame(function()
     UI.update_combo_timers()
     UI.tooltip_handler()
     UI.save_handler()
-    UI.render_windows()
     UI.draw_action_notify()
-
+    
     if sPlayer and sPlayer.prev_no_push_bit ~= 0 then
+        UI.render_windows()
         local p1, p2 = GameObjects.map_player_data(cPlayer, cTeam)
         ComboData.update_state(p1, p2)
     end

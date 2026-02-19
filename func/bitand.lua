@@ -1,4 +1,4 @@
-function bitand(a, b)
+local function bitand(a, b)
     local result, bitval = 0, 1
     while a > 0 and b > 0 do
         if a % 2 == 1 and b % 2 == 1 then result = result + bitval end

@@ -1,6 +1,8 @@
-function tooltip_debugger(t)
+local imgui = imgui
+
+local function tooltip_debugger(t)
     imgui.begin_tooltip()
-    imgui.text(tostring(t))
+    imgui.set_tooltip(t)
     imgui.end_tooltip()
 end
 

@@ -2,35 +2,35 @@
 local MOD_NAME = "Hitbox Viewer"
 local CONFIG_PATH = "better_disp_hitboxes.json"
 local SAVE_DELAY = 0.5
-
-local this, gBattle, pause_manager = {}
+local gBattle, pause_manager
+local this =  {}
 this.prev_key_states, this.presets, this.preset_names, this.string_buffer = {}, {}, {}, {}
 this.current_preset_name, this.previous_preset_name, this.new_preset_name, this.rename_temp_name = "", "", "", ""
 this.initialized, this.rename_mode, this.create_new_mode, this.delete_confirm_name = false, false, false, false
 this.save_pending, this.save_timer, this.config = nil, nil, nil
 this.tooltip_timer, this.tooltip_msg = 0, ""
+this.backup_filename = ""
 
 -- 
 -- Begin HK
--- 
+--
+
 if not hk then
 	local kb, mouse, pad
 	local m_up, m_down, m_trig
-	local gp_up, gp_down, gp_trig 
+	local gp_up, gp_down, gp_trig
 	local kb_state = {down = {}, released = {}, triggered={}}
 	local gp_state = {down = {}, released = {}, triggered={}}
 	local mb_state = {down = {}, released = {}, triggered={}}
-	local modifiers = {}
-	local temp_data = {}
 
 	--Merge hashed dictionaries. table_b will be merged into table_a
 	local function merge_tables(table_a, table_b, no_overwrite)
 		table_a = table_a or {}
 		table_b = table_b or {}
-		if no_overwrite then 
-			for key_b, value_b in pairs(table_b) do 
+		if no_overwrite then
+			for key_b, value_b in pairs(table_b) do
 				if table_a[key_b] == nil then
-					table_a[key_b] = value_b 
+					table_a[key_b] = value_b
 				end
 			end
 		else
@@ -42,20 +42,20 @@ if not hk then
 	--Merge hashed dictionaries. table_b will be merged into table_a
 	local function merge_tables_recursively(table_a, table_b, no_overwrite)
 		local searched = {}
-		
+
 		local function recurse(tbl_a, tbl_b)
 			if searched[tbl_b] then return searched[tbl_b] end
 			searched[tbl_b] = tbl_a
-			
-			if no_overwrite then 
-				for key_b, value_b in pairs(tbl_b) do 
+
+			if no_overwrite then
+				for key_b, value_b in pairs(tbl_b) do
 					if tbl_a[key_b] == nil then
 						tbl_a[key_b] = type(value_b)=="table" and recurse({}, value_b) or value_b
 					end
 				end
 			else
-				for key_b, value_b in pairs(tbl_b) do 
-					tbl_a[key_b] = type(value_b)=="table" and recurse((type(tbl_a[key_b])=="table" and tbl_a[key_b] or {}), value_b) or value_b 
+				for key_b, value_b in pairs(tbl_b) do
+					tbl_a[key_b] = type(value_b)=="table" and recurse((type(tbl_a[key_b])=="table" and tbl_a[key_b] or {}), value_b) or value_b
 				end
 			end
 			return tbl_a
@@ -74,7 +74,7 @@ if not hk then
 				local raw_value = field:get_data(nil)
 				if raw_value ~= nil then
 					local name = field:get_name()
-					enum[name] = raw_value 
+					enum[name] = raw_value
 					table.insert(names, name)
 				end
 			end
@@ -83,6 +83,7 @@ if not hk then
 	end
 
 	local hotkeys = {}
+	local modifiers = {}
 	local default_hotkeys = {}
 	local backup_hotkeys = {}
 	local hotkeys_down = {}
@@ -110,7 +111,7 @@ if not hk then
 	buttons.RDown = 131104
 	buttons.RRight = 262272
 	buttons.Select = buttons.CLeft
-	buttons.Start = buttons.CRight 
+	buttons.Start = buttons.CRight
 	buttons["X (Square)"] = buttons.RLeft
 	buttons["Y (Triangle)"] = buttons.RUp
 	buttons["A (X)"] = buttons.RDown or buttons.Decide
@@ -132,18 +133,18 @@ if not hk then
 		gp_state.down = {}
 		gp_state.released = {}
 		gp_state.triggered = {}
-		
+
 		for action_name, key_name in pairs(hotkeys) do
 			if buttons[key_name] ~= nil then
 				gp_state.down[buttons[key_name] ] = false
 				gp_state.released[buttons[key_name] ] = false
 				gp_state.triggered[buttons[key_name] ] = false
-			end 
+			end
 			if keys[key_name] ~= nil then
 				kb_state.down[keys[key_name] ] = false
 				kb_state.released[keys[key_name] ] = false
 				kb_state.triggered[keys[key_name] ] = false
-			end 
+			end
 			if mbuttons[key_name] ~= nil then
 				mb_state.down[mbuttons[key_name] ] = false
 				mb_state.released[mbuttons[key_name] ] = false
@@ -158,7 +159,7 @@ if not hk then
 		local searched = {}
 		local function recurse(tbl, d_tbl)
 			for key, value in pairs(d_tbl) do
-				if type(tbl[key]) ~= type(value) then 
+				if type(tbl[key]) ~= type(value) then
 					if type(value) == "table" and not searched[value] then
 						searched[value] = true
 						tbl[key] = recurse({}, value)
@@ -175,15 +176,23 @@ if not hk then
 		return recurse(main_tbl, defaults_tbl)
 	end
 
-	local hk_data = recurse_def_settings(json.load_file("Hotkeys_data.json") or {}, def_hk_data)
+	-- Start with defaults, do NOT load from file here
+	local hk_data = def_hk_data
 
-	for act_name, button_name in pairs(hk_data.modifier_actions) do
-		hotkeys[act_name] = button_name
+	-- Sync modifiers from the hotkeys table (should be called after setup_hotkeys)
+	local function sync_modifiers_from_hotkeys()
+		hk_data.modifier_actions = {}
+		for action, key in pairs(hotkeys) do
+			if action:match("_%$$$") then  -- ends with "_$" (modifier)
+				hk_data.modifier_actions[action] = key
+			end
+		end
+		json.dump_file("Hotkeys_data.json", hk_data)
 	end
 
 	--Find the index containing a value (or value as a field) in a table
 	local function find_index(tbl, value, key)
-		if key ~= nil then 
+		if key ~= nil then
 			for i, item in ipairs(tbl) do
 				if item[key] == value then
 					return i
@@ -224,7 +233,7 @@ if not hk then
 		end
 	end
 
-	local function setup_hotkeys(hotkey_table, default_hotkey_table) 
+	local function setup_hotkeys(hotkey_table, default_hotkey_table)
 		if not default_hotkey_table then
 				default_hotkey_table = {}
 			for key, value in pairs(hotkey_table) do
@@ -232,10 +241,10 @@ if not hk then
 			end
 		end
 		default_hotkeys = merge_tables(default_hotkeys, default_hotkey_table)
-		for key, value in pairs(default_hotkey_table) do 
-			if hotkey_table[key] == nil then 
+		for key, value in pairs(default_hotkey_table) do
+			if hotkey_table[key] == nil then
 				hotkey_table[key] = value or nil
-			end 
+			end
 		end
 		hotkeys = merge_tables(hotkeys, hotkey_table)
 		setup_active_keys_tbl()
@@ -273,7 +282,7 @@ if not hk then
 
 	--Checks if an action's binding is released
 	local function chk_up(action_name)
-		if hotkeys_up[action_name] == nil then 
+		if hotkeys_up[action_name] == nil then
 			local key_name = hotkeys[action_name]
 			hotkeys_up[action_name] = kb_state.released[keys[key_name ] ]  or gp_state.released[buttons[key_name ] ] or mb_state.released[mbuttons[key_name ] ]
 		end
@@ -282,7 +291,7 @@ if not hk then
 
 	--Checks if an action's binding is just down
 	local function chk_trig(action_name)
-		if hotkeys_trig[action_name] == nil then 
+		if hotkeys_trig[action_name] == nil then
 			local key_name = hotkeys[action_name]
 			hotkeys_trig[action_name] = kb_state.triggered[keys[key_name ] ]  or gp_state.triggered[buttons[key_name ] ] or mb_state.triggered[mbuttons[key_name ] ]
 		end
@@ -303,7 +312,7 @@ if not hk then
 				hotkeys_trig[action_name] = (kb_state.triggered[keys[key_name ] ]  or gp_state.triggered[buttons[key_name ] ] or mb_state.triggered[mbuttons[key_name ] ]) and (not hotkeys[action_name.."_$"] or check_hotkey(action_name.."_$", true))
 			end
 			return hotkeys_trig[action_name]
-		elseif hotkeys_up[action_name] == nil then 
+		elseif hotkeys_up[action_name] == nil then
 			hotkeys_up[action_name] = (kb_state.released[keys[key_name ] ]  or gp_state.released[buttons[key_name ] ] or mb_state.released[mbuttons[key_name ] ]) and (not hotkeys[action_name.."_$"] or check_hotkey(action_name.."_$", true))
 		end
 		return hotkeys_up[action_name]
@@ -339,27 +348,27 @@ if not hk then
 
 	--Displays an imgui button that you can click then and press a button to assign a button to an action
 	local function hotkey_setter(action_name, hold_action_name, fake_name, title_tooltip)
-		
+
 		local key_updated = false
 		local is_down = check_hotkey(action_name, true) and (not hold_action_name or check_hotkey(hold_action_name, true))
 		local disp_name = (fake_name and ((type(fake_name)~="string") and "" or fake_name)) or action_name
 		local is_mod_1 = (action_name:sub(-2, -1) == "_$")
 		local is_mod_2 = (action_name:sub(-4, -1) == "_$_$")
 		local default = default_hotkeys[action_name]
-		
+
 		local had_hold = not not hold_action_name
 		hold_action_name = hold_action_name and ((hotkeys[hold_action_name] ~= "[Not Bound]") and (hotkeys[hold_action_name] ~= "[Press Input]")) and hold_action_name
 		local modifier_hotkey = hold_action_name and get_button_string(hold_action_name)
 		modifiers[action_name] = hold_action_name
-		
+
 		if is_down then imgui.begin_rect(); imgui.begin_rect() end
 		imgui.push_id(action_name)
 			hotkeys[action_name] = hotkeys[action_name] or default
 			if hotkeys[action_name] == "[Press Input]" then
 				local up = pad and pad:call("get_ButtonUp")
 				if up and up ~= 0 then
-					for button_name, id in pairs(buttons) do 
-						if (up | id) == up then 
+					for button_name, id in pairs(buttons) do
+						if (up | id) == up then
 							hotkeys[action_name] = button_name
 							key_updated = true
 							goto exit
@@ -367,25 +376,25 @@ if not hk then
 					end
 				end
 				if mouse and m_up and m_up ~= 0 then
-					for button_name, id in pairs(mbuttons) do 
-						if (m_up | id) == m_up then 
+					for button_name, id in pairs(mbuttons) do
+						if (m_up | id) == m_up then
 							hotkeys[action_name] = button_name
 							key_updated = true
 							goto exit
 						end
 					end
 				end
-				for key_name, id in pairs(keys) do 
-					if kb and kb:call("isRelease", id) then 
+				for key_name, id in pairs(keys) do
+					if kb and kb:call("isRelease", id) then
 						hotkeys[action_name] = key_name
 						key_updated = true
 						goto exit
 					end
 				end
-				
+
 			end
 			::exit::
-			
+
 			if disp_name ~= "" then
 				imgui.text((disp_name) .. ": ")
 				if title_tooltip and imgui.is_item_hovered() then
@@ -393,7 +402,7 @@ if not hk then
 				end
 				imgui.same_line()
 			end
-			
+
 			if key_updated then
 				if is_mod_1 then
 					hk_data.modifier_actions[action_name] = hotkeys[action_name]
@@ -401,20 +410,20 @@ if not hk then
 				end
 				setup_active_keys_tbl()
 			end
-			
+
 			if not is_mod_2 and hotkeys[action_name.."_$"] then
 				hotkey_setter(action_name.."_$", nil, true)
 				imgui.same_line()
 				imgui.text("+")
 				imgui.same_line()
 			end
-			
+
 			if imgui.button( ((modifier_hotkey and (modifier_hotkey .. " + ")) or "") .. hotkeys[action_name]) then
-				if hotkeys[action_name] == "[Press Input]" then 
+				if hotkeys[action_name] == "[Press Input]" then
 					hotkeys[action_name] = backup_hotkeys[action_name]
 				else
-					for name, action_n in pairs(hotkeys) do 
-						if action_n == "[Press Input]" then 
+					for name, action_n in pairs(hotkeys) do
+						if action_n == "[Press Input]" then
 							hotkeys[name] = backup_hotkeys[name]
 						end
 					end
@@ -422,10 +431,10 @@ if not hk then
 					hotkeys[action_name] = "[Press Input]"
 				end
 			end
-			if imgui.is_item_hovered() then 
-				imgui.set_tooltip(hotkeys[action_name]=="[Press Input]" and "Click to cancel" or "Set " .. (is_mod_1 and "Modifier" or "Hotkey").."\nRight click for options") 
+			if imgui.is_item_hovered() then
+				imgui.set_tooltip(hotkeys[action_name]=="[Press Input]" and "Click to cancel" or "Set " .. (is_mod_1 and "Modifier" or "Hotkey").."\nRight click for options")
 			end
-			if imgui.begin_popup_context_item(action_name) then  
+			if imgui.begin_popup_context_item(action_name) then
 				if hotkeys[action_name] ~= "[Not Bound]" and not hotkeys[action_name.."_$_$"] and imgui.menu_item("Clear") then
 					if is_mod_1 then
 						hotkeys[action_name], hk_data.modifier_actions[action_name], hotkeys[action_name.."_$"], hk_data.modifier_actions[action_name.."_$"]  = hotkeys[action_name.."_$"], hk_data.modifier_actions[action_name.."_$"]
@@ -435,7 +444,7 @@ if not hk then
 					end
 					key_updated = true
 				end
-				if not is_mod_2 and default_hotkeys[action_name] and imgui.menu_item("Reset to Default") then 
+				if not is_mod_2 and default_hotkeys[action_name] and imgui.menu_item("Reset to Default") then
 					hotkeys[action_name] = default_hotkeys[action_name]
 					key_updated = true
 				end
@@ -445,7 +454,7 @@ if not hk then
 					hk_data.modifier_actions[action_name.."_$"] = hotkeys[action_name.."_$"]
 					json.dump_file("Hotkeys_data.json", hk_data)
 				end
-				imgui.end_popup() 
+				imgui.end_popup()
 			end
 			--[[if not is_mod_1 and not hotkeys[action_name.."_$"] and hotkeys[action_name] ~= "[Not Bound]" then
 				local names = "\n"
@@ -465,7 +474,7 @@ if not hk then
 			end]]
 		imgui.pop_id()
 		if is_down then imgui.end_rect(1); imgui.end_rect(2) end
-		
+
 		return key_updated
 	end
 
@@ -482,36 +491,36 @@ if not hk then
 		hk.mouse = sdk.call_native_func(mb_singleton, mb_typedef, "get_Device")
 		kb, pad, mouse = hk.kb, hk.pad, hk.mouse
 		hotkeys_down, hotkeys_up, hotkeys_trig = {}, {}, {}
-		
+
 		if kb then
-			for key, state in pairs(kb_state.released) do 
-				kb_state.released[key]  = kb:call("isRelease", key) 
-				kb_state.down[key] 		= kb:call("isDown", key) 
-				kb_state.triggered[key] = kb:call("isTrigger", key) 
+			for key, state in pairs(kb_state.released) do
+				kb_state.released[key]  = kb:call("isRelease", key)
+				kb_state.down[key] 		= kb:call("isDown", key)
+				kb_state.triggered[key] = kb:call("isTrigger", key)
 			end
 		end
-		
-		if mouse then 
+
+		if mouse then
 			m_up, m_down, m_trig = mouse:call("get_ButtonUp"), mouse:call("get_Button"), mouse:call("get_ButtonDown")
 			for button, state in pairs(mb_state.released) do
-				mb_state.released[button]	= ((m_up | button) == m_up) 
-				mb_state.down[button] 		= ((m_down | button) == m_down) 
+				mb_state.released[button]	= ((m_up | button) == m_up)
+				mb_state.down[button] 		= ((m_down | button) == m_down)
 				mb_state.triggered[button]  = ((m_trig | button) == m_trig)
 			end
 		end
-		
-		if pad then 
+
+		if pad then
 			gp_up, gp_down, gp_trig = pad:call("get_ButtonUp"), pad:call("get_Button"), pad:call("get_ButtonDown")
-			for button, state in pairs(gp_state.released) do 
-				gp_state.released[button] 	= ((gp_up | button) == gp_up) 
-				gp_state.down[button] 		= ((gp_down | button) == gp_down) 
-				gp_state.triggered[button]  = ((gp_trig | button) == gp_trig) 
+			for button, state in pairs(gp_state.released) do
+				gp_state.released[button] 	= ((gp_up | button) == gp_up)
+				gp_state.down[button] 		= ((gp_down | button) == gp_down)
+				gp_state.triggered[button]  = ((gp_trig | button) == gp_trig)
 			end
 		end
 	end
 
 	local function write()
-		
+
 	end
 
 	re.on_application_entry("UpdateHID", function()
@@ -523,42 +532,44 @@ if not hk then
 		kb = kb, 													-- Keyboard device Managed Object, updated every frame
 		mouse = mouse, 												-- Mouse device Managed Object, updated every frame
 		pad = pad, 													-- Gamepad device Managed Object, updated every frame
-				
+
 		keys = keys, 												-- Enum of keyboard key names vs key IDs (some tweaked names)
 		buttons = buttons, 											-- Enum of gamepad button names vs button IDs (some tweaked names)
 		mbuttons = mbuttons, 										-- Enum of mouse button names vs button IDs (some tweaked names)
-				
+
 		hotkeys = hotkeys, 											-- Table of current action names vs button strings
 		default_hotkeys = default_hotkeys, 							-- Table of default action names vs button strings
-				
+
 		kb_state = kb_state,										-- Table with state (up/down/triggered) of all used keyboard keys, updated every frame
 		gp_state = gp_state, 										-- Table with state (up/down/triggered) of all used gamepad buttons, updated every frame
 		mb_state = mb_state, 										-- Table with state (up/down/triggered) of all used mouse buttons, updated every frame
-				
+
 		recurse_def_settings = recurse_def_settings, 				-- Fn takes a table 'tbl' and its paired 'defaults_tbl' and copies mismatched/missing fields from defaults_tbl to tbl, then does the same for any child tables of defaults_tbl
 		find_index = find_index, 									-- Fn takes a table and a value (and optionally a key), then finds the index containing a value (or of the value containing that value as a field 'key') in that table
 		merge_tables = merge_tables,								-- Fn takes table A and B then merges table A into table B
 		merge_tables_recursively = merge_tables_recursively,		-- Fn takes table A and B then merges table A into table B and does the same for any child tables in the table
 		generate_statics = generate_statics, 						-- Fn takes a typedef name for a System.Enum and returns a lua table from it
-				
+
 		setup_hotkeys = setup_hotkeys, 								-- Fn takes a table of hotkeys (action names vs button names) and a paired table of default_hotkeys and sets them up for use in this script
 		reset_from_defaults_tbl = reset_from_defaults_tbl, 			-- Fn takes a defaults table and resets all matching hotkeys in this script to the button strings from it
 		update_hotkey_table = update_hotkey_table, 					-- Fn takes a table of hotkeys (action names vs button names) from an outside script and updates the keys internally in this script to match
 		get_button_string = get_button_string, 						-- Fn takes and action name and returns the full button combination required to trigger an action, including modifiers if they exist
-			
+
 		hotkey_setter = hotkey_setter, 								-- Fn takes an action name and displays an imgui button that you can click then and press an input to assign that input to that action name. Returns true if updated
-				
+
 		check_hotkey = check_hotkey, 								-- Fn checks if an input (by action name) is just released, and also if its modifiers are down (if they exist). Send "true" as 2nd argument to check if input is down, "1" or use argument#3 to check if just-triggered
 		check_doubletap = check_doubletap,							-- Fn uses 'check_hotkey' to check if an input (by action name) has been pressed twice in the past 0.25 seconds
 		check_hold = check_hold,									-- Fn uses 'check_hotkey' to check if an input (by action name) has been held for as long as its argument#2
-				
+
 		chk_up = chk_up, 											-- Fn checks if an input (by action name) is released
 		chk_down = chk_down, 										-- Fn checks if an input (by action name) is down
 		chk_trig = chk_trig, 										-- Fn checks if an input (by action name) is just pressed
-				
+
 		check_kb_key = check_kb_key,								-- Fn checks if a keyboard input is released, down or triggered (by key name)
 		check_mouse_button = check_mouse_button,					-- Fn checks if a mouse input is released, down or triggered (by mbutton name)
 		check_pad_button = check_pad_button,						-- Fn checks if a gamepad input is released, down or triggered (by button name) (such as imgui focus) was removed mid-frame
+
+		sync_modifiers_from_hotkeys = sync_modifiers_from_hotkeys, -- NEW: sync modifiers and save to file
 	}
 end
 -- 
@@ -591,7 +602,7 @@ local function create_default_config()
 		proximityboxes = true, proximityboxes_outline = true,
 		clashboxes = true, clashboxes_outline = true,
 		uniqueboxes = true, uniqueboxes_outline = true,
-		properties = true, position = true	
+		properties = true, position = true
 	}
 
 	local opacity_options = {
@@ -612,7 +623,8 @@ local function create_default_config()
 			hide_all_alerts = false,
 			alert_on_toggle = true,
 			alert_on_presets = true,
-			alert_on_save = true
+			alert_on_save = true,
+			notify_duration = 2.0,
 		},
 		hotkeys = {
 			toggle_menu = "F1",
@@ -681,14 +693,14 @@ local function load_config()
 		this.presets, this.current_preset_name, this.preset_names = {}, "", {}
 		mark_for_save()
 	end
-	
-	-- Add hotkey setup
+
 	local default = create_default_config()
 	this.config.hotkeys = this.config.hotkeys or {}
 	for k, v in pairs(default.hotkeys) do
 		if this.config.hotkeys[k] == nil then this.config.hotkeys[k] = v end
 	end
 	hk.setup_hotkeys(this.config.hotkeys, default.hotkeys)
+	hk.sync_modifiers_from_hotkeys()
 end
 
 local function save_handler()
@@ -741,243 +753,250 @@ local function is_pause_menu_closed()
 end
 
 local function reverse_pairs(aTable)
-	local keys = {}
-	for k, v in pairs(aTable) do keys[#keys+1] = k end
-	table.sort(keys, function (a, b) return a > b end)
-	local n = 0
-	return function()
-		n = n + 1; if n > #keys then return nil, nil end
-		return keys[n], aTable[keys[n]] end
+    local keys = {}
+    for k, _ in pairs(aTable) do keys[#keys+1] = k end
+    table.sort(keys, function(a, b) return a > b end)
+    local n = 0
+    return function()
+        n = n + 1
+        if n > #keys then return nil, nil end
+        return keys[n], aTable[keys[n]]
+    end
 end
 
-
 local function get_vectors(rect)
-	local posX, posY = rect.OffsetX.v / 6553600.0, rect.OffsetY.v / 6553600.0
-	local sclX, sclY = rect.SizeX.v / 6553600.0 * 2, rect.SizeY.v / 6553600.0 * 2
-	posX, posY = posX - sclX / 2, posY - sclY / 2
-	local vTL = Vector3f.new(posX - sclX / 2,  posY + sclY / 2, 0)
-	local vTR = Vector3f.new(posX + sclX / 2,  posY + sclY / 2, 0)
-	local vBL = Vector3f.new(posX - sclX / 2,  posY - sclY / 2, 0)
-	local vBR = Vector3f.new(posX + sclX / 2,  posY - sclY / 2, 0)
-	return vTL, vTR, vBL, vBR
+    local posX, posY = rect.OffsetX.v / 6553600.0, rect.OffsetY.v / 6553600.0
+    local sclX, sclY = rect.SizeX.v / 6553600.0 * 2, rect.SizeY.v / 6553600.0 * 2
+    posX, posY = posX - sclX / 2, posY - sclY / 2
+    local vTL = Vector3f.new(posX - sclX / 2, posY + sclY / 2, 0)
+    local vTR = Vector3f.new(posX + sclX / 2, posY + sclY / 2, 0)
+    local vBL = Vector3f.new(posX - sclX / 2, posY - sclY / 2, 0)
+    local vBR = Vector3f.new(posX + sclX / 2, posY - sclY / 2, 0)
+    return vTL, vTR, vBL, vBR
 end
 
 local function get_dimensions(vTL, vTR, vBL, vBR)
-	local dw = draw.world_to_screen
-	local tl, tr, bl, br = dw(vTL), dw(vTR), dw(vBL), dw(vBR)
-	if not (tl and tr and bl and br) then return nil, nil, nil, nil end
-	return (tl.x + tr.x) / 2, (bl.y + tl.y) / 2, (tr.x - tl.x), (tl.y - bl.y)
+    local dw = draw.world_to_screen
+    local tl, tr, bl, br = dw(vTL), dw(vTR), dw(vBL), dw(vBR)
+    if not (tl and tr and bl and br) then return nil, nil, nil, nil end
+    return (tl.x + tr.x) / 2, (bl.y + tl.y) / 2, (tr.x - tl.x), (tl.y - bl.y)
+end
+
+local function property_flag(parts, idx, bit, str)
+    if bitand(rect.CondFlag, bit) == bit then
+        idx = idx + 1
+        parts[idx] = str
+    end
+    return idx
+end
+
+local function draw_box(outline_toggle, fill_toggle, outline_opacity, fill_opacity, color, x, y, w, h)
+    if outline_toggle then
+        draw.outline_rect(x, y, w, h, apply_opacity(outline_opacity, color))
+    end
+    if fill_toggle then
+        draw.filled_rect(x, y, w, h, apply_opacity(fill_opacity, color))
+    end
+end
+
+local function build_hit_properties(condFlag)
+    local parts = {}
+    local idx = 0
+
+    local cant_hit = false
+    idx = property_flag(parts, idx, 16, "Standing, ")
+    idx = property_flag(parts, idx, 32, "Crouching, ")
+    idx = property_flag(parts, idx, 64, "Airborne, ")
+    idx = property_flag(parts, idx, 256, "Forward, ")
+    idx = property_flag(parts, idx, 512, "Backwards, ")
+    if idx > 0 then
+        parts[idx] = string.sub(parts[idx], 1, -3)
+        idx = idx + 1
+        parts[idx] = "\n"
+        cant_hit = true
+    end
+
+    if bitand(condFlag, 262144) == 262144 or bitand(condFlag, 524288) == 524288 then
+        idx = idx + 1
+        parts[idx] = "Combo Only\n"
+    end
+
+    if idx > 0 then return table.concat(parts, "", 1, idx) end
+    return nil
+end
+
+local function build_hurt_properties(typeFlag, immune)
+    local parts = {}
+    local idx = 0
+
+    if typeFlag == 1 then
+        idx = idx + 1
+        parts[idx] = "Projectile Invulnerable\n"
+    elseif typeFlag == 2 then
+        idx = idx + 1
+        parts[idx] = "Strike Invulnerable\n"
+    end
+
+    local intangible = false
+    if bitand(immune, 1) == 1 then
+        idx = idx + 1
+        parts[idx] = "Stand, "
+        intangible = true
+    end
+    if bitand(immune, 2) == 2 then
+        idx = idx + 1
+        parts[idx] = "Crouch, "
+        intangible = true
+    end
+    if bitand(immune, 4) == 4 then
+        idx = idx + 1
+        parts[idx] = "Air, "
+        intangible = true
+    end
+    if bitand(immune, 64) == 64 then
+        idx = idx + 1
+        parts[idx] = "Behind, "
+        intangible = true
+    end
+    if bitand(immune, 128) == 128 then
+        idx = idx + 1
+        parts[idx] = "Reverse, "
+        intangible = true
+    end
+    if intangible then
+        parts[idx] = string.sub(parts[idx], 1, -3)
+        idx = idx + 1
+        parts[idx] = " Attack Intangible\n"
+    end
+
+    if idx > 0 then
+        return table.concat(parts, "", 1, idx)
+    end
+    return nil
+end
+
+local function draw_hitbox(rect, player_config)
+    if not rect then return end
+
+    local vTL, vTR, vBL, vBR = get_vectors(rect)
+    local x, y, w, h = get_dimensions(vTL, vTR, vBL, vBR)
+    if not (x and y and w and h) then return end
+
+    if rect:get_field("HitPos") ~= nil then
+        if rect.TypeFlag > 0 then
+            draw_box(
+                player_config.toggle.hitboxes_outline,
+                player_config.toggle.hitboxes,
+                player_config.opacity.hitbox_outline,
+                player_config.opacity.hitbox,
+                0x0040C0,
+                x, y, w, h
+            )
+            if player_config.toggle.properties then
+                local propText = build_hit_properties(rect.CondFlag)
+                if propText then
+                    draw.text(propText, x, y + h, apply_opacity(player_config.opacity.properties, 0xFFFFFF))
+                end
+            end
+        elseif (rect.TypeFlag == 0 and rect.PoseBit > 0) or rect.CondFlag == 0x2C0 then
+            draw_box(
+                player_config.toggle.throwboxes_outline,
+                player_config.toggle.throwboxes,
+                player_config.opacity.throwbox_outline,
+                player_config.opacity.throwbox,
+                0xD080FF,
+                x, y, w, h
+            )
+            if player_config.toggle.properties then
+                local propText = build_hit_properties(rect.CondFlag)
+                if propText then
+                    draw.text(propText, x, y + h, apply_opacity(player_config.opacity.properties, 0xFFFFFF))
+                end
+            end
+        elseif rect.GuardBit == 0 then
+            draw_box(
+                player_config.toggle.clashboxes_outline,
+                player_config.toggle.clashboxes,
+                player_config.opacity.clashbox_outline,
+                player_config.opacity.clashbox,
+                0x3891E6,
+                x, y, w, h
+            )
+        else
+            draw_box(
+                player_config.toggle.proximityboxes_outline,
+                player_config.toggle.proximityboxes,
+                player_config.opacity.proximitybox_outline,
+                player_config.opacity.proximitybox,
+                0x5b5b5b,
+                x, y, w, h
+            )
+        end
+
+    elseif rect:get_field("Attr") ~= nil then
+        draw_box(
+            player_config.toggle.pushboxes_outline,
+            player_config.toggle.pushboxes,
+            player_config.opacity.pushbox_outline,
+            player_config.opacity.pushbox,
+            0x00FFFF,
+            x, y, w, h
+        )
+
+    elseif rect:get_field("HitNo") ~= nil then
+        if rect.TypeFlag > 0 then
+            local color = (rect.Type == 2 or rect.Type == 1) and 0xFF0080 or 0x00FF00
+            draw_box(
+                player_config.toggle.hurtboxes_outline,
+                player_config.toggle.hurtboxes,
+                player_config.opacity.hurtbox_outline,
+                player_config.opacity.hurtbox,
+                color,
+                x, y, w, h
+            )
+            if player_config.toggle.properties then
+                local propText = build_hurt_properties(rect.TypeFlag, rect.Immune)
+                if propText then
+                    draw.text(propText, x, y + h, apply_opacity(player_config.opacity.properties, 0xFFFFFF))
+                end
+            end
+        else
+            draw_box(
+                player_config.toggle.throwhurtboxes_outline,
+                player_config.toggle.throwhurtboxes,
+                player_config.opacity.throwhurtbox_outline,
+                player_config.opacity.throwhurtbox,
+                0xFF0000,
+                x, y, w, h
+            )
+        end
+
+    elseif rect:get_field("KeyData") ~= nil then
+        draw_box(
+            player_config.toggle.uniqueboxes_outline,
+            player_config.toggle.uniqueboxes,
+            player_config.opacity.uniquebox_outline,
+            player_config.opacity.uniquebox,
+            0xEEFF00,
+            x, y, w, h
+        )
+
+    else
+        draw_box(
+            player_config.toggle.throwhurtboxes_outline,
+            player_config.toggle.throwhurtboxes,
+            player_config.opacity.throwhurtbox_outline,
+            player_config.opacity.throwhurtbox,
+            0xFF0000,
+            x, y, w, h
+        )
+    end
 end
 
 local function draw_hitboxes(work, actParam, player_config)
     local col = actParam.Collision
     for _, rect in reverse_pairs(col.Infos._items) do
-        if rect ~= nil then
-			local vTL, vTR, vBL, vBR = get_vectors(rect)
-			local finalPosX, finalPosY, finalSclX, finalSclY = get_dimensions(vTL, vTR, vBL, vBR)
-			if (finalPosX and finalPosY and finalSclX and finalSclY) then
-				if rect:get_field("HitPos") ~= nil then
-					if rect.TypeFlag > 0 then
-						if player_config.toggle.hitboxes_outline then
-							draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.hitbox_outline, 0x0040C0))
-						end
-						if player_config.toggle.hitboxes then
-							draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.hitbox, 0x0040C0))
-						end
-						if player_config.toggle.properties then
-							local buffer_idx, has_exceptions, has_combo = 0, false, false
-							if bitand(rect.CondFlag, 16) == 16 or bitand(rect.CondFlag, 32) == 32 or 
-								bitand(rect.CondFlag, 64) == 64 or bitand(rect.CondFlag, 256) == 256 or 
-								bitand(rect.CondFlag, 512) == 512 then
-								buffer_idx = buffer_idx + 1
-								this.string_buffer[buffer_idx] = "Can't Hit "
-								if bitand(rect.CondFlag, 16) == 16 then 
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Standing, " 
-								end
-								if bitand(rect.CondFlag, 32) == 32 then 
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Crouching, " 
-								end
-								if bitand(rect.CondFlag, 64) == 64 then 
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Airborne, " 
-								end
-								if bitand(rect.CondFlag, 256) == 256 then 
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Forward, " 
-								end
-								if bitand(rect.CondFlag, 512) == 512 then 
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Backwards, " 
-								end
-								this.string_buffer[buffer_idx] = string.sub(this.string_buffer[buffer_idx], 1, -3)
-                                buffer_idx = buffer_idx + 1
-								this.string_buffer[buffer_idx] = "\n"
-								has_exceptions = true
-							end
-							if bitand(rect.CondFlag, 262144) == 262144 or bitand(rect.CondFlag, 524288) == 524288 then
-								buffer_idx = buffer_idx + 1
-								this.string_buffer[buffer_idx] = "Combo Only\n"
-								has_combo = true
-							end
-							if has_exceptions or has_combo then
-								local fullString = table.concat(this.string_buffer, "", 1, buffer_idx)
-								draw.text(fullString, finalPosX, (finalPosY + finalSclY),
-									apply_opacity(player_config.opacity.properties, 0xFFFFFF))
-							end
-						end
-					elseif ((rect.TypeFlag == 0 and rect.PoseBit > 0) or rect.CondFlag == 0x2C0) then
-						if player_config.toggle.throwboxes_outline then
-							draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.throwbox_outline, 0xD080FF))
-						end
-						if player_config.toggle.throwboxes then
-							draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.throwbox, 0xD080FF))
-						end
-						if player_config.toggle.properties then
-							local buffer_idx, has_exceptions, has_combo = 0, false, false
-							if bitand(rect.CondFlag, 16) == 16 or bitand(rect.CondFlag, 32) == 32 or 
-								bitand(rect.CondFlag, 64) == 64 or bitand(rect.CondFlag, 256) == 256 or 
-								bitand(rect.CondFlag, 512) == 512 then
-								buffer_idx = buffer_idx + 1
-								this.string_buffer[buffer_idx] = "Can't Hit "
-								if bitand(rect.CondFlag, 16) == 16 then
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Standing, " end
-								if bitand(rect.CondFlag, 32) == 32 then 
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Crouching, " end
-								if bitand(rect.CondFlag, 64) == 64 then 
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Airborne, " end
-								if bitand(rect.CondFlag, 256) == 256 then 
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Forward, " end
-								if bitand(rect.CondFlag, 512) == 512 then 
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Backwards, " end
-								this.string_buffer[buffer_idx] = string.sub(this.string_buffer[buffer_idx], 1, -3)
-								buffer_idx = buffer_idx + 1
-								this.string_buffer[buffer_idx] = "\n"
-								has_exceptions = true
-							end
-							if bitand(rect.CondFlag, 262144) == 262144 or bitand(rect.CondFlag, 524288) == 524288 then
-								buffer_idx = buffer_idx + 1
-								this.string_buffer[buffer_idx] = "Combo Only\n"
-								has_combo = true
-							end
-							if has_exceptions or has_combo then
-								local fullString = table.concat(this.string_buffer, "", 1, buffer_idx)
-								draw.text(fullString, finalPosX, (finalPosY + finalSclY),
-									apply_opacity(player_config.opacity.properties, 0xFFFFFF)) end
-						end
-					elseif rect.GuardBit == 0 then
-						if player_config.toggle.clashboxes_outline then
-							draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.clashbox_outline, 0x3891E6)) end
-						if player_config.toggle.clashboxes then
-							draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.clashbox, 0x3891E6)) end
-					else
-						if player_config.toggle.proximityboxes_outline then
-							draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.proximitybox_outline, 0x5b5b5b)) end
-						if player_config.toggle.proximityboxes then
-							draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.proximitybox, 0x5b5b5b)) end
-					end
-				elseif rect:get_field("Attr") ~= nil then
-					if player_config.toggle.pushboxes_outline then
-						draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-							apply_opacity(player_config.opacity.pushbox_outline, 0x00FFFF)) end
-					if player_config.toggle.pushboxes then
-						draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-							apply_opacity(player_config.opacity.pushbox, 0x00FFFF)) end
-				elseif rect:get_field("HitNo") ~= nil then
-					if rect.TypeFlag > 0 then
-						if player_config.toggle.hurtboxes or player_config.toggle.hurtboxes_outline then
-							if rect.Type == 2 or rect.Type == 1 then
-								if player_config.toggle.hurtboxes_outline then
-									draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-										apply_opacity(player_config.opacity.hurtbox_outline, 0xFF0080)) end
-								if player_config.toggle.hurtboxes then
-									draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-										apply_opacity(player_config.opacity.hurtbox, 0xFF0080)) end
-							else
-								if player_config.toggle.hurtboxes_outline then
-									draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-										apply_opacity(player_config.opacity.hurtbox_outline, 0x00FF00)) end
-								if player_config.toggle.hurtboxes then
-									draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-										apply_opacity(player_config.opacity.hurtbox, 0x00FF00)) end
-							end
-							if player_config.toggle.properties then
-								local buffer_idx = 0
-								if rect.TypeFlag == 1 then
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Projectile Invulnerable\n"
-								elseif rect.TypeFlag == 2 then
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = "Strike Invulnerable\n" end
-								local has_immune = false
-								if bitand(rect.Immune, 1) == 1 or bitand(rect.Immune, 2) == 2 or 
-									bitand(rect.Immune, 4) == 4 or bitand(rect.Immune, 64) == 64 or 
-									bitand(rect.Immune, 128) == 128 then
-									has_immune = true
-									if bitand(rect.Immune, 1) == 1 then 
-										buffer_idx = buffer_idx + 1
-										this.string_buffer[buffer_idx] = "Stand, " end
-									if bitand(rect.Immune, 2) == 2 then 
-										buffer_idx = buffer_idx + 1
-										this.string_buffer[buffer_idx] = "Crouch, " end
-									if bitand(rect.Immune, 4) == 4 then 
-										buffer_idx = buffer_idx + 1
-										this.string_buffer[buffer_idx] = "Air, " end
-									if bitand(rect.Immune, 64) == 64 then 
-										buffer_idx = buffer_idx + 1
-										this.string_buffer[buffer_idx] = "Behind, " end
-									if bitand(rect.Immune, 128) == 128 then 
-										buffer_idx = buffer_idx + 1
-										this.string_buffer[buffer_idx] = "Reverse, " end
-									this.string_buffer[buffer_idx] = string.sub(this.string_buffer[buffer_idx], 1, -3)
-									buffer_idx = buffer_idx + 1
-									this.string_buffer[buffer_idx] = " Attack Intangible\n"
-								end
-								if buffer_idx > 0 then
-									local fullString = table.concat(this.string_buffer, "", 1, buffer_idx)
-									draw.text(fullString, finalPosX, (finalPosY + finalSclY),
-										apply_opacity(player_config.opacity.properties, 0xFFFFFF)) end
-							end
-						end
-					elseif player_config.toggle.throwhurtboxes or player_config.toggle.throwhurtboxes_outline then
-						if player_config.toggle.throwhurtboxes_outline then
-							draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.throwhurtbox_outline, 0xFF0000)) end
-						if player_config.toggle.throwhurtboxes then
-							draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-								apply_opacity(player_config.opacity.throwhurtbox, 0xFF0000)) end
-						end
-				end
-			elseif rect:get_field("KeyData") ~= nil then
-				if player_config.toggle.uniqueboxes_outline then
-					draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-						apply_opacity(player_config.opacity.uniquebox_outline, 0xEEFF00)) end
-				if player_config.toggle.uniqueboxes then
-					draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-						apply_opacity(player_config.opacity.uniquebox, 0xEEFF00)) end
-			else
-				if player_config.toggle.throwhurtboxes_outline then
-					draw.outline_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-						apply_opacity(player_config.opacity.throwhurtbox_outline, 0xFF0000)) end
-				if player_config.toggle.throwhurtboxes then
-					draw.filled_rect(finalPosX, finalPosY, finalSclX, finalSclY,
-						apply_opacity(player_config.opacity.throwhurtbox, 0xFF0000)) end
-			end
-        end
+        draw_hitbox(rect, player_config)
     end
     this.string_buffer = {}
 end
@@ -986,20 +1005,25 @@ local function draw_position_marker(entity, player_config)
     if not player_config.toggle.position then return end
     if not entity.pos or not entity.pos.x or not entity.pos.y then return end
     local x, y = entity.pos.x.v, entity.pos.y.v
-    if not x or not y or (x == 0 and y == 0) then return end -- Prevent 0,0,0 midscreen glitch frame
+    if not x or not y or (x == 0 and y == 0) then return end
     local vPos = Vector3f.new(x / 6553600.0, y / 6553600.0, 0)
     local screenPos = draw.world_to_screen(vPos)
-    if screenPos then draw.filled_circle(screenPos.x, screenPos.y, 10,
-		apply_opacity(player_config.opacity.position, 0xFFFFFF), 10)
+    if screenPos then
+        draw.filled_circle(screenPos.x, screenPos.y, 10,
+            apply_opacity(player_config.opacity.position, 0xFFFFFF), 10)
     end
 end
 
 local function process_entity(entity)
     local config = nil
-    if entity:get_IsTeam1P() then config = this.config.p1
-    elseif entity:get_IsTeam2P() then config = this.config.p2 end
+    if entity:get_IsTeam1P() then
+        config = this.config.p1
+    elseif entity:get_IsTeam2P() then
+        config = this.config.p2
+    end
     if not config or not config.toggle.toggle_show then return end
-    draw_hitboxes(entity, entity.mpActParam, config); draw_position_marker(entity, config)
+    draw_hitboxes(entity, entity.mpActParam, config)
+    draw_position_marker(entity, config)
 end
 
 local function toggle_setter(label, val)
@@ -1027,27 +1051,38 @@ end
 
 -- Notifications
 
-local function action_notify(msg, category_toggle)
-	if this.config.options.hide_all_alerts then return end
-	if category_toggle ~= nil and not this.config.options[category_toggle] then return end
-	this.tooltip_msg = MOD_NAME .. ': ' .. msg
-	this.tooltip_timer = 40
+local function build_notify_duration_slider()
+    imgui.text("Duration (seconds):")
+    imgui.same_line()
+    local changed, new_val = imgui.slider_float("##notify_duration", this.config.options.notify_duration, 0.1, 10.0, "%.1f s")
+    if changed then
+        this.config.options.notify_duration = new_val
+        mark_for_save()
+    end
 end
+
+local function action_notify(msg, category_toggle)
+    if this.config.options.hide_all_alerts then return end
+    if category_toggle ~= nil and not this.config.options[category_toggle] then return end
+    this.tooltip_msg = MOD_NAME .. ': ' .. msg
+    this.tooltip_timer = math.floor(this.config.options.notify_duration * 60 + 0.5)
+end
+
 
 local function tooltip_handler()
 	if this.tooltip_timer > 0 then this.tooltip_timer = this.tooltip_timer - 1 end
 end
 
 local function draw_action_notify()
-    if this.tooltip_timer <= 0 then return end 
-    
+    if this.tooltip_timer <= 0 then return end
+
     local display = imgui.get_display_size()
     imgui.set_next_window_pos(
-        Vector2f.new(display.x * 0.5, display.y - 100), 
-        1 << 0, 
+        Vector2f.new(display.x * 0.5, display.y - 100),
+        1 << 0,
         Vector2f.new(0.5, 0.5)
     )
-    
+
     imgui.set_next_window_size(Vector2f.new(0, 0), 1 << 0)
     imgui.begin_window("Notification", true, 1|2|4|8|16|43|64|65536|131072)
     imgui.push_font(imgui.load_font(nil, 30))
@@ -1085,7 +1120,7 @@ end
 local function save_current_preset(name)
 	if not name or name == "" then return false, "Invalid preset name" end
 	if is_preset_loaded(name) then return true, "Data identical, skipping save" end
-	
+
 	this.presets[name] = {p1 = deep_copy(this.config.p1), p2 = deep_copy(this.config.p2)}
 	rebuild_preset_names()
 	this.current_preset_name, this.previous_preset_name = name, ""
@@ -1117,7 +1152,7 @@ end
 
 local function delete_preset(name)
 	if not this.presets[name] then return false, "Preset not found" end
-	
+
 	local fallback = nil
 	if this.current_preset_name == name then
 		for _, p_name in ipairs(this.preset_names) do
@@ -1130,9 +1165,9 @@ local function delete_preset(name)
 
 	this.presets[name] = nil
 	rebuild_preset_names()
-	
+
 	if this.rename_mode == name then this.rename_mode, this.rename_temp_name = false, "" end
-	
+
 	if this.current_preset_name == name then
 		this.create_new_mode, this.rename_mode = false, false
 		if fallback then
@@ -1143,7 +1178,7 @@ local function delete_preset(name)
 			save_current_preset(this.current_preset_name)
 		end
 	end
-	
+
 	mark_for_save()
 	return true
 end
@@ -1179,20 +1214,6 @@ local function duplicate_preset(name)
 	mark_for_save()
 	return true
 end
-
-local function update_current_preset_name(new_name)
-	if new_name == this.current_preset_name then return end
-	if new_name == "" then
-		this.current_preset_name = ""
-		this.create_new_mode, this.rename_mode = false, false
-	elseif this.presets[new_name] then
-		this.current_preset_name, this.create_new_mode, this.rename_mode = new_name, false, false
-	else
-		if this.previous_preset_name == "" then this.previous_preset_name = this.current_preset_name end
-		this.create_new_mode, this.new_preset_name, this.rename_mode = true, new_name, false
-	end
-end
-
 local function start_create_new_mode()
 	this.create_new_mode = true
 	this.rename_mode = false
@@ -1307,176 +1328,212 @@ local function format_preset_with_color(preset_name)
 	end
 end
 
+local function generate_default_backup_filename()
+    local t = os.date("*t")
+    local datetime = string.format("%04d%02d%02d",
+        t.year, t.month, t.day, t.hour, t.min, t.sec)
+    return "hitbox_backup" .. datetime .. ".json"
+end
+
+local function perform_backup(filename)
+    if not filename or filename == "" then
+        action_notify("Backup failed: no filename", nil)
+        return
+    end
+    if not filename:match("%.json$") then
+        filename = filename .. ".json"
+    end
+    local data = {
+        presets = this.presets,
+        current_preset = this.current_preset_name,
+        config = this.config
+    }
+    json.dump_file(filename, data)
+    action_notify("Backup saved to " .. filename, "alert_on_save")
+end
+
 -- GUI
 
 local function build_menu_columns(widths, flags, names)
-	for i, width in ipairs(widths) do
-		local label = (names and names[i]) or ""
-		imgui.table_setup_column(label, flags or 0, width)
-	end
-end
-
-local function build_toggle_header(player_int, func)
-	if player_int == 2 then col_index = 3 else col_index = 1 end
-	imgui.table_set_column_index(col_index)
-	if not player_int then return end
-	local imgui_text, header_name = string.format("P%.0f", player_int), string.format("##p%.0f_HideAllHeader", player_int)
-	imgui.text(imgui_text); imgui.same_line()
-	local cursor_pos = imgui.get_cursor_pos()
-	imgui.set_cursor_pos(Vector2f.new(cursor_pos.x + 20, cursor_pos.y))
-	return toggle_setter(header_name, func)
-end
-
-local function build_toggle_headers()
-	if not (this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show) then 
-		imgui.table_set_column_index(0)
-		imgui.text("Show Hidden Elements:")
-	end
-	local changed
-	changed, this.config.p1.toggle.toggle_show = build_toggle_header(1, this.config.p1.toggle.toggle_show)
-	changed, this.config.p2.toggle.toggle_show = build_toggle_header(2, this.config.p2.toggle.toggle_show)
-end
-
-local function build_toggle_column(player_index, visible_func, toggle_func, opacity_func, config_suffix, opacity_suffix)
-    imgui.table_set_column_index(player_index)
-    if visible_func then
-        local id = string.format("##p%.0f_", player_index) .. config_suffix
-        local changed
-        changed, toggle_func[config_suffix] = toggle_setter(id, toggle_func[config_suffix])
-        if opacity_suffix and opacity_func[opacity_suffix] ~= nil and toggle_func[config_suffix] then
-            imgui.same_line(); imgui.push_item_width(70)
-            changed, opacity_func[opacity_suffix] = opacity_setter(
-                string.format("##p%.0f_", player_index) .. opacity_suffix .. "Opacity",
-                opacity_func[opacity_suffix], 0.5, 0, 100
-            )
-            imgui.pop_item_width()
-        end
+    for i, width in ipairs(widths) do
+        local label = (names and names[i]) or ""
+        imgui.table_setup_column(label, flags or 0, width)
     end
 end
 
-local function build_toggle_columns(label, config_suffix, opacity_suffix)
-	imgui.table_set_column_index(0); imgui.text(label)
-	build_toggle_column(1, this.config.p1.toggle.toggle_show, this.config.p1.toggle, this.config.p1.opacity, config_suffix, opacity_suffix)
-	build_toggle_column(3, this.config.p2.toggle.toggle_show, this.config.p2.toggle, this.config.p2.opacity, config_suffix, opacity_suffix)
+-- Helper: draw a player header with its "toggle_show" checkbox
+local function build_player_header(player_index, toggle_show)
+    -- Column mapping: 0 = labels, 1 = P1, 2 = spacer, 3 = P2
+    local col_index = (player_index == 2) and 3 or 1
+    imgui.table_set_column_index(col_index)
+
+    local label = string.format("P%.0f", player_index)
+    local header_id = string.format("##p%.0f_HideAllHeader", player_index)
+
+    imgui.text(label)
+    imgui.same_line()
+    local cursor = imgui.get_cursor_pos()
+    imgui.set_cursor_pos(Vector2f.new(cursor.x + 20, cursor.y))
+
+    return toggle_setter(header_id, toggle_show)
 end
 
-local function build_toggle_row(label, config_suffix, opacity_suffix)
-	imgui.table_next_row(); build_toggle_columns(label, config_suffix, opacity_suffix)
+local function build_toggle_headers()
+    if not (this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show) then
+        imgui.table_set_column_index(0)
+        imgui.text("Show Hidden Elements:")
+    end
+
+    local changed
+    changed, this.config.p1.toggle.toggle_show = build_player_header(1, this.config.p1.toggle.toggle_show)
+    changed, this.config.p2.toggle.toggle_show = build_player_header(2, this.config.p2.toggle.toggle_show)
+end
+
+-- Helper: draw a single toggle + optional opacity slider for one player
+local function build_toggle_column(player_index, visible, toggle_tbl, opacity_tbl, toggle_key, opacity_key)
+    imgui.table_set_column_index(player_index)
+    if not visible then return end
+
+    local id = string.format("##p%.0f_", player_index) .. toggle_key
+    local changed
+    changed, toggle_tbl[toggle_key] = toggle_setter(id, toggle_tbl[toggle_key])
+
+    if opacity_key and opacity_tbl[opacity_key] ~= nil and toggle_tbl[toggle_key] then
+        imgui.same_line()
+        imgui.push_item_width(70)
+        local opacity_id = string.format("##p%.0f_", player_index) .. opacity_key .. "Opacity"
+        changed, opacity_tbl[opacity_key] = opacity_setter(opacity_id, opacity_tbl[opacity_key], 0.5, 0, 100)
+        imgui.pop_item_width()
+    end
+end
+
+-- Helper: draw label column and both players' columns for one row
+local function build_toggle_columns(label, toggle_key, opacity_key)
+    imgui.table_set_column_index(0)
+    imgui.text(label)
+
+    build_toggle_column(1,
+        this.config.p1.toggle.toggle_show,
+        this.config.p1.toggle,
+        this.config.p1.opacity,
+        toggle_key, opacity_key)
+
+    build_toggle_column(3,
+        this.config.p2.toggle.toggle_show,
+        this.config.p2.toggle,
+        this.config.p2.opacity,
+        toggle_key, opacity_key)
+end
+
+local function build_toggle_row(label, toggle_key, opacity_key)
+    imgui.table_next_row()
+    build_toggle_columns(label, toggle_key, opacity_key)
+end
+
+local function build_player_toggle_all(player_index, toggle_tbl, opacity_tbl)
+    imgui.table_set_column_index(player_index)
+    if not toggle_tbl.toggle_show then return end
+
+    local any_checked = false
+    for k, v in pairs(toggle_tbl) do
+        if k ~= "toggle_show" and v then
+            any_checked = true
+            break
+        end
+    end
+    local all_checked = any_checked
+
+    local changed
+    changed, all_checked = toggle_setter("##p"..player_index.."_ToggleAll", all_checked)
+    if changed then
+        for k, _ in pairs(toggle_tbl) do
+            if k ~= "toggle_show" then
+                toggle_tbl[k] = all_checked
+            end
+        end
+        mark_for_save()
+    end
+
+    if all_checked then
+        imgui.same_line()
+        imgui.push_item_width(70)
+
+        local first = nil
+        local all_same = true
+        for _, v in pairs(opacity_tbl) do
+            if first == nil then
+                first = v
+            elseif v ~= first then
+                all_same = false
+                break
+            end
+        end
+        local current = (all_same and first) or 50
+
+        local changed
+        changed, current = opacity_setter("##p"..player_index.."_GlobalOpacity", current, 0.5, 0, 100)
+        if changed then
+            for k, _ in pairs(opacity_tbl) do
+                opacity_tbl[k] = current
+            end
+            mark_for_save()
+        end
+
+        imgui.pop_item_width()
+    end
 end
 
 local function build_toggle_all_row()
-	imgui.table_next_row()
-	imgui.table_set_column_index(0); imgui.text("All")
-	imgui.table_set_column_index(1)
-	if this.config.p1.toggle.toggle_show then
-		local all_checked, any_checked = false, false
-		for toggle_name, toggle_value in pairs(this.config.p1.toggle) do
-			if toggle_name ~= "toggle_show" then
-				if toggle_value then any_checked = true end end
-		end
-		all_checked = any_checked
-		local changed
-		changed, all_checked = toggle_setter("##p1_ToggleAll", all_checked)
-		if changed then
-			for toggle_name, _ in pairs(this.config.p1.toggle) do
-				if toggle_name ~= "toggle_show" then
-					this.config.p1.toggle[toggle_name] = all_checked end
-			end
-		mark_for_save(); end
-		if all_checked then
-			imgui.same_line(); imgui.push_item_width(70)
-			local current_opacity_slider, all_same, first_opacity = 50, true, nil
-			for opacity_name, opacity_value in pairs(this.config.p1.opacity) do
-				if first_opacity == nil then first_opacity = opacity_value
-				elseif opacity_value ~= first_opacity then all_same = false break end
-			end
-			if all_same and first_opacity ~= nil then
-				current_opacity_slider = first_opacity
-			else current_opacity_slider = 50 end
-			local changed
-			changed, current_opacity_slider = opacity_setter("##p1_GlobalOpacity", current_opacity_slider, 0.5, 0, 100)
-			if changed then
-				for opacity_name, _ in pairs(this.config.p1.opacity) do
-					this.config.p1.opacity[opacity_name] = current_opacity_slider end
-			mark_for_save(); end; imgui.pop_item_width()
-		end
-	end
-	imgui.table_set_column_index(3)
-	if this.config.p2.toggle.toggle_show then
-		local all_checked, any_checked = false, false
-		for toggle_name, toggle_value in pairs(this.config.p2.toggle) do
-			if toggle_name ~= "toggle_show" then
-				if toggle_value then any_checked = true end end
-		end
-		all_checked = any_checked
-		local changed
-		changed, all_checked = toggle_setter("##p2_ToggleAll", all_checked)
-		if changed then
-			for toggle_name, _ in pairs(this.config.p2.toggle) do
-				if toggle_name ~= "toggle_show" then
-					this.config.p2.toggle[toggle_name] = all_checked end
-			end
-		mark_for_save(); end
-		if all_checked then
-			imgui.same_line(); imgui.push_item_width(70)
-			local current_opacity_slider = 50
-			local all_same = true
-			local first_opacity = nil
-			for opacity_name, opacity_value in pairs(this.config.p2.opacity) do
-				if first_opacity == nil then first_opacity = opacity_value
-				elseif opacity_value ~= first_opacity then all_same = false break end
-			end
-			if all_same and first_opacity ~= nil then
-				current_opacity_slider = first_opacity
-			else current_opacity_slider = 50 end
-			local changed
-			changed, current_opacity_slider = opacity_setter("##p2_GlobalOpacity", current_opacity_slider, 0.5, 0, 100)
-			if changed then
-				for opacity_name, _ in pairs(this.config.p2.opacity) do
-					this.config.p2.opacity[opacity_name] = current_opacity_slider
-				end
-			mark_for_save()
-			end
-		imgui.pop_item_width()
-		end
-	end
+    imgui.table_next_row()
+    imgui.table_set_column_index(0)
+    imgui.text("All")
+
+    build_player_toggle_all(1, this.config.p1.toggle, this.config.p1.opacity)
+    build_player_toggle_all(3, this.config.p2.toggle, this.config.p2.opacity)
 end
 
+local toggle_rows = {
+    {"Hitbox", "hitboxes", "hitbox"},
+    {"Hitbox Outline", "hitboxes_outline", "hitbox_outline"},
+    {"Hurtbox", "hurtboxes", "hurtbox"},
+    {"Hurtbox Outline", "hurtboxes_outline", "hurtbox_outline"},
+    {"Pushbox", "pushboxes", "pushbox"},
+    {"Pushbox Outline", "pushboxes_outline", "pushbox_outline"},
+    {"Throwbox", "throwboxes", "throwbox"},
+    {"Throwbox Outline", "throwboxes_outline", "throwbox_outline"},
+    {"Throw Hurtbox", "throwhurtboxes", "throwhurtbox"},
+    {"Throw Hurtbox Outline", "throwhurtboxes_outline", "throwhurtbox_outline"},
+    {"Proximity Box", "proximityboxes", "proximitybox"},
+    {"Proximity Box Outline", "proximityboxes_outline", "proximitybox_outline"},
+    {"Proj. Clash Box", "clashboxes", "clashbox"},
+    {"Proj. Clash Box Outline", "clashboxes_outline", "clashbox_outline"},
+    {"Unique Box", "uniqueboxes", "uniquebox"},
+    {"Unique Box Outline", "uniqueboxes_outline", "uniquebox_outline"},
+    {"Properties", "properties", "properties"},
+    {"Position", "position", "position"},
+}
+
 local function build_toggle_rows()
-	imgui.indent(6)
-	build_toggle_row("Hitbox", "hitboxes", "hitbox")
-	build_toggle_row("Hitbox Outline", "hitboxes_outline", "hitbox_outline")
-	build_toggle_row("Hurtbox", "hurtboxes", "hurtbox")
-	build_toggle_row("Hurtbox Outline", "hurtboxes_outline", "hurtbox_outline")
-	build_toggle_row("Pushbox", "pushboxes", "pushbox")
-	build_toggle_row("Pushbox Outline", "pushboxes_outline", "pushbox_outline")
-	build_toggle_row("Throwbox", "throwboxes", "throwbox")
-	build_toggle_row("Throwbox Outline", "throwboxes_outline", "throwbox_outline")
-	build_toggle_row("Throw Hurtbox", "throwhurtboxes", "throwhurtbox")
-	build_toggle_row("Throw Hurtbox Outline", "throwhurtboxes_outline", "throwhurtbox_outline")
-	build_toggle_row("Proximity Box", "proximityboxes", "proximitybox")
-	build_toggle_row("Proximity Box Outline", "proximityboxes_outline", "proximitybox_outline")
-	build_toggle_row("Proj. Clash Box", "clashboxes", "clashbox")
-	build_toggle_row("Proj. Clash Box Outline", "clashboxes_outline", "clashbox_outline")
-	build_toggle_row("Unique Box", "uniqueboxes", "uniquebox")
-	build_toggle_row("Unique Box Outline", "uniqueboxes_outline", "uniquebox_outline")
-	build_toggle_row("Properties", "properties", "properties")
-	build_toggle_row("Position", "position", "position")
-	build_toggle_all_row()
+    imgui.indent(6)
+    for _, row in ipairs(toggle_rows) do
+        build_toggle_row(row[1], row[2], row[3])
+    end
+    build_toggle_all_row()
 end
 
 local function build_toggle_menu()
-	imgui.set_next_item_open(true, 1 << 3)
-	if not imgui.begin_table("ToggleTable", 4) then return end
-	
-	build_menu_columns({160, 100, 0, 125}, nil, {"", "P1", "P2"})
-	imgui.table_next_row()
-	build_toggle_headers()
-	
-	if this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show then
-		build_toggle_rows()
-	end
-	imgui.end_table()
+    imgui.set_next_item_open(true, 1 << 3)
+    if not imgui.begin_table("ToggleTable", 4) then return end
+
+    build_menu_columns({160, 100, 0, 125}, nil, {"", "P1", "P2"})
+    imgui.table_next_row()
+    build_toggle_headers()
+
+    if this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show then
+        build_toggle_rows()
+    end
+
+    imgui.end_table()
 end
 
 local function build_preset_name_column(preset_name)
@@ -1570,7 +1627,7 @@ end
 local function build_reload_preset_button()
 	if not is_disabled_state() or this.current_preset_name == "" or not this.presets[this.current_preset_name] then return end
 	imgui.same_line()
-	if imgui.button("Reload##reload_nav") then 
+	if imgui.button("Reload##reload_nav") then
 		load_preset(this.current_preset_name)
 		action_notify("Reloaded Preset " .. this.current_preset_name, "alert_on_presets")
 	end
@@ -1584,7 +1641,7 @@ local function build_save_changes_buttons()
 		if imgui.button("Save##save_nav") then save_current_preset(this.current_preset_name) end
 		if imgui.is_item_hovered() then imgui.set_tooltip("Save Changes (Ctrl + Space)") end
 		imgui.same_line()
-		if imgui.button("x##disc_nav") then 
+		if imgui.button("x##disc_nav") then
 			load_preset(this.current_preset_name)
 			action_notify("Changes Discarded", "alert_on_presets")
 		end
@@ -1617,7 +1674,7 @@ local function build_create_preset_buttons()
 		imgui.same_line(); if imgui.button("Cancel##cancel_blank") then cancel_blank_preset() end
 	else
 		if imgui.button("Create##save_new") then save_new_preset() end
-		imgui.same_line(); if imgui.button("Cancel##cancel_new") then cancel_new_preset() end
+		imgui.same_line(); if imgui.button("x##cancel_new") then cancel_new_preset() end
 	end
 end
 
@@ -1649,12 +1706,12 @@ local function build_presets_menu()
 end
 
 local function build_copy_options_rows()
-	imgui.same_line()
-	if imgui.button("P1 to P2##p1_to_p2", {nil, 16}) then 
+	imgui.same_line(); imgui.spacing(); imgui.same_line()
+	if imgui.button("P1 to P2##p1_to_p2", {nil, 16}) then
 		this.config.p2 = deep_copy(this.config.p1)
 	end
-	imgui.same_line()
-	if imgui.button("P2 to P1##p2_to_p1", {nil, 16}) then 
+	imgui.same_line(); imgui.spacing(); imgui.same_line()
+	if imgui.button("P2 to P1##p2_to_p1", {nil, 16}) then
 		this.config.p1 = deep_copy(this.config.p2)
 	end
 end
@@ -1696,11 +1753,12 @@ local function build_alerts_options_row(label, config_key)
 end
 
 local function build_alerts_options_rows()
-	build_alerts_options_row("Toggle Overlay", "alert_on_toggle")
+	imgui.text("Notify:")
+	build_alerts_options_row("Overlay Toggled", "alert_on_toggle")
 	imgui.same_line()
-	build_alerts_options_row("Preset Switch", "alert_on_presets")
+	build_alerts_options_row("Preset Switched", "alert_on_presets")
 	imgui.same_line()
-	build_alerts_options_row("Save", "alert_on_save")
+	build_alerts_options_row("Preset Saved", "alert_on_save")
 end
 
 local function build_show_alerts_options_checkbox()
@@ -1709,68 +1767,107 @@ local function build_show_alerts_options_checkbox()
 	this.config.options.hide_all_alerts = not this.config.options.hide_all_alerts
 end
 
-local function build_alerts_options() -- imgui.set_next_item_open(true, 1 << 3)
-	if not imgui.tree_node("Alerts") then return end
-	build_show_alerts_options_checkbox()
-	if not this.config.options.hide_all_alerts then
-		build_alerts_options_rows()
+local function build_alerts_duration_slider()
+	if this.config.options.hide_all_alerts then return end
+	imgui.same_line()
+	imgui.spacing()
+	imgui.same_line()
+	imgui.text("Duration")
+	imgui.same_line()
+	imgui.push_item_width(100)
+	local changed, new_val = imgui.slider_float("##notify_duration", this.config.options.notify_duration, 0.1, 10.0, "%.1f s")
+	imgui.pop_item_width()
+	if changed then
+		this.config.options.notify_duration = new_val
+		mark_for_save()
 	end
-	imgui.tree_pop()
+end
+
+local function build_alerts_options()
+    if not imgui.tree_node("Alerts") then return end
+    build_show_alerts_options_checkbox()
+	build_alerts_duration_slider()
+    if not this.config.options.hide_all_alerts then
+        build_alerts_options_rows()
+    end
+    imgui.tree_pop()
 end
 
 local function build_hotkeys_options()
 	if not imgui.tree_node("Hotkeys") then return end
-	
+
 	imgui.text("Toggle Menu:")
 	imgui.same_line()
-	if hk.hotkey_setter("toggle_menu", nil, "") then 
+	if hk.hotkey_setter("toggle_menu", nil, "") then
 		hk.update_hotkey_table(this.config.hotkeys)
 		mark_for_save()
 	end
-	
+
 	imgui.text("Toggle P1:")
 	imgui.same_line()
-	if hk.hotkey_setter("toggle_p1", nil, "") then 
+	if hk.hotkey_setter("toggle_p1", nil, "") then
 		hk.update_hotkey_table(this.config.hotkeys)
 		mark_for_save()
 	end
-	
+
 	imgui.text("Toggle P2:")
 	imgui.same_line()
-	if hk.hotkey_setter("toggle_p2", nil, "") then 
+	if hk.hotkey_setter("toggle_p2", nil, "") then
 		hk.update_hotkey_table(this.config.hotkeys)
 		mark_for_save()
 	end
-	
+
 	imgui.text("Toggle All:")
 	imgui.same_line()
-	if hk.hotkey_setter("toggle_all", nil, "") then 
+	if hk.hotkey_setter("toggle_all", nil, "") then
 		hk.update_hotkey_table(this.config.hotkeys)
 		mark_for_save()
 	end
-	
-	imgui.text("Previous Preset:")
+
+	imgui.text("Last Preset:")
 	imgui.same_line()
-	if hk.hotkey_setter("prev_preset", nil, "") then 
+	if hk.hotkey_setter("prev_preset", nil, "") then
 		hk.update_hotkey_table(this.config.hotkeys)
 		mark_for_save()
 	end
-	
+
 	imgui.text("Next Preset:")
 	imgui.same_line()
-	if hk.hotkey_setter("next_preset", nil, "") then 
+	if hk.hotkey_setter("next_preset", nil, "") then
 		hk.update_hotkey_table(this.config.hotkeys)
 		mark_for_save()
 	end
-	
+
 	imgui.text("Save Preset:")
 	imgui.same_line()
-	if hk.hotkey_setter("save_preset", nil, "") then 
+	if hk.hotkey_setter("save_preset", nil, "") then
 		hk.update_hotkey_table(this.config.hotkeys)
 		mark_for_save()
 	end
-	
+
 	imgui.tree_pop()
+end
+
+local function build_backup_options()
+    if not imgui.tree_node("Backup") then return end
+    if this.backup_filename == "" then
+        this.backup_filename = generate_default_backup_filename()
+    end
+	
+	imgui.same_line()
+    imgui.text("File:")
+	imgui.same_line()
+    imgui.push_item_width(200)
+    local changed, new_name = imgui.input_text("##backup_filename", this.backup_filename, 256)
+    if changed then
+        this.backup_filename = new_name
+    end
+    imgui.pop_item_width()
+
+    imgui.same_line()
+    if imgui.button("Export") then perform_backup(this.backup_filename) end
+
+    imgui.tree_pop()
 end
 
 local function build_options_menu()
@@ -1780,6 +1877,7 @@ local function build_options_menu()
 	build_reset_options()
 	build_alerts_options()
 	build_hotkeys_options()
+	build_backup_options()
 	imgui.tree_pop()
 	imgui.indent(15)
 end
@@ -1836,15 +1934,19 @@ local function setup_hotkeys()
 	end
 end
 
+local function build_on_draw_ui()
+	if not imgui.tree_node("Hitbox Viewer") then return end
+	local changed
+	changed, this.config.options.display_menu = toggle_setter("Display Options Menu (F1)", this.config.options.display_menu)
+	imgui.tree_pop()
+end
+
 -- Main
 
 if not this.initialized then initialize() end
 
 re.on_draw_ui(function()
-	if not imgui.tree_node("Hitbox Viewer") then return end
-	local changed
-	changed, this.config.options.display_menu = toggle_setter("Display Options Menu (F1)", this.config.options.display_menu)
-	imgui.tree_pop()
+	build_on_draw_ui()
 end)
 
 re.on_frame(function()

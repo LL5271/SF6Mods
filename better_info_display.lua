@@ -2,24 +2,24 @@
 -- Begin HK
 -- 
 
+local hk
+
 if not hk then
 	local kb, mouse, pad
 	local m_up, m_down, m_trig
-	local gp_up, gp_down, gp_trig 
+	local gp_up, gp_down, gp_trig
 	local kb_state = {down = {}, released = {}, triggered={}}
 	local gp_state = {down = {}, released = {}, triggered={}}
 	local mb_state = {down = {}, released = {}, triggered={}}
-	local modifiers = {}
-	local temp_data = {}
 
 	--Merge hashed dictionaries. table_b will be merged into table_a
 	local function merge_tables(table_a, table_b, no_overwrite)
 		table_a = table_a or {}
 		table_b = table_b or {}
-		if no_overwrite then 
-			for key_b, value_b in pairs(table_b) do 
+		if no_overwrite then
+			for key_b, value_b in pairs(table_b) do
 				if table_a[key_b] == nil then
-					table_a[key_b] = value_b 
+					table_a[key_b] = value_b
 				end
 			end
 		else
@@ -31,20 +31,20 @@ if not hk then
 	--Merge hashed dictionaries. table_b will be merged into table_a
 	local function merge_tables_recursively(table_a, table_b, no_overwrite)
 		local searched = {}
-		
+
 		local function recurse(tbl_a, tbl_b)
 			if searched[tbl_b] then return searched[tbl_b] end
 			searched[tbl_b] = tbl_a
-			
-			if no_overwrite then 
-				for key_b, value_b in pairs(tbl_b) do 
+
+			if no_overwrite then
+				for key_b, value_b in pairs(tbl_b) do
 					if tbl_a[key_b] == nil then
 						tbl_a[key_b] = type(value_b)=="table" and recurse({}, value_b) or value_b
 					end
 				end
 			else
-				for key_b, value_b in pairs(tbl_b) do 
-					tbl_a[key_b] = type(value_b)=="table" and recurse((type(tbl_a[key_b])=="table" and tbl_a[key_b] or {}), value_b) or value_b 
+				for key_b, value_b in pairs(tbl_b) do
+					tbl_a[key_b] = type(value_b)=="table" and recurse((type(tbl_a[key_b])=="table" and tbl_a[key_b] or {}), value_b) or value_b
 				end
 			end
 			return tbl_a
@@ -63,7 +63,7 @@ if not hk then
 				local raw_value = field:get_data(nil)
 				if raw_value ~= nil then
 					local name = field:get_name()
-					enum[name] = raw_value 
+					enum[name] = raw_value
 					table.insert(names, name)
 				end
 			end
@@ -72,6 +72,7 @@ if not hk then
 	end
 
 	local hotkeys = {}
+	local modifiers = {}
 	local default_hotkeys = {}
 	local backup_hotkeys = {}
 	local hotkeys_down = {}
@@ -99,7 +100,7 @@ if not hk then
 	buttons.RDown = 131104
 	buttons.RRight = 262272
 	buttons.Select = buttons.CLeft
-	buttons.Start = buttons.CRight 
+	buttons.Start = buttons.CRight
 	buttons["X (Square)"] = buttons.RLeft
 	buttons["Y (Triangle)"] = buttons.RUp
 	buttons["A (X)"] = buttons.RDown or buttons.Decide
@@ -121,18 +122,18 @@ if not hk then
 		gp_state.down = {}
 		gp_state.released = {}
 		gp_state.triggered = {}
-		
+
 		for action_name, key_name in pairs(hotkeys) do
 			if buttons[key_name] ~= nil then
 				gp_state.down[buttons[key_name] ] = false
 				gp_state.released[buttons[key_name] ] = false
 				gp_state.triggered[buttons[key_name] ] = false
-			end 
+			end
 			if keys[key_name] ~= nil then
 				kb_state.down[keys[key_name] ] = false
 				kb_state.released[keys[key_name] ] = false
 				kb_state.triggered[keys[key_name] ] = false
-			end 
+			end
 			if mbuttons[key_name] ~= nil then
 				mb_state.down[mbuttons[key_name] ] = false
 				mb_state.released[mbuttons[key_name] ] = false
@@ -147,7 +148,7 @@ if not hk then
 		local searched = {}
 		local function recurse(tbl, d_tbl)
 			for key, value in pairs(d_tbl) do
-				if type(tbl[key]) ~= type(value) then 
+				if type(tbl[key]) ~= type(value) then
 					if type(value) == "table" and not searched[value] then
 						searched[value] = true
 						tbl[key] = recurse({}, value)
@@ -172,7 +173,7 @@ if not hk then
 
 	--Find the index containing a value (or value as a field) in a table
 	local function find_index(tbl, value, key)
-		if key ~= nil then 
+		if key ~= nil then
 			for i, item in ipairs(tbl) do
 				if item[key] == value then
 					return i
@@ -213,7 +214,7 @@ if not hk then
 		end
 	end
 
-	local function setup_hotkeys(hotkey_table, default_hotkey_table) 
+	local function setup_hotkeys(hotkey_table, default_hotkey_table)
 		if not default_hotkey_table then
 				default_hotkey_table = {}
 			for key, value in pairs(hotkey_table) do
@@ -221,10 +222,10 @@ if not hk then
 			end
 		end
 		default_hotkeys = merge_tables(default_hotkeys, default_hotkey_table)
-		for key, value in pairs(default_hotkey_table) do 
-			if hotkey_table[key] == nil then 
+		for key, value in pairs(default_hotkey_table) do
+			if hotkey_table[key] == nil then
 				hotkey_table[key] = value or nil
-			end 
+			end
 		end
 		hotkeys = merge_tables(hotkeys, hotkey_table)
 		setup_active_keys_tbl()
@@ -262,7 +263,7 @@ if not hk then
 
 	--Checks if an action's binding is released
 	local function chk_up(action_name)
-		if hotkeys_up[action_name] == nil then 
+		if hotkeys_up[action_name] == nil then
 			local key_name = hotkeys[action_name]
 			hotkeys_up[action_name] = kb_state.released[keys[key_name ] ]  or gp_state.released[buttons[key_name ] ] or mb_state.released[mbuttons[key_name ] ]
 		end
@@ -271,7 +272,7 @@ if not hk then
 
 	--Checks if an action's binding is just down
 	local function chk_trig(action_name)
-		if hotkeys_trig[action_name] == nil then 
+		if hotkeys_trig[action_name] == nil then
 			local key_name = hotkeys[action_name]
 			hotkeys_trig[action_name] = kb_state.triggered[keys[key_name ] ]  or gp_state.triggered[buttons[key_name ] ] or mb_state.triggered[mbuttons[key_name ] ]
 		end
@@ -292,7 +293,7 @@ if not hk then
 				hotkeys_trig[action_name] = (kb_state.triggered[keys[key_name ] ]  or gp_state.triggered[buttons[key_name ] ] or mb_state.triggered[mbuttons[key_name ] ]) and (not hotkeys[action_name.."_$"] or check_hotkey(action_name.."_$", true))
 			end
 			return hotkeys_trig[action_name]
-		elseif hotkeys_up[action_name] == nil then 
+		elseif hotkeys_up[action_name] == nil then
 			hotkeys_up[action_name] = (kb_state.released[keys[key_name ] ]  or gp_state.released[buttons[key_name ] ] or mb_state.released[mbuttons[key_name ] ]) and (not hotkeys[action_name.."_$"] or check_hotkey(action_name.."_$", true))
 		end
 		return hotkeys_up[action_name]
@@ -328,27 +329,27 @@ if not hk then
 
 	--Displays an imgui button that you can click then and press a button to assign a button to an action
 	local function hotkey_setter(action_name, hold_action_name, fake_name, title_tooltip)
-		
+
 		local key_updated = false
 		local is_down = check_hotkey(action_name, true) and (not hold_action_name or check_hotkey(hold_action_name, true))
 		local disp_name = (fake_name and ((type(fake_name)~="string") and "" or fake_name)) or action_name
 		local is_mod_1 = (action_name:sub(-2, -1) == "_$")
 		local is_mod_2 = (action_name:sub(-4, -1) == "_$_$")
 		local default = default_hotkeys[action_name]
-		
+
 		local had_hold = not not hold_action_name
 		hold_action_name = hold_action_name and ((hotkeys[hold_action_name] ~= "[Not Bound]") and (hotkeys[hold_action_name] ~= "[Press Input]")) and hold_action_name
 		local modifier_hotkey = hold_action_name and get_button_string(hold_action_name)
 		modifiers[action_name] = hold_action_name
-		
+
 		if is_down then imgui.begin_rect(); imgui.begin_rect() end
 		imgui.push_id(action_name)
 			hotkeys[action_name] = hotkeys[action_name] or default
 			if hotkeys[action_name] == "[Press Input]" then
 				local up = pad and pad:call("get_ButtonUp")
 				if up and up ~= 0 then
-					for button_name, id in pairs(buttons) do 
-						if (up | id) == up then 
+					for button_name, id in pairs(buttons) do
+						if (up | id) == up then
 							hotkeys[action_name] = button_name
 							key_updated = true
 							goto exit
@@ -356,25 +357,25 @@ if not hk then
 					end
 				end
 				if mouse and m_up and m_up ~= 0 then
-					for button_name, id in pairs(mbuttons) do 
-						if (m_up | id) == m_up then 
+					for button_name, id in pairs(mbuttons) do
+						if (m_up | id) == m_up then
 							hotkeys[action_name] = button_name
 							key_updated = true
 							goto exit
 						end
 					end
 				end
-				for key_name, id in pairs(keys) do 
-					if kb and kb:call("isRelease", id) then 
+				for key_name, id in pairs(keys) do
+					if kb and kb:call("isRelease", id) then
 						hotkeys[action_name] = key_name
 						key_updated = true
 						goto exit
 					end
 				end
-				
+
 			end
 			::exit::
-			
+
 			if disp_name ~= "" then
 				imgui.text((disp_name) .. ": ")
 				if title_tooltip and imgui.is_item_hovered() then
@@ -382,7 +383,7 @@ if not hk then
 				end
 				imgui.same_line()
 			end
-			
+
 			if key_updated then
 				if is_mod_1 then
 					hk_data.modifier_actions[action_name] = hotkeys[action_name]
@@ -390,20 +391,20 @@ if not hk then
 				end
 				setup_active_keys_tbl()
 			end
-			
+
 			if not is_mod_2 and hotkeys[action_name.."_$"] then
 				hotkey_setter(action_name.."_$", nil, true)
 				imgui.same_line()
 				imgui.text("+")
 				imgui.same_line()
 			end
-			
+
 			if imgui.button( ((modifier_hotkey and (modifier_hotkey .. " + ")) or "") .. hotkeys[action_name]) then
-				if hotkeys[action_name] == "[Press Input]" then 
+				if hotkeys[action_name] == "[Press Input]" then
 					hotkeys[action_name] = backup_hotkeys[action_name]
 				else
-					for name, action_n in pairs(hotkeys) do 
-						if action_n == "[Press Input]" then 
+					for name, action_n in pairs(hotkeys) do
+						if action_n == "[Press Input]" then
 							hotkeys[name] = backup_hotkeys[name]
 						end
 					end
@@ -411,10 +412,10 @@ if not hk then
 					hotkeys[action_name] = "[Press Input]"
 				end
 			end
-			if imgui.is_item_hovered() then 
-				imgui.set_tooltip(hotkeys[action_name]=="[Press Input]" and "Click to cancel" or "Set " .. (is_mod_1 and "Modifier" or "Hotkey").."\nRight click for options") 
+			if imgui.is_item_hovered() then
+				imgui.set_tooltip(hotkeys[action_name]=="[Press Input]" and "Click to cancel" or "Set " .. (is_mod_1 and "Modifier" or "Hotkey").."\nRight click for options")
 			end
-			if imgui.begin_popup_context_item(action_name) then  
+			if imgui.begin_popup_context_item(action_name) then
 				if hotkeys[action_name] ~= "[Not Bound]" and not hotkeys[action_name.."_$_$"] and imgui.menu_item("Clear") then
 					if is_mod_1 then
 						hotkeys[action_name], hk_data.modifier_actions[action_name], hotkeys[action_name.."_$"], hk_data.modifier_actions[action_name.."_$"]  = hotkeys[action_name.."_$"], hk_data.modifier_actions[action_name.."_$"]
@@ -424,7 +425,7 @@ if not hk then
 					end
 					key_updated = true
 				end
-				if not is_mod_2 and default_hotkeys[action_name] and imgui.menu_item("Reset to Default") then 
+				if not is_mod_2 and default_hotkeys[action_name] and imgui.menu_item("Reset to Default") then
 					hotkeys[action_name] = default_hotkeys[action_name]
 					key_updated = true
 				end
@@ -434,7 +435,7 @@ if not hk then
 					hk_data.modifier_actions[action_name.."_$"] = hotkeys[action_name.."_$"]
 					json.dump_file("Hotkeys_data.json", hk_data)
 				end
-				imgui.end_popup() 
+				imgui.end_popup()
 			end
 			--[[if not is_mod_1 and not hotkeys[action_name.."_$"] and hotkeys[action_name] ~= "[Not Bound]" then
 				local names = "\n"
@@ -454,7 +455,7 @@ if not hk then
 			end]]
 		imgui.pop_id()
 		if is_down then imgui.end_rect(1); imgui.end_rect(2) end
-		
+
 		return key_updated
 	end
 
@@ -471,36 +472,36 @@ if not hk then
 		hk.mouse = sdk.call_native_func(mb_singleton, mb_typedef, "get_Device")
 		kb, pad, mouse = hk.kb, hk.pad, hk.mouse
 		hotkeys_down, hotkeys_up, hotkeys_trig = {}, {}, {}
-		
+
 		if kb then
-			for key, state in pairs(kb_state.released) do 
-				kb_state.released[key]  = kb:call("isRelease", key) 
-				kb_state.down[key] 		= kb:call("isDown", key) 
-				kb_state.triggered[key] = kb:call("isTrigger", key) 
+			for key, state in pairs(kb_state.released) do
+				kb_state.released[key]  = kb:call("isRelease", key)
+				kb_state.down[key] 		= kb:call("isDown", key)
+				kb_state.triggered[key] = kb:call("isTrigger", key)
 			end
 		end
-		
-		if mouse then 
+
+		if mouse then
 			m_up, m_down, m_trig = mouse:call("get_ButtonUp"), mouse:call("get_Button"), mouse:call("get_ButtonDown")
 			for button, state in pairs(mb_state.released) do
-				mb_state.released[button]	= ((m_up | button) == m_up) 
-				mb_state.down[button] 		= ((m_down | button) == m_down) 
+				mb_state.released[button]	= ((m_up | button) == m_up)
+				mb_state.down[button] 		= ((m_down | button) == m_down)
 				mb_state.triggered[button]  = ((m_trig | button) == m_trig)
 			end
 		end
-		
-		if pad then 
+
+		if pad then
 			gp_up, gp_down, gp_trig = pad:call("get_ButtonUp"), pad:call("get_Button"), pad:call("get_ButtonDown")
-			for button, state in pairs(gp_state.released) do 
-				gp_state.released[button] 	= ((gp_up | button) == gp_up) 
-				gp_state.down[button] 		= ((gp_down | button) == gp_down) 
-				gp_state.triggered[button]  = ((gp_trig | button) == gp_trig) 
+			for button, state in pairs(gp_state.released) do
+				gp_state.released[button] 	= ((gp_up | button) == gp_up)
+				gp_state.down[button] 		= ((gp_down | button) == gp_down)
+				gp_state.triggered[button]  = ((gp_trig | button) == gp_trig)
 			end
 		end
 	end
 
 	local function write()
-		
+
 	end
 
 	re.on_application_entry("UpdateHID", function()
@@ -508,43 +509,43 @@ if not hk then
 	end)
 
 	-- Script functionality:
-	local hk = hk or {
+	hk = hk or {
 		kb = kb, 													-- Keyboard device Managed Object, updated every frame
 		mouse = mouse, 												-- Mouse device Managed Object, updated every frame
 		pad = pad, 													-- Gamepad device Managed Object, updated every frame
-				
+
 		keys = keys, 												-- Enum of keyboard key names vs key IDs (some tweaked names)
 		buttons = buttons, 											-- Enum of gamepad button names vs button IDs (some tweaked names)
 		mbuttons = mbuttons, 										-- Enum of mouse button names vs button IDs (some tweaked names)
-				
+
 		hotkeys = hotkeys, 											-- Table of current action names vs button strings
 		default_hotkeys = default_hotkeys, 							-- Table of default action names vs button strings
-				
+
 		kb_state = kb_state,										-- Table with state (up/down/triggered) of all used keyboard keys, updated every frame
 		gp_state = gp_state, 										-- Table with state (up/down/triggered) of all used gamepad buttons, updated every frame
 		mb_state = mb_state, 										-- Table with state (up/down/triggered) of all used mouse buttons, updated every frame
-				
+
 		recurse_def_settings = recurse_def_settings, 				-- Fn takes a table 'tbl' and its paired 'defaults_tbl' and copies mismatched/missing fields from defaults_tbl to tbl, then does the same for any child tables of defaults_tbl
 		find_index = find_index, 									-- Fn takes a table and a value (and optionally a key), then finds the index containing a value (or of the value containing that value as a field 'key') in that table
 		merge_tables = merge_tables,								-- Fn takes table A and B then merges table A into table B
 		merge_tables_recursively = merge_tables_recursively,		-- Fn takes table A and B then merges table A into table B and does the same for any child tables in the table
 		generate_statics = generate_statics, 						-- Fn takes a typedef name for a System.Enum and returns a lua table from it
-				
+
 		setup_hotkeys = setup_hotkeys, 								-- Fn takes a table of hotkeys (action names vs button names) and a paired table of default_hotkeys and sets them up for use in this script
 		reset_from_defaults_tbl = reset_from_defaults_tbl, 			-- Fn takes a defaults table and resets all matching hotkeys in this script to the button strings from it
 		update_hotkey_table = update_hotkey_table, 					-- Fn takes a table of hotkeys (action names vs button names) from an outside script and updates the keys internally in this script to match
 		get_button_string = get_button_string, 						-- Fn takes and action name and returns the full button combination required to trigger an action, including modifiers if they exist
-			
+
 		hotkey_setter = hotkey_setter, 								-- Fn takes an action name and displays an imgui button that you can click then and press an input to assign that input to that action name. Returns true if updated
-				
+
 		check_hotkey = check_hotkey, 								-- Fn checks if an input (by action name) is just released, and also if its modifiers are down (if they exist). Send "true" as 2nd argument to check if input is down, "1" or use argument#3 to check if just-triggered
 		check_doubletap = check_doubletap,							-- Fn uses 'check_hotkey' to check if an input (by action name) has been pressed twice in the past 0.25 seconds
 		check_hold = check_hold,									-- Fn uses 'check_hotkey' to check if an input (by action name) has been held for as long as its argument#2
-				
+
 		chk_up = chk_up, 											-- Fn checks if an input (by action name) is released
 		chk_down = chk_down, 										-- Fn checks if an input (by action name) is down
 		chk_trig = chk_trig, 										-- Fn checks if an input (by action name) is just pressed
-				
+
 		check_kb_key = check_kb_key,								-- Fn checks if a keyboard input is released, down or triggered (by key name)
 		check_mouse_button = check_mouse_button,					-- Fn checks if a mouse input is released, down or triggered (by mbutton name)
 		check_pad_button = check_pad_button,						-- Fn checks if a gamepad input is released, down or triggered (by button name) (such as imgui focus) was removed mid-frame
@@ -570,9 +571,9 @@ local BattleTeam = gBattle:get_field("Team"):get_data(nil)
 local cTeam = BattleTeam.mcTeam
 local BattleChronos = gBattle:get_field("Chronos"):get_data(nil)
 
-local default_config = { 
-	options = { 
-		display_player_info = true, 
+local default_config = {
+	options = {
+		display_player_info = true,
 		display_vitals = true,
 		display_p1_section = true,
 		display_p2_section = true,
@@ -591,17 +592,18 @@ local default_config = {
 		display_p1_projectiles = false,
 		display_p2_projectiles = false
 	},
-	hotkeys = { 
-		toggle_player_info = "F5", 
-		toggle_vitals = "V", 
-		["toggle_vitals_$"] = "Control",
-		toggle_p1 = "1",
-		["toggle_p1_$"] = "Shift",
-		toggle_p2 = "2",
-		["toggle_p2_$"] = "Shift"
+	hotkeys = {
+		toggle_player_info = "F5",
+		toggle_vitals = "V",
+		["toggle_vitals_$"] = "Alt",
+		toggle_p1 = "Alpha1",
+		["toggle_p1_$"] = "Alt",
+		toggle_p2 = "Alpha2",
+		["toggle_p2_$"] = "Alt"
 	}
 }
 
+-- Maximum distance where DI causes wall hit
 local left_wall_dr_splat_pos = -585.2
 local right_wall_dr_splat_pos = 585.2
 
@@ -617,7 +619,7 @@ local function is_paused()
 	if not pause_manager then
 		pause_manager = sdk.get_managed_singleton("app.PauseManager")
 	end
-	
+
 	local pause_type_bit = pause_manager:get_field("_CurrentPauseTypeBit")
 	if pause_type_bit == 64 or pause_type_bit == 2112 then
 		return false
@@ -637,18 +639,23 @@ local function save_handler()
 end
 
 local function initialize()
-	if not initialized then
-		local init_config = json.load_file(CONFIG_PATH)
-		if not init_config then config = default_config; mark_for_save()
-		else config = init_config end
-		config = hk.recurse_def_settings(config, default_config)
-		for k, v in pairs(default_config.hotkeys) do
-			if config.hotkeys[k] == nil then config.hotkeys[k] = v end
-		end
+	if initialized then return end
+	local init_config = json.load_file(CONFIG_PATH)
 
-		hk.setup_hotkeys(config.hotkeys, default_config.hotkeys)
-		initialized = true
+	if not init_config then
+		config = default_config; mark_for_save()
+	else
+		config = init_config
 	end
+
+	config = hk.recurse_def_settings(config, default_config)
+
+	for k, v in pairs(default_config.hotkeys) do
+		if config.hotkeys[k] == nil then config.hotkeys[k] = v end
+	end
+
+	hk.setup_hotkeys(config.hotkeys, default_config.hotkeys)
+	initialized = true
 end
 
 local function bitand(a, b) return (a % (b + b) >= b) and b or 0 end
@@ -656,7 +663,7 @@ local function bitand(a, b) return (a % (b + b) >= b) and b or 0 end
 local function reverse_pairs(aTable)
 	local keys = {}
 
-	for k,v in pairs(aTable) do keys[#keys+1] = k end
+	for k, _ in pairs(aTable) do keys[#keys+1] = k end
 	table.sort(keys, function (a, b) return a>b end)
 
 	local n = 0
@@ -685,7 +692,7 @@ local function read_sfix(sfix_obj)
 end
 
 function imgui.multi_color(first_text, second_text, second_text_color)
-    imgui.text_colored(first_text, 0xFFAAFFFF) 
+    imgui.text_colored(first_text, 0xFFAAFFFF)
     imgui.same_line()
 	if second_text_color then
 	    imgui.text_colored(second_text, second_text_color)
@@ -747,7 +754,7 @@ local function get_hitbox_range(player, actParam, list)
 	local maxHitboxEdgeX = nil
 	if actParam ~= nil then
 		local col = actParam.Collision
-		   for j, rect in reverse_pairs(col.Infos._items) do
+		   for _, rect in reverse_pairs(col.Infos._items) do
 			if rect ~= nil then
 				local posX = rect.OffsetX.v / 65536.0
 				local posY = rect.OffsetY.v / 65536.0
@@ -788,7 +795,7 @@ local function extract_player_data(player_index, player_table, engine, opponent_
 	local cplayer = cPlayer[player_index]
 	local team = cTeam[player_index]
 	local charge_info = player_index == 0 and p1ChargeInfo or p2ChargeInfo
-	
+
 	-- Action Engine Data
 	player_table.mActionId = engine:get_ActionID()
 	player_table.mActionFrame = engine:get_ActionFrame()
@@ -796,7 +803,7 @@ local function extract_player_data(player_index, player_table, engine, opponent_
 	player_table.mMarginFrame = engine:get_MarginFrame()
 	player_table.mMainFrame = engine.mParam.action.ActionFrame.MainFrame
 	player_table.mFollowFrame = engine.mParam.action.ActionFrame.FollowFrame
-	
+
 	-- Frame Meter Data
 	local meter_data = display_data.FrameMeterSSData.MeterDatas[display_meter_index]
 	player_table.whole_frame = meter_data.WholeFrame or ""
@@ -823,14 +830,14 @@ local function extract_player_data(player_index, player_table, engine, opponent_
 	player_table.full_invuln = cplayer.muteki_time
 	player_table.juggle = cplayer.combo_dm_air
 	player_table.burnout = cplayer.incapacitated or false
-	
+
 	-- Frame Data
 	player_table.startup_frames = player_table.apper_frame_int
 	player_table.active_frames = player_table.mFollowFrame - player_table.mMainFrame
 	player_table.recovery_frames = read_sfix(player_table.mMarginFrame) - player_table.mFollowFrame
 	player_table.total_frames = read_sfix(player_table.mMarginFrame)
 	player_table.advantage = player_table.stun_frame_int
-	
+
 	-- Meter Data
 	player_table.drive = cplayer.focus_new
 	player_table.drive_cooldown = cplayer.focus_wait
@@ -838,7 +845,7 @@ local function extract_player_data(player_index, player_table, engine, opponent_
 	player_table.buff = cplayer.style_timer
 	player_table.debuff_timer = cplayer.damage_cond.timer
 	player_table.chargeInfo = charge_info
-	
+
 	-- Position and Movement
 	player_table.posX = cplayer.pos.x.v / 65536.0
 	player_table.posY = cplayer.pos.y.v / 65536.0
@@ -851,26 +858,29 @@ local function extract_player_data(player_index, player_table, engine, opponent_
 	player_table.gap = cplayer.vs_distance.v / 65536.0
 
 	-- Time stop data
-	player_table.timestop_frame = BattleChronos.WorldNotch
-	player_table.timestop_frames = BattleChronos.WorldElapsed
-	
+	local frame, frames = BattleChronos.WorldElapsed, BattleChronos.WorldNotch
+	if frame > 0 and frames > 0 and frame == frames then
+		frame, frames = 0, 0
+	end
+	player_table.timestop_frame, player_table.timestop_frames = frame, frames
+
 	-- Gap percentage (only for P1)
 	player_table.gap_pct = ((player_table.gap - 70) / 420) * 100
-	
+
 	-- Combo Data (from opponent)
 	player_table.combo_attack_count = opponent_cplayer.combo_scale.count
 	player_table.combo_hit_count = opponent_cplayer.combo_dm_cnt
 	player_table.combo_scale_now = opponent_cplayer.combo_scale.now
 	player_table.combo_scale_start = opponent_cplayer.combo_scale.start
 	player_table.combo_scale_buff = opponent_cplayer.combo_scale.buff
-	
+
 	-- Burnout Adjustment
 	if player_table.burnout then
 		player_table.drive_adjusted = player_table.drive - 60000
 	else
 		player_table.drive_adjusted = player_table.drive
 	end
-	
+
 	-- Blockstun Tracking
 	if player_table.max_blockstun == nil then
 		player_table.max_blockstun = 0
@@ -880,6 +890,9 @@ local function extract_player_data(player_index, player_table, engine, opponent_
 	elseif player_table.curr_blockstun == 0 then
 		player_table.max_blockstun = 0
 	end
+
+	-- Unknown
+
 end
 
 local function player_data_handler()
@@ -891,21 +904,22 @@ local function player_data_handler()
 			display_data = t_common.SnapShotDatas[0]._DisplayData or {}
 		end
 	end
-	
+
 	-- Get action engines
 	local p1Engine = cPlayer[0].mpActParam.ActionPart._Engine
 	local p2Engine = cPlayer[1].mpActParam.ActionPart._Engine
-	
+
 	-- Set hit data
 	p1_hit_dt = cPlayer[1].pDmgHitDT
 	p2_hit_dt = cPlayer[0].pDmgHitDT
-	
+
 	-- Extract data for both players
 	extract_player_data(0, p1, p1Engine, cPlayer[1], 0)
 	extract_player_data(1, p2, p2Engine, cPlayer[0], 1)
 end
 
-local indentation_unit = 9
+local indentation_unit = 3
+
 
 local function build_options()
 	changed, config.options.display_player_info = imgui.checkbox(string.format("Display Main Window", hk.hotkeys.toggle_player_info), config.options.display_player_info)
@@ -934,7 +948,7 @@ end
 local function build_vitals_section()
 	local hk_str = hk.get_button_string("toggle_vitals") or ""
 	local subbed = string.gsub(hk_str, "%s*Alpha%s*", "")
-	
+
 	if not config.options.display_vitals then
 		if imgui.button("Vitals (" .. subbed .. ")") then
 			config.options.display_vitals = true
@@ -947,7 +961,7 @@ local function build_vitals_section()
 			mark_for_save()
 		end
 	end
-	
+
 	imgui.indent(indentation_unit)
 	imgui.multi_color("Gap:", string.format("%.0f", p1.gap) .. " (" .. string.format("%.0f", p1.gap_pct) .. "%)")
 	imgui.multi_color("Advantage:", p1.advantage)
@@ -965,15 +979,6 @@ local function build_vitals_section()
 	end
 	imgui.multi_color("P2 Drive:", p2.drive_adjusted, get_drive_color(p2.drive_adjusted))
 	imgui.multi_color("P2 Super:", p2.super, get_super_color(p2.super))
-end
-
-local function build_player_show_buttons(player_index, func)
-	local player_name = "P" .. (player_index + 1)
-	local hk_name = player_index == 0 and "toggle_p1" or "toggle_p2"
-	
-	local hk_str = hk.get_button_string(hk_name) or ""
-	local subbed = string.gsub(hk_str, "%s*Alpha%s*", "")
-	build_visibility_toggle_buttons(player_name, func, hk_name)
 end
 
 local function build_general_section(player_name, general_config_key, player_data)
@@ -1007,21 +1012,18 @@ local function build_player_section(player_index, player_data, hit_dt)
 	local opp_index = player_index == 0 and 1 or 0
 	local opp_player_data = player_index == 0 and p2 or p1
 	local projectile_filter = player_index
-	
+
 	local config_key = player_index == 0 and "display_p1_section" or "display_p2_section"
 	local opp_config_key = player_index == 0 and "display_p2_section" or "display_p1_section"
 	local hk_name = player_index == 0 and "toggle_p1" or "toggle_p2"
-	
+
 	local hk_str = hk.get_button_string(hk_name) or ""
 	local subbed = string.gsub(hk_str, "%s*[Aa]lpha%s*", "")
-	
+
 	if not config.options[config_key] then
 		if imgui.button(player_name .. " (" .. subbed .. ")") then
 			config.options[config_key] = true
 			mark_for_save()
-		end
-		if not config.options[opp_config_key] and not config.options[config_key] then
-			imgui.same_line()
 		end
 		return
 	else
@@ -1030,7 +1032,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 			mark_for_save()
 		end
 	end
-	
+
 	local general_config_key = player_index == 0 and "display_p1_general" or "display_p2_general"
 	imgui.indent(indentation_unit)
 	build_general_section(player_name, general_config_key, player_data)
@@ -1044,7 +1046,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 		config.options[state_config_key] = not config.options[state_config_key]
 		mark_for_save()
 	end
-	
+
 	if config.options[state_config_key] then
 		imgui.indent(indentation_unit)
 		imgui.multi_color("Action ID:", player_data.mActionId)
@@ -1058,20 +1060,20 @@ local function build_player_section(player_index, player_data, hit_dt)
 		imgui.unindent(indentation_unit)
 	end
 	imgui.unindent(indentation_unit)
-	
+
 	local movement_config_key = player_index == 0 and "display_p1_movement" or "display_p2_movement"
-	
+
 	imgui.indent(indentation_unit)
 	if imgui.button(string.format("Movement (%s)##%s_movement_info", config.options[movement_config_key] and "Hide" or "Show", player_name)) then
 		config.options[movement_config_key] = not config.options[movement_config_key]
 		mark_for_save()
 	end
-	
+
 	if config.options[movement_config_key] then
 		imgui.indent(indentation_unit)
 		if player_data.dir == true then
-			imgui.multi_color("Facing:", "Right") 
-		else 
+			imgui.multi_color("Facing:", "Right")
+		else
 			imgui.multi_color("Facing:", "Left")
 		end
 		if player_data.stance == 0 then
@@ -1101,7 +1103,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 		config.options[attack_config_key] = not config.options[attack_config_key]
 		mark_for_save()
 	end
-	
+
 	if config.options[attack_config_key] then
 		imgui.indent(indentation_unit)
 		get_hitbox_range(cplayer, cplayer.mpActParam, player_data or nil)
@@ -1136,14 +1138,14 @@ local function build_player_section(player_index, player_data, hit_dt)
 	imgui.unindent(indentation_unit)
 
 	local latest_attack_config_key = player_index == 0 and "display_p1_latest_attack" or "display_p2_latest_attack"
-	
+
 	if config.options[attack_config_key] then
 		imgui.indent(indentation_unit)
 		if imgui.button(string.format("Latest Attack (%s)##%s_latest_attack_info", config.options[latest_attack_config_key] and "Hide" or "Show", player_name)) then
 			config.options[latest_attack_config_key] = not config.options[latest_attack_config_key]
 			mark_for_save()
 		end
-		
+
 		if config.options[latest_attack_config_key] then
 			imgui.indent(indentation_unit)
 			if hit_dt == nil then
@@ -1169,13 +1171,13 @@ local function build_player_section(player_index, player_data, hit_dt)
 
 	if player_data.chargeInfo:get_Count() > 0 then
 		local charge_config_key = player_index == 0 and "display_p1_charge" or "display_p2_charge"
-		
+
 		imgui.indent(indentation_unit)
 		if imgui.button(string.format("Charge (%s)##%s_charge_info", config.options[charge_config_key] and "Hide" or "Show", player_name)) then
 			config.options[charge_config_key] = not config.options[charge_config_key]
 			mark_for_save()
 		end
-		
+
 		if config.options[charge_config_key] then
 			imgui.indent(indentation_unit)
 			for i=0,player_data.chargeInfo:get_Count() - 1 do
@@ -1196,13 +1198,13 @@ local function build_player_section(player_index, player_data, hit_dt)
 	end
 
 	local projectiles_config_key = player_index == 0 and "display_p1_projectiles" or "display_p2_projectiles"
-	
+
 	imgui.indent(indentation_unit)
 	if imgui.button(string.format("Projectiles (%s)##%s_projectiles", config.options[projectiles_config_key] and "Hide" or "Show", player_name)) then
 		config.options[projectiles_config_key] = not config.options[projectiles_config_key]
 		mark_for_save()
 	end
-	
+
 	if config.options[projectiles_config_key] then
 		imgui.indent(indentation_unit)
 		for i, obj in pairs(cWork) do
@@ -1225,36 +1227,36 @@ local function build_player_section(player_index, player_data, hit_dt)
 	imgui.unindent(indentation_unit)
 end
 
-local function build_player_info_window()
-	imgui.set_next_window_size({220, 0})
-	imgui.begin_window("Player Info", true, 8|64)
+local function build_unknowns_section()
+	imgui.indent(indentation_unit)
+end
+
+local function build_data_window()
+	imgui.set_next_window_size({200, 0})
+	imgui.begin_window("Battle Data", true, 8|64)
 	build_vitals_section()
 	build_player_section(0, p1, p1_hit_dt)
 	build_player_section(1, p2, p2_hit_dt)
+	build_unknowns_section()
 	imgui.end_window()
 end
 
 local function build_handler()
-	if config.options.display_player_info and not is_paused() then build_player_info_window() end
+	if config.options.display_player_info and not is_paused() then build_data_window() end
+end
+
+local function setup_hotkey(hk_str, func)
+	if hk.check_hotkey(hk_str) then
+		config.options[func] = not config.options[func]
+		mark_for_save()
+	end
 end
 
 local function hotkey_handler()
-	if hk.check_hotkey("toggle_player_info") then
-		config.options.display_player_info = not config.options.display_player_info
-		mark_for_save()
-	end
-	if hk.check_hotkey("toggle_vitals") then
-		config.options.display_vitals = not config.options.display_vitals
-		mark_for_save()
-	end
-	if hk.check_hotkey("toggle_p1") then
-		config.options.display_p1_section = not config.options.display_p1_section
-		mark_for_save()
-	end
-	if hk.check_hotkey("toggle_p2") then
-		config.options.display_p2_section = not config.options.display_p2_section
-		mark_for_save()
-	end
+	setup_hotkey("toggle_player_info", "display_player_info")
+	setup_hotkey("toggle_vitals", "display_vitals")
+	setup_hotkey("toggle_p1", "display_p1_section")
+	setup_hotkey("toggle_p2", "display_p2_section")
 end
 
 initialize()

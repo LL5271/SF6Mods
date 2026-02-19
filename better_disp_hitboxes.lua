@@ -1,21 +1,15 @@
-local MOD_NAME = "Hitbox Viewer"
+local MOD_NAME = "Better Hitbox Viewer"
 local CONFIG_PATH = "better_disp_hitboxes.json"
 local SAVE_DELAY = 0.5
+local LEFT_SPLAT_POS, RIGHT_SPLAT_POS = -585.2, 585.2
+
 local gBattle, pause_manager
-local this =  {}
-this.prev_key_states, this.presets, this.preset_names, this.string_buffer = {}, {}, {}, {}
-this.current_preset_name, this.previous_preset_name, this.new_preset_name, this.rename_temp_name = "", "", "", ""
-this.initialized, this.rename_mode, this.create_new_mode, this.delete_confirm_name, this.factory_reset_confirm = false, false, false, false, false
-this.save_pending, this.save_timer, this.config = nil, nil, nil
-this.tooltip_timer, this.tooltip_msg = 0, ""
-this.backup_filename = ""
-this.tree_open = {}
-this.sync_enabled, this.syncing = false, false
 
--- 
--- Begin HK
---
+local state = {}
 
+-- ============================================================================
+-- Hotkey System (hk) – self‑contained module; do not modify
+-- ============================================================================
 if not hk then
 	local kb, mouse, pad
 	local m_up, m_down, m_trig
@@ -132,7 +126,7 @@ if not hk then
 		gp_state.released = {}
 		gp_state.triggered = {}
 
-		for action_name, key_name in pairs(hotkeys) do
+		for _, key_name in pairs(hotkeys) do
 			if buttons[key_name] ~= nil then
 				gp_state.down[buttons[key_name] ] = false
 				gp_state.released[buttons[key_name] ] = false
@@ -560,11 +554,9 @@ if not hk then
 	}
 end
 
--- 
--- End HK
---  
-
--- Utils
+-- ============================================================================
+-- General Utilities
+-- ============================================================================
 
 local function deep_copy(obj)
 	if type(obj) ~= 'table' then return obj end
@@ -575,9 +567,38 @@ end
 
 local function bitand(a, b) return (a % (b + b) >= b) and b or 0 end
 
--- Config
+local function reverse_pairs(aTable)
+    local keys = {}
+    for k, _ in pairs(aTable) do keys[#keys+1] = k end
+    table.sort(keys, function(a, b) return a > b end)
+    local n = 0
+    return function()
+        n = n + 1
+        if n > #keys then return nil, nil end
+        return keys[n], aTable[keys[n]]
+    end
+end
 
-local function mark_for_save() this.save_pending = true; this.save_timer = SAVE_DELAY; end
+local function is_facing_right(entity)
+    local bitval = entity:get_field("BitValue")
+    if bitval and type(bitval) == "number" then
+        return (bitand(bitval, 128) == 128)
+    end
+    return true
+end
+
+-- ============================================================================
+-- Configuration Management
+-- ============================================================================
+
+state.save_pending = nil
+state.save_timer = nil
+state.config = nil
+
+local function mark_for_save()
+	state.save_pending = true
+	state.save_timer = SAVE_DELAY
+end
 
 local function create_default_config()
 	local toggle_options = {
@@ -614,6 +635,7 @@ local function create_default_config()
 			alert_on_save = true,
 			notify_duration = 2.0,
 			hotkey_minimizes = false,
+			color_wall_splat = true,
 		},
 		hotkeys = {
 			toggle_menu = "F1",
@@ -728,94 +750,449 @@ end
 
 local function save_config()
 	local data_to_save = {
-		presets = this.presets,
-		current_preset = this.current_preset_name,
-		config = this.config
-	}; json.dump_file(CONFIG_PATH, data_to_save); this.save_pending = false
+		presets = state.presets,
+		current_preset = state.current_preset_name,
+		config = state.config
+	}
+	json.dump_file(CONFIG_PATH, data_to_save)
+	state.save_pending = false
 end
 
 local function rebuild_preset_names()
-	this.preset_names = {}
-	for name, _ in pairs(this.presets) do table.insert(this.preset_names, name) end
-	table.sort(this.preset_names, function(a, b) return string.lower(a) < string.lower(b) end)
+	state.preset_names = {}
+	for name, _ in pairs(state.presets) do
+		table.insert(state.preset_names, name)
+	end
+	table.sort(state.preset_names, function(a, b) return string.lower(a) < string.lower(b) end)
 end
 
 local function load_config()
 	local loaded = json.load_file(CONFIG_PATH)
 	if loaded then
 		if loaded.presets then
-			this.presets = loaded.presets
+			state.presets = loaded.presets
 			rebuild_preset_names()
 		end
-		if loaded.current_preset then this.current_preset_name = loaded.current_preset end
-		if loaded.config then this.config = validate_config(loaded.config)
-		else this.config = validate_config(loaded) end
+		if loaded.current_preset then state.current_preset_name = loaded.current_preset end
+		if loaded.config then state.config = validate_config(loaded.config)
+		else state.config = validate_config(loaded) end
 	else
-        this.config = create_default_config()
-        this.presets = create_default_presets()
-        this.current_preset_name = "Default"
+        state.config = create_default_config()
+        state.presets = create_default_presets()
+        state.current_preset_name = "Default"
         rebuild_preset_names()
         mark_for_save()
     end
 
 	local defaults = create_default_presets()
     for name, data in pairs(defaults) do
-        if not this.presets[name] then
-            this.presets[name] = data
+        if not state.presets[name] then
+            state.presets[name] = data
             rebuild_preset_names()
             mark_for_save()
         end
     end
 
 	local default = create_default_config()
-	this.config.hotkeys = this.config.hotkeys or {}
+	state.config.hotkeys = state.config.hotkeys or {}
 	for k, v in pairs(default.hotkeys) do
-		if this.config.hotkeys[k] == nil then this.config.hotkeys[k] = v end
+		if state.config.hotkeys[k] == nil then state.config.hotkeys[k] = v end
 	end
-	hk.setup_hotkeys(this.config.hotkeys, default.hotkeys)
+	hk.setup_hotkeys(state.config.hotkeys, default.hotkeys)
 	hk.sync_modifiers_from_hotkeys()
 	hk.register_hotkey_change_callback(function()
-		hk.update_hotkey_table(this.config.hotkeys)
+		hk.update_hotkey_table(state.config.hotkeys)
 		mark_for_save()
 	end)
 end
 
 local function save_handler()
-	if this.save_pending then
-		this.save_timer = this.save_timer - (1.0 / 60.0)
-		if this.save_timer <= 0 then save_config() end
+	if state.save_pending then
+		state.save_timer = state.save_timer - (1.0 / 60.0)
+		if state.save_timer <= 0 then save_config() end
 	end
 end
 
 local function reset_all_default(player)
 	local default = create_default_config()
 	if player == nil then
-		this.config.p1 = deep_copy(default.p1)
-		this.config.p2 = deep_copy(default.p2)
+		state.config.p1 = deep_copy(default.p1)
+		state.config.p2 = deep_copy(default.p2)
 	elseif player == "p1" or player == "p2" then
-		this.config[player] = deep_copy(default[player]) end
-	mark_for_save(); return this.config
+		state.config[player] = deep_copy(default[player]) end
+	mark_for_save()
+	return state.config
 end
 
 local function reset_toggle_default(player)
 	local default = create_default_config()
 	if player == nil then
-		this.config.p1.toggle = deep_copy(default.p1.toggle)
-		this.config.p2.toggle = deep_copy(default.p2.toggle)
+		state.config.p1.toggle = deep_copy(default.p1.toggle)
+		state.config.p2.toggle = deep_copy(default.p2.toggle)
 	elseif player == "p1" or player == "p2" then
-		this.config[player].toggle = deep_copy(default[player].toggle) end
-	mark_for_save(); return this.config
+		state.config[player].toggle = deep_copy(default[player].toggle) end
+	mark_for_save()
+	return state.config
 end
 
 local function reset_opacity_default(player)
 	local default = create_default_config()
 	if player == nil then
-		this.config.p1.opacity = deep_copy(default.p1.opacity)
-		this.config.p2.opacity = deep_copy(default.p2.opacity)
+		state.config.p1.opacity = deep_copy(default.p1.opacity)
+		state.config.p2.opacity = deep_copy(default.p2.opacity)
 	elseif player == "p1" or player == "p2" then
-		this.config[player].opacity = deep_copy(default[player].opacity) end
-	mark_for_save(); return this.config
+		state.config[player].opacity = deep_copy(default[player].opacity) end
+	mark_for_save()
+	return state.config
 end
+
+-- ============================================================================
+-- General helper – used by both drawing and presets
+-- ============================================================================
+
+local function is_disabled_state()
+	return not state.config.p1.toggle.toggle_show and not state.config.p2.toggle.toggle_show
+end
+
+-- ============================================================================
+-- Notifications
+-- ============================================================================
+
+state.tooltip_timer = 0
+state.tooltip_msg = ""
+
+local function action_notify(msg, category_toggle)
+    if state.config.options.hide_all_alerts then return end
+    if category_toggle ~= nil and not state.config.options[category_toggle] then return end
+    state.tooltip_msg = MOD_NAME .. ': ' .. msg
+    state.tooltip_timer = math.floor(state.config.options.notify_duration * 60 + 0.5)
+end
+
+local function tooltip_handler()
+	if state.tooltip_timer > 0 then state.tooltip_timer = state.tooltip_timer - 1 end
+end
+
+local function action_notify_handler()
+    if state.tooltip_timer <= 0 then return end
+
+    local display = imgui.get_display_size()
+    imgui.set_next_window_pos(
+        Vector2f.new(display.x * 0.5, display.y - 100),
+        1 << 0,
+        Vector2f.new(0.5, 0.5)
+    )
+
+    imgui.set_next_window_size(Vector2f.new(0, 0), 1 << 0)
+    imgui.begin_window("Notification", true, 1|2|4|8|16|43|64|65536|131072)
+    imgui.push_font(imgui.load_font(nil, 30))
+    imgui.text(state.tooltip_msg)
+    imgui.pop_font()
+    imgui.end_window()
+end
+
+-- ============================================================================
+-- Preset Management
+-- ============================================================================
+
+state.presets = {}
+state.preset_names = {}
+state.current_preset_name = ""
+state.previous_preset_name = ""
+state.new_preset_name = ""
+state.rename_temp_name = ""
+state.rename_mode = false
+state.create_new_mode = false
+state.delete_confirm_name = false
+state.factory_reset_confirm = false
+state.backup_filename = ""
+
+local function is_preset_loaded(preset_name)
+	if not preset_name or preset_name == "" or not state.presets[preset_name] then return false end
+	local preset = state.presets[preset_name]
+	for _, player in ipairs({"p1", "p2"}) do
+		local config_p, preset_p = state.config[player], preset[player]
+		for _, category in ipairs({"toggle", "opacity"}) do
+			local current_cat, preset_cat = config_p[category], preset_p[category]
+			for k, v in pairs(preset_cat) do if current_cat[k] ~= v then return false end end
+			for k, _ in pairs(current_cat) do if preset_cat[k] == nil then return false end end
+		end
+	end
+	return true
+end
+
+local function preset_has_unsaved_changes()
+	if state.current_preset_name == "" or not state.presets[state.current_preset_name] then return end
+	return not is_preset_loaded(state.current_preset_name)
+end
+
+local function get_preset_name()
+	local base_name, i = "Preset ", 1
+	while true do
+		local candidate = base_name .. i
+		if not state.presets[candidate] then return candidate end
+		i = i + 1
+	end
+end
+
+local function save_current_preset(name)
+	if not name or name == "" then return false, "Invalid preset name" end
+	if is_preset_loaded(name) then return true, "Data identical, skipping save" end
+
+	state.presets[name] = {p1 = deep_copy(state.config.p1), p2 = deep_copy(state.config.p2)}
+	rebuild_preset_names()
+	state.current_preset_name, state.previous_preset_name = name, ""
+	action_notify("Preset Saved: " .. name, "alert_on_save")
+	mark_for_save()
+	return true, "Saved"
+end
+
+local function load_preset(name)
+	if state.presets[name] then
+		local default, preset = create_default_config(), state.presets[name]
+		for _, player in ipairs({"p1", "p2"}) do
+			local merged_toggle = deep_copy(default[player].toggle)
+			if preset[player].toggle then
+				for k, v in pairs(preset[player].toggle) do
+					merged_toggle[k] = v end
+			end
+			state.config[player].toggle = merged_toggle
+			local merged_opacity = deep_copy(default[player].opacity)
+			if preset[player].opacity then
+				for k, v in pairs(preset[player].opacity) do
+					merged_opacity[k] = v end
+			end
+			state.config[player].opacity = merged_opacity
+		end
+		state.current_preset_name, state.previous_preset_name = name, ""
+		mark_for_save()
+		return true
+	end
+	return false, "Preset not found"
+end
+
+local function delete_preset(name)
+	if not state.presets[name] then return false, "Preset not found" end
+
+	local fallback = nil
+	if state.current_preset_name == name then
+		for _, p_name in ipairs(state.preset_names) do
+			if p_name ~= name then
+				fallback = p_name
+				break
+			end
+		end
+	end
+
+	state.presets[name] = nil
+	rebuild_preset_names()
+
+	if state.rename_mode == name then
+		state.rename_mode, state.rename_temp_name = false, ""
+	end
+
+	if state.current_preset_name == name then
+		state.create_new_mode, state.rename_mode = false, false
+		if fallback then
+			load_preset(fallback)
+		else
+			reset_all_default()
+			state.current_preset_name = get_preset_name()
+			save_current_preset(state.current_preset_name)
+		end
+	end
+
+	mark_for_save()
+	return true
+end
+
+local function rename_preset(old_name, new_name)
+	if not old_name or old_name == "" then return false, "No preset selected" end
+	if not new_name or new_name == "" then return false, "New name cannot be empty" end
+	if new_name == old_name then return false, "New name is the same as the old name" end
+	if state.presets[new_name] then return false, "A preset with this name already exists" end
+	if state.presets[old_name] then
+		state.presets[new_name], state.presets[old_name] = state.presets[old_name], nil
+		rebuild_preset_names()
+		if state.current_preset_name == old_name then
+			state.current_preset_name, state.previous_preset_name = new_name, "" end
+		mark_for_save()
+		return true
+	end
+	return false, "Preset not found"
+end
+
+local function get_duplicate_preset_name(name)
+	local i = 1
+	while true do
+		local candidate = name .. "_" .. i
+		if not state.presets[candidate] then return candidate end
+		i = i + 1
+	end
+end
+
+local function duplicate_preset(name)
+	if not state.presets[name] then return false, "Preset not found" end
+	local new_name = get_duplicate_preset_name(name)
+	state.presets[new_name] = deep_copy(state.presets[name])
+	rebuild_preset_names()
+	mark_for_save()
+	return true
+end
+
+local function start_create_new_mode()
+	state.create_new_mode = true
+	state.rename_mode = false
+	if state.previous_preset_name == "" then state.previous_preset_name = state.current_preset_name end
+	state.new_preset_name = get_preset_name()
+end
+
+local function start_rename_mode(preset_name)
+	state.rename_mode = preset_name
+	state.rename_temp_name = preset_name
+	state.create_new_mode = false
+end
+
+local function cancel_rename_mode()
+	state.rename_mode, state.rename_temp_name = false, ""
+end
+
+local function switch_preset(preset_name)
+	load_preset(preset_name)
+	action_notify("Loaded Preset " .. preset_name, "alert_on_presets")
+	state.create_new_mode, state.rename_mode, state.new_preset_name, state.rename_temp_name = false, false, "", ""
+end
+
+local function start_delete_confirm(preset_name)
+	state.delete_confirm_name = preset_name
+end
+
+local function save_rename(old_name)
+	if state.rename_temp_name == "" then
+	elseif state.rename_temp_name == old_name then
+		state.rename_mode, state.rename_temp_name = false, ""
+	elseif state.presets[state.rename_temp_name] then
+	else
+		local success, error_msg = rename_preset(old_name, state.rename_temp_name)
+		if success then state.rename_mode, state.rename_temp_name = false, "" end
+	end
+end
+
+local function save_new_preset()
+	if state.new_preset_name == "" then
+	elseif state.presets[state.new_preset_name] then
+		state.current_preset_name = state.new_preset_name
+		state.create_new_mode, state.new_preset_name = false, ""
+	else
+		local default = create_default_config()
+		state.presets[state.new_preset_name] = {p1 = deep_copy(default.p1), p2 = deep_copy(default.p2)}
+		rebuild_preset_names()
+		state.config.p1 = deep_copy(default.p1)
+		state.config.p2 = deep_copy(default.p2)
+		local created_name = state.new_preset_name
+		state.current_preset_name, state.previous_preset_name = created_name, ""
+		state.create_new_mode, state.new_preset_name = false, ""
+		action_notify("Preset Created: " .. created_name, "alert_on_presets")
+		mark_for_save()
+	end
+end
+
+local function cancel_new_preset()
+	state.create_new_mode, state.new_preset_name = false, ""
+	if state.previous_preset_name ~= "" then
+		state.current_preset_name, state.previous_preset_name = state.previous_preset_name, "" end
+end
+
+local function create_new_blank_preset()
+	if state.previous_preset_name == "" then state.previous_preset_name = state.current_preset_name end
+	state.new_preset_name = get_preset_name()
+end
+
+local function cancel_blank_preset()
+	state.create_new_mode, state.new_preset_name = false, ""
+	if state.previous_preset_name ~= "" then
+		state.current_preset_name, state.previous_preset_name = state.previous_preset_name, ""
+	else state.current_preset_name = "" end
+end
+
+local function get_current_preset_index()
+	for i, name in ipairs(state.preset_names) do
+		if name == state.current_preset_name then return i end
+	end
+	return 1
+end
+
+local function load_next_preset()
+	if #state.preset_names <= 1 then return end
+	local index = get_current_preset_index()
+	index = index + 1
+	if index > #state.preset_names then index = 1 end
+	switch_preset(state.preset_names[index])
+end
+
+local function load_previous_preset()
+	if #state.preset_names <= 1 then return end
+	local index = get_current_preset_index()
+	index = index - 1
+	if index < 1 then index = #state.preset_names end
+	switch_preset(state.preset_names[index])
+end
+
+local function format_preset_with_color(preset_name)
+	if preset_name == state.current_preset_name then
+		local color = 0xFF00FF00
+		if is_disabled_state() then
+			color = 0xFF0000FF
+		elseif preset_has_unsaved_changes() then
+			color = 0xFF00FFFF
+		end
+		imgui.text_colored(preset_name, color)
+	else
+		imgui.text(preset_name)
+	end
+end
+
+local function generate_default_backup_filename()
+    local t = os.date("*t")
+    local datetime = string.format("%04d%02d%02d",
+        t.year, t.month, t.day, t.hour, t.min, t.sec)
+    return "hitbox_backup" .. datetime .. ".json"
+end
+
+local function perform_backup(filename)
+    if not filename or filename == "" then
+        action_notify("Backup failed: no filename", nil)
+        return
+    end
+    if not filename:match("%.json$") then
+        filename = filename .. ".json"
+    end
+    local data = {
+        presets = state.presets,
+        current_preset = state.current_preset_name,
+        config = state.config
+    }
+    json.dump_file(filename, data)
+    action_notify("Backup saved to " .. filename, "alert_on_save")
+end
+
+local function restore_factory_defaults()
+    local default = create_default_config()
+    state.config.p1 = deep_copy(default.p1)
+    state.config.p2 = deep_copy(default.p2)
+    local factory = create_default_presets()
+    for name, data in pairs(factory) do
+        state.presets[name] = data
+    end
+    rebuild_preset_names()
+    state.current_preset_name = "Default"
+    load_preset("Default")
+    action_notify("Factory defaults restored", "alert_on_presets")
+    mark_for_save()
+end
+
+-- ============================================================================
+-- Hitbox Drawing Logic
+-- ============================================================================
 
 local function apply_opacity(opacity, colorWithoutAlpha)
 	local alpha = math.floor(opacity * 2.55)
@@ -827,18 +1204,6 @@ local function is_pause_menu_closed()
 	if not pause_manager then pause_manager = sdk.get_managed_singleton("app.PauseManager")
 	elseif pause_manager then pause_type_bit = pause_manager:get_field("_CurrentPauseTypeBit") end
 	return pause_type_bit == 64 or pause_type_bit == 2112
-end
-
-local function reverse_pairs(aTable)
-    local keys = {}
-    for k, _ in pairs(aTable) do keys[#keys+1] = k end
-    table.sort(keys, function(a, b) return a > b end)
-    local n = 0
-    return function()
-        n = n + 1
-        if n > #keys then return nil, nil end
-        return keys[n], aTable[keys[n]]
-    end
 end
 
 local function get_vectors(rect)
@@ -877,9 +1242,9 @@ local function draw_box(outline_toggle, fill_toggle, outline_opacity, fill_opaci
 end
 
 local function build_hit_properties(condFlag, rect)
+	if not rect then return end
     local parts = {}
     local idx = 0
-
     idx = property_flag(parts, idx, 16, "Standing, ", rect)
     idx = property_flag(parts, idx, 32, "Crouching, ", rect)
     idx = property_flag(parts, idx, 64, "Airborne, ", rect)
@@ -1073,366 +1438,83 @@ local function draw_hitboxes(work, actParam, player_config)
     for _, rect in reverse_pairs(col.Infos._items) do
         draw_hitbox(rect, player_config)
     end
-    this.string_buffer = {}
 end
 
 local function draw_position_marker(entity, player_config)
     if not player_config.toggle.position then return end
     if not entity.pos or not entity.pos.x or not entity.pos.y then return end
-    local x, y = entity.pos.x.v, entity.pos.y.v
-    if not x or not y or (x == 0 and y == 0) then return end
-    local vPos = Vector3f.new(x / 6553600.0, y / 6553600.0, 0)
+
+    local x_val = entity.pos.x.v
+    local y_val = entity.pos.y.v
+    if type(x_val) ~= "number" or type(y_val) ~= "number" then return end
+    if x_val == 0 and y_val == 0 then return end
+
+    local vPos = Vector3f.new(x_val / 6553600.0, y_val / 6553600.0, 0)
     local screenPos = draw.world_to_screen(vPos)
     if screenPos then
+	local color = 0xFFFFFF
+			if state.config.options.color_wall_splat then
+				local facing_right = is_facing_right(entity)
+				local scaled_x = x_val / 65536.0
+				
+				if (facing_right and scaled_x <= LEFT_SPLAT_POS) or (not facing_right and scaled_x >= RIGHT_SPLAT_POS) then
+					color = 0xB729FF
+				end
+			end
         draw.filled_circle(screenPos.x, screenPos.y, 10,
-            apply_opacity(player_config.opacity.position, 0xFFFFFF), 10)
+            apply_opacity(player_config.opacity.position, color), 10)
     end
 end
 
-local function process_entity(entity)
+local function process_entity(entity, draw_pos)
     local config = nil
     if entity:get_IsTeam1P() then
-        config = this.config.p1
+        config = state.config.p1
     elseif entity:get_IsTeam2P() then
-        config = this.config.p2
+        config = state.config.p2
     end
     if not config or not config.toggle.toggle_show then return end
     draw_hitboxes(entity, entity.mpActParam, config)
-    draw_position_marker(entity, config)
-end
-
-local function toggle_setter(label, val)
-	local changed, new_val = imgui.checkbox(label, val)
-	if changed then mark_for_save() end; return changed, new_val
-end
-
-local function opacity_setter(label, val, speed, min, max)
-	val = math.max(0, math.min(100, val))
-	local changed, new_val = imgui.drag_int(label, val, speed or 1.0, min or 0, max or 100)
-	if changed then mark_for_save() end; return changed, new_val
+    if draw_pos then
+        draw_position_marker(entity, config)
+    end
 end
 
 local function process_hitboxes()
     local sWork, sPlayer = gBattle:get_field("Work"):get_data(nil), gBattle:get_field("Player"):get_data(nil)
     for _, obj in pairs(sWork.Global_work) do
-        if obj.mpActParam and not obj:get_IsR0Die() then process_entity(obj) end
+        if obj.mpActParam and not obj:get_IsR0Die() then process_entity(obj, false) end
     end
     for _, player in pairs(sPlayer.mcPlayer) do
-        if player.mpActParam then process_entity(player) end
+        if player.mpActParam then process_entity(player, true) end
     end
 end
 
-local function is_disabled_state()
-	return not this.config.p1.toggle.toggle_show and not this.config.p2.toggle.toggle_show
+-- ============================================================================
+-- GUI – Menu Building Functions
+-- ============================================================================
+
+state.tree_open = {}
+state.sync_enabled = false
+state.syncing = false
+state.menu_window_pos = nil
+state.last_menu_title = ""
+state.last_menu_hotkey_display = ""
+state.force_tree_restore = false
+state.confirm_restore_hotkeys = false
+
+local function toggle_setter(label, val)
+	local changed, new_val = imgui.checkbox(label, val)
+	if changed then mark_for_save() end
+	return changed, new_val
 end
 
--- Notifications
-
-local function action_notify(msg, category_toggle)
-    if this.config.options.hide_all_alerts then return end
-    if category_toggle ~= nil and not this.config.options[category_toggle] then return end
-    this.tooltip_msg = MOD_NAME .. ': ' .. msg
-    this.tooltip_timer = math.floor(this.config.options.notify_duration * 60 + 0.5)
+local function opacity_setter(label, val, speed, min, max)
+	val = math.max(0, math.min(100, val))
+	local changed, new_val = imgui.drag_int(label, val, speed or 1.0, min or 0, max or 100)
+	if changed then mark_for_save() end
+	return changed, new_val
 end
-
-local function tooltip_handler()
-	if this.tooltip_timer > 0 then this.tooltip_timer = this.tooltip_timer - 1 end
-end
-
-local function action_notify_handler()
-    if this.tooltip_timer <= 0 then return end
-
-    local display = imgui.get_display_size()
-    imgui.set_next_window_pos(
-        Vector2f.new(display.x * 0.5, display.y - 100),
-        1 << 0,
-        Vector2f.new(0.5, 0.5)
-    )
-
-    imgui.set_next_window_size(Vector2f.new(0, 0), 1 << 0)
-    imgui.begin_window("Notification", true, 1|2|4|8|16|43|64|65536|131072)
-    imgui.push_font(imgui.load_font(nil, 30))
-    imgui.text(this.tooltip_msg)
-    imgui.pop_font()
-    imgui.end_window()
-end
-
--- Presets
-
-local function is_preset_loaded(preset_name)
-	if not preset_name or preset_name == "" or not this.presets[preset_name] then return false end
-	local preset = this.presets[preset_name]
-	for _, player in ipairs({"p1", "p2"}) do
-		local config_p, preset_p = this.config[player], preset[player]
-		for _, category in ipairs({"toggle", "opacity"}) do
-			local current_cat, preset_cat = config_p[category], preset_p[category]
-			for k, v in pairs(preset_cat) do if current_cat[k] ~= v then return false end end
-			for k, _ in pairs(current_cat) do if preset_cat[k] == nil then return false end end
-		end
-	end; return true
-end
-
-local function preset_has_unsaved_changes()
-	if this.current_preset_name == "" or not this.presets[this.current_preset_name] then return end
-	return not is_preset_loaded(this.current_preset_name)
-end
-
-local function get_preset_name()
-	local base_name, i = "Preset ", 1
-	while true do local candidate = base_name .. i
-		if not this.presets[candidate] then return candidate end; i = i + 1; end
-end
-
-local function save_current_preset(name)
-	if not name or name == "" then return false, "Invalid preset name" end
-	if is_preset_loaded(name) then return true, "Data identical, skipping save" end
-
-	this.presets[name] = {p1 = deep_copy(this.config.p1), p2 = deep_copy(this.config.p2)}
-	rebuild_preset_names()
-	this.current_preset_name, this.previous_preset_name = name, ""
-	action_notify("Preset Saved: " .. name, "alert_on_save")
-	mark_for_save(); return true, "Saved"
-end
-
-local function load_preset(name)
-	if this.presets[name] then
-		local default, preset = create_default_config(), this.presets[name]
-		for _, player in ipairs({"p1", "p2"}) do
-			local merged_toggle = deep_copy(default[player].toggle)
-			if preset[player].toggle then
-				for k, v in pairs(preset[player].toggle) do
-					merged_toggle[k] = v end
-			end
-			this.config[player].toggle = merged_toggle
-			local merged_opacity = deep_copy(default[player].opacity)
-			if preset[player].opacity then
-				for k, v in pairs(preset[player].opacity) do
-					merged_opacity[k] = v end
-			end
-			this.config[player].opacity = merged_opacity
-		end
-		this.current_preset_name, this.previous_preset_name = name, ""
-		mark_for_save(); return true
-	end; return false, "Preset not found"
-end
-
-local function delete_preset(name)
-	if not this.presets[name] then return false, "Preset not found" end
-
-	local fallback = nil
-	if this.current_preset_name == name then
-		for _, p_name in ipairs(this.preset_names) do
-			if p_name ~= name then
-				fallback = p_name
-				break
-			end
-		end
-	end
-
-	this.presets[name] = nil
-	rebuild_preset_names()
-
-	if this.rename_mode == name then this.rename_mode, this.rename_temp_name = false, "" end
-
-	if this.current_preset_name == name then
-		this.create_new_mode, this.rename_mode = false, false
-		if fallback then
-			load_preset(fallback)
-		else
-			reset_all_default()
-			this.current_preset_name = get_preset_name()
-			save_current_preset(this.current_preset_name)
-		end
-	end
-
-	mark_for_save()
-	return true
-end
-
-local function rename_preset(old_name, new_name)
-	if not old_name or old_name == "" then return false, "No preset selected" end
-	if not new_name or new_name == "" then return false, "New name cannot be empty" end
-	if new_name == old_name then return false, "New name is the same as the old name" end
-	if this.presets[new_name] then return false, "A preset with this name already exists" end
-	if this.presets[old_name] then
-		this.presets[new_name], this.presets[old_name] = this.presets[old_name], nil
-		rebuild_preset_names()
-		if this.current_preset_name == old_name then
-			this.current_preset_name, this.previous_preset_name = new_name, "" end
-		mark_for_save(); return true
-	end; return false, "Preset not found"
-end
-
-local function get_duplicate_preset_name(name)
-	local i = 1
-	while true do
-		local candidate = name .. "_" .. i
-		if not this.presets[candidate] then return candidate end
-		i = i + 1
-	end
-end
-
-local function duplicate_preset(name)
-	if not this.presets[name] then return false, "Preset not found" end
-	local new_name = get_duplicate_preset_name(name)
-	this.presets[new_name] = deep_copy(this.presets[name])
-	rebuild_preset_names()
-	mark_for_save()
-	return true
-end
-local function start_create_new_mode()
-	this.create_new_mode = true
-	this.rename_mode = false
-	if this.previous_preset_name == "" then this.previous_preset_name = this.current_preset_name end
-	this.new_preset_name = get_preset_name()
-end
-
-local function start_rename_mode(preset_name)
-	this.rename_mode = preset_name
-	this.rename_temp_name = preset_name
-	this.create_new_mode = false
-end
-
-local function cancel_rename_mode()
-	this.rename_mode, this.rename_temp_name = false, ""
-end
-
-local function switch_preset(preset_name)
-	load_preset(preset_name)
-	action_notify("Loaded Preset " .. preset_name, "alert_on_presets")
-	this.create_new_mode, this.rename_mode, this.new_preset_name, this.rename_temp_name = false, false, "", ""
-end
-
-local function start_delete_confirm(preset_name)
-	this.delete_confirm_name = preset_name
-end
-
-local function save_rename(old_name)
-	if this.rename_temp_name == "" then
-	elseif this.rename_temp_name == old_name then
-		this.rename_mode, this.rename_temp_name = false, ""
-	elseif this.presets[this.rename_temp_name] then
-	else
-		local success, error_msg = rename_preset(old_name, this.rename_temp_name)
-		if success then this.rename_mode, this.rename_temp_name = false, "" end
-	end
-end
-
-local function save_new_preset()
-	if this.new_preset_name == "" then
-	elseif this.presets[this.new_preset_name] then
-		this.current_preset_name = this.new_preset_name
-		this.create_new_mode, this.new_preset_name = false, ""
-	else
-		local default = create_default_config()
-		this.presets[this.new_preset_name] = {p1 = deep_copy(default.p1), p2 = deep_copy(default.p2)}
-		rebuild_preset_names()
-		this.config.p1 = deep_copy(default.p1)
-		this.config.p2 = deep_copy(default.p2)
-		local created_name = this.new_preset_name
-		this.current_preset_name, this.previous_preset_name = created_name, ""
-		this.create_new_mode, this.new_preset_name = false, ""
-		action_notify("Preset Created: " .. created_name, "alert_on_presets")
-		mark_for_save()
-	end
-end
-
-local function cancel_new_preset()
-	this.create_new_mode, this.new_preset_name = false, ""
-	if this.previous_preset_name ~= "" then
-		this.current_preset_name, this.previous_preset_name = this.previous_preset_name, "" end
-end
-
-local function create_new_blank_preset()
-	if this.previous_preset_name == "" then this.previous_preset_name = this.current_preset_name end
-	this.new_preset_name = get_preset_name()
-	this.should_focus_new = true
-end
-
-local function cancel_blank_preset()
-	this.create_new_mode, this.new_preset_name = false, ""
-	if this.previous_preset_name ~= "" then
-		this.current_preset_name, this.previous_preset_name = this.previous_preset_name, ""
-	else this.current_preset_name = "" end
-end
-
-
-local function get_current_preset_index()
-	for i, name in ipairs(this.preset_names) do
-		if name == this.current_preset_name then return i end
-	end
-	return 1
-end
-
-local function load_next_preset()
-	if #this.preset_names <= 1 then return end
-	local index = get_current_preset_index()
-	index = index + 1
-	if index > #this.preset_names then index = 1 end
-	switch_preset(this.preset_names[index])
-end
-
-local function load_previous_preset()
-	if #this.preset_names <= 1 then return end
-	local index = get_current_preset_index()
-	index = index - 1
-	if index < 1 then index = #this.preset_names end
-	switch_preset(this.preset_names[index])
-end
-
-local function format_preset_with_color(preset_name)
-	if preset_name == this.current_preset_name then
-		local color = 0xFF00FF00 -- Green
-		if is_disabled_state() then
-			color = 0xFF0000FF -- Red
-		elseif preset_has_unsaved_changes() then
-			color = 0xFF00FFFF -- Yellow
-		end
-		imgui.text_colored(preset_name, color)
-	else
-		imgui.text(preset_name)
-	end
-end
-
-local function generate_default_backup_filename()
-    local t = os.date("*t")
-    local datetime = string.format("%04d%02d%02d",
-        t.year, t.month, t.day, t.hour, t.min, t.sec)
-    return "hitbox_backup" .. datetime .. ".json"
-end
-
-local function perform_backup(filename)
-    if not filename or filename == "" then
-        action_notify("Backup failed: no filename", nil)
-        return
-    end
-    if not filename:match("%.json$") then
-        filename = filename .. ".json"
-    end
-    local data = {
-        presets = this.presets,
-        current_preset = this.current_preset_name,
-        config = this.config
-    }
-    json.dump_file(filename, data)
-    action_notify("Backup saved to " .. filename, "alert_on_save")
-end
-local function restore_factory_defaults()
-    local default = create_default_config()
-    this.config.p1 = deep_copy(default.p1)
-    this.config.p2 = deep_copy(default.p2)
-    local factory = create_default_presets()
-    for name, data in pairs(factory) do
-        this.presets[name] = data
-    end
-    rebuild_preset_names()
-    this.current_preset_name = "Default"
-    load_preset("Default")
-    action_notify("Factory defaults restored", "alert_on_presets")
-    mark_for_save()
-end
-
--- GUI
 
 local function build_menu_columns(widths, flags, names)
     for i, width in ipairs(widths) do
@@ -1444,12 +1526,12 @@ end
 local function build_toggle_headers()
     imgui.table_set_column_index(0)
 
-    if not (this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show) then
+    if not (state.config.p1.toggle.toggle_show or state.config.p2.toggle.toggle_show) then
         imgui.text("Show Hidden Elements")
     else
-        local btn_label = this.sync_enabled and "Syncing Changes##sync_btn" or "Sync P1/P2 Changes##sync_btn"
+        local btn_label = state.sync_enabled and "Syncing Changes##sync_btn" or "Sync P1/P2 Changes##sync_btn"
         if imgui.button(btn_label, {0, 0}) then
-            this.sync_enabled = not this.sync_enabled
+            state.sync_enabled = not state.sync_enabled
         end
         if imgui.is_item_hovered() then
             imgui.set_tooltip("Sync P1/P2: Changes to one side mirror the other")
@@ -1458,33 +1540,33 @@ local function build_toggle_headers()
 
     imgui.table_set_column_index(1)
     local changed1
-    changed1, this.config.p1.toggle.toggle_show = (function()
+    changed1, state.config.p1.toggle.toggle_show = (function()
         local label = "P1"
         local id = "##p1_HideAllHeader"
         imgui.text(label)
         imgui.same_line()
         local cursor = imgui.get_cursor_pos()
         imgui.set_cursor_pos(Vector2f.new(cursor.x + 20, cursor.y))
-        return toggle_setter(id, this.config.p1.toggle.toggle_show)
+        return toggle_setter(id, state.config.p1.toggle.toggle_show)
     end)()
 
     imgui.table_set_column_index(3)
     local changed2
-    changed2, this.config.p2.toggle.toggle_show = (function()
+    changed2, state.config.p2.toggle.toggle_show = (function()
         local label = "P2"
         local id = "##p2_HideAllHeader"
         imgui.text(label)
         imgui.same_line()
         local cursor = imgui.get_cursor_pos()
         imgui.set_cursor_pos(Vector2f.new(cursor.x + 20, cursor.y))
-        return toggle_setter(id, this.config.p2.toggle.toggle_show)
+        return toggle_setter(id, state.config.p2.toggle.toggle_show)
     end)()
 
     if changed1 then
-        action_notify("P1 Hitboxes " .. (this.config.p1.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
+        action_notify("P1 Hitboxes " .. (state.config.p1.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
     end
     if changed2 then
-        action_notify("P2 Hitboxes " .. (this.config.p2.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
+        action_notify("P2 Hitboxes " .. (state.config.p2.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
     end
 end
 
@@ -1504,24 +1586,24 @@ local function build_toggle_column(player_index, visible, toggle_tbl, opacity_tb
         op_changed, opacity_tbl[opacity_key] = opacity_setter(opacity_id, opacity_tbl[opacity_key], 0.5, 0, 100)
         imgui.pop_item_width()
 
-        if op_changed and this.sync_enabled and not this.syncing then
-            this.syncing = true
-            local other_opacity = (player_index == 1) and this.config.p2.opacity or this.config.p1.opacity
+        if op_changed and state.sync_enabled and not state.syncing then
+            state.syncing = true
+            local other_opacity = (player_index == 1) and state.config.p2.opacity or state.config.p1.opacity
             other_opacity[opacity_key] = opacity_tbl[opacity_key]
-            this.syncing = false
+            state.syncing = false
             mark_for_save()
         end
     end
 
-    if changed and this.sync_enabled and not this.syncing then
-        this.syncing = true
-        local other_toggle = (player_index == 1) and this.config.p2.toggle or this.config.p1.toggle
+    if changed and state.sync_enabled and not state.syncing then
+        state.syncing = true
+        local other_toggle = (player_index == 1) and state.config.p2.toggle or state.config.p1.toggle
         other_toggle[toggle_key] = toggle_tbl[toggle_key]
         if opacity_key then
-            local other_opacity = (player_index == 1) and this.config.p2.opacity or this.config.p1.opacity
+            local other_opacity = (player_index == 1) and state.config.p2.opacity or state.config.p1.opacity
             other_opacity[opacity_key] = opacity_tbl[opacity_key]
         end
-        this.syncing = false
+        state.syncing = false
         mark_for_save()
     end
 end
@@ -1531,17 +1613,17 @@ local function build_toggle_columns(label, toggle_key, opacity_key)
     imgui.text(label)
 
     build_toggle_column(1,
-        this.config.p1.toggle.toggle_show,
-        this.config.p1.toggle,
-        this.config.p1.opacity,
+        state.config.p1.toggle.toggle_show,
+        state.config.p1.toggle,
+        state.config.p1.opacity,
         toggle_key, opacity_key)
 
     imgui.table_set_column_index(2)
 
     build_toggle_column(3,
-        this.config.p2.toggle.toggle_show,
-        this.config.p2.toggle,
-        this.config.p2.opacity,
+        state.config.p2.toggle.toggle_show,
+        state.config.p2.toggle,
+        state.config.p2.opacity,
         toggle_key, opacity_key)
 end
 
@@ -1572,15 +1654,15 @@ local function build_player_toggle_all(player_index, toggle_tbl, opacity_tbl)
             end
         end
         mark_for_save()
-        if this.sync_enabled and not this.syncing then
-            this.syncing = true
-            local other = (player_index == 1) and this.config.p2.toggle or this.config.p1.toggle
+        if state.sync_enabled and not state.syncing then
+            state.syncing = true
+            local other = (player_index == 1) and state.config.p2.toggle or state.config.p1.toggle
             for k, _ in pairs(other) do
                 if k ~= "toggle_show" then
                     other[k] = all_checked
                 end
             end
-            this.syncing = false
+            state.syncing = false
             mark_for_save()
         end
     end
@@ -1608,13 +1690,13 @@ local function build_player_toggle_all(player_index, toggle_tbl, opacity_tbl)
                 opacity_tbl[k] = current
             end
             mark_for_save()
-            if this.sync_enabled and not this.syncing then
-                this.syncing = true
-                local other = (player_index == 1) and this.config.p2.opacity or this.config.p1.opacity
+            if state.sync_enabled and not state.syncing then
+                state.syncing = true
+                local other = (player_index == 1) and state.config.p2.opacity or state.config.p1.opacity
                 for k, _ in pairs(other) do
                     other[k] = current
                 end
-                this.syncing = false
+                state.syncing = false
                 mark_for_save()
             end
         end
@@ -1628,9 +1710,9 @@ local function build_toggle_all_row()
     imgui.table_set_column_index(0)
     imgui.text("All")
 
-    build_player_toggle_all(1, this.config.p1.toggle, this.config.p1.opacity)
+    build_player_toggle_all(1, state.config.p1.toggle, state.config.p1.opacity)
     imgui.table_set_column_index(2)
-    build_player_toggle_all(3, this.config.p2.toggle, this.config.p2.opacity)
+    build_player_toggle_all(3, state.config.p2.toggle, state.config.p2.opacity)
 end
 
 local toggle_rows = {
@@ -1670,7 +1752,7 @@ local function build_toggle_menu()
     imgui.table_next_row()
     build_toggle_headers()
 
-    if this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show then
+    if state.config.p1.toggle.toggle_show or state.config.p2.toggle.toggle_show then
         build_toggle_rows()
     end
 
@@ -1679,9 +1761,9 @@ end
 
 local function build_preset_name_column(preset_name)
 	imgui.table_set_column_index(0)
-	if this.rename_mode == preset_name then
+	if state.rename_mode == preset_name then
 		local changed
-		changed, this.rename_temp_name = imgui.input_text("##rename_" .. preset_name, this.rename_temp_name, 32)
+		changed, state.rename_temp_name = imgui.input_text("##rename_" .. preset_name, state.rename_temp_name, 32)
 	else
 		format_preset_with_color(preset_name)
 	end
@@ -1689,16 +1771,16 @@ end
 
 local function build_preset_action_column(preset_name)
 	imgui.table_set_column_index(1)
-	if this.rename_mode == preset_name then
+	if state.rename_mode == preset_name then
 		if imgui.button("Rename##conf_" .. preset_name, {0, 0}) then save_rename(preset_name) end
-	elseif is_disabled_state() or preset_name ~= this.current_preset_name then
+	elseif is_disabled_state() or preset_name ~= state.current_preset_name then
 		if imgui.button("Load##load_" .. preset_name, {0, 0}) then switch_preset(preset_name) end
 	end
 end
 
 local function build_preset_rename_column(preset_name)
 	imgui.table_set_column_index(2)
-	if this.rename_mode == preset_name then
+	if state.rename_mode == preset_name then
 		if imgui.button("Cancel##canc_" .. preset_name, {0, 0}) then cancel_rename_mode() end
 	else
 		if imgui.button("Rename##ren_" .. preset_name, {0, 0}) then start_rename_mode(preset_name) end
@@ -1707,20 +1789,20 @@ end
 
 local function build_preset_duplicate_column(preset_name)
 	imgui.table_set_column_index(3)
-	if this.rename_mode ~= preset_name then
+	if state.rename_mode ~= preset_name then
 		if imgui.button("Duplicate##dup_" .. preset_name, {0, 0}) then duplicate_preset(preset_name) end
 	end
 end
 
 local function build_preset_delete_column(preset_name)
 	imgui.table_set_column_index(4)
-	if this.rename_mode ~= preset_name then
-		if this.delete_confirm_name == preset_name then
+	if state.rename_mode ~= preset_name then
+		if state.delete_confirm_name == preset_name then
 			if imgui.button("Delete?##del_" .. preset_name, {0, 0}) then
 				delete_preset(preset_name)
-				this.delete_confirm_name = false
+				state.delete_confirm_name = false
 			elseif imgui.is_mouse_clicked(0) and not imgui.is_item_hovered() then
-				this.delete_confirm_name = false
+				state.delete_confirm_name = false
 			end
 		else
 			if imgui.button("Delete##del_" .. preset_name, {0, 0}) then start_delete_confirm(preset_name) end
@@ -1740,9 +1822,10 @@ end
 local function build_preset_rows()
 	if imgui.begin_table("PresetTable", 5, 64) then
 		build_menu_columns({110, 60, 0, 0, 0})
-		for _, preset_name in ipairs(this.preset_names) do
+		for _, preset_name in ipairs(state.preset_names) do
 			build_preset_row(preset_name)
-		end; imgui.end_table()
+		end
+		imgui.end_table()
 	end
 end
 
@@ -1760,17 +1843,19 @@ local function build_preset_switcher()
 end
 
 local function build_current_preset_status()
-	if this.current_preset_name == "" then return end
-	imgui.same_line(); imgui.text("Current: ")
-	imgui.same_line(); format_preset_with_color(this.current_preset_name)
+	if state.current_preset_name == "" then return end
+	imgui.same_line()
+	imgui.text("Current: ")
+	imgui.same_line()
+	format_preset_with_color(state.current_preset_name)
 end
 
 local function build_reload_preset_button()
-	if not is_disabled_state() or this.current_preset_name == "" or not this.presets[this.current_preset_name] then return end
+	if not is_disabled_state() or state.current_preset_name == "" or not state.presets[state.current_preset_name] then return end
 	imgui.same_line()
 	if imgui.button("Reload##reload_nav") then
-		load_preset(this.current_preset_name)
-		action_notify("Reloaded Preset " .. this.current_preset_name, "alert_on_presets")
+		load_preset(state.current_preset_name)
+		action_notify("Reloaded Preset " .. state.current_preset_name, "alert_on_presets")
 	end
 	if imgui.is_item_hovered() then imgui.set_tooltip("Reset to saved values") end
 end
@@ -1779,11 +1864,11 @@ local function build_save_changes_buttons()
 	if is_disabled_state() then return end
 	if preset_has_unsaved_changes() then
 		imgui.same_line()
-		if imgui.button("Save##save_nav") then save_current_preset(this.current_preset_name) end
+		if imgui.button("Save##save_nav") then save_current_preset(state.current_preset_name) end
 		if imgui.is_item_hovered() then imgui.set_tooltip("Save Changes (Ctrl + Space)") end
 		imgui.same_line()
 		if imgui.button("x##disc_nav") then
-			load_preset(this.current_preset_name)
+			load_preset(state.current_preset_name)
 			action_notify("Changes Discarded", "alert_on_presets")
 		end
 	end
@@ -1791,12 +1876,13 @@ end
 
 local function build_new_preset_button()
 	if is_disabled_state() or not preset_has_unsaved_changes() then
-		imgui.same_line(); if imgui.button("New##create_new") then start_create_new_mode() end
+		imgui.same_line()
+		if imgui.button("New##create_new") then start_create_new_mode() end
 	end
 end
 
 local function build_preset_navigation()
-	if this.create_new_mode then return end
+	if state.create_new_mode then return end
 	build_preset_switcher()
 	build_current_preset_status()
 	build_save_changes_buttons()
@@ -1806,23 +1892,27 @@ end
 
 local function build_create_preset_name_input()
 	local changed
-	changed, this.new_preset_name = imgui.input_text("##preset_name", this.new_preset_name)
+	changed, state.new_preset_name = imgui.input_text("##preset_name", state.new_preset_name)
 end
 
 local function build_create_preset_buttons()
-	if this.new_preset_name == "" then
+	if state.new_preset_name == "" then
 		if imgui.button("New##new_blank") then create_new_blank_preset() end
-		imgui.same_line(); if imgui.button("Cancel##cancel_blank") then cancel_blank_preset() end
+		imgui.same_line()
+		if imgui.button("Cancel##cancel_blank") then cancel_blank_preset() end
 	else
 		if imgui.button("Create##save_new") then save_new_preset() end
-		imgui.same_line(); if imgui.button("x##cancel_new") then cancel_new_preset() end
+		imgui.same_line()
+		if imgui.button("x##cancel_new") then cancel_new_preset() end
 	end
 end
 
 local function build_preset_creator()
-	if not this.create_new_mode then return end
-	imgui.same_line(); imgui.text("New:")
-	imgui.same_line(); imgui.push_item_width(100)
+	if not state.create_new_mode then return end
+	imgui.same_line()
+	imgui.text("New:")
+	imgui.same_line()
+	imgui.push_item_width(100)
 	build_create_preset_name_input()
 	imgui.pop_item_width()
 	imgui.same_line()
@@ -1830,19 +1920,19 @@ local function build_preset_creator()
 end
 
 local function build_preset_display()
-	if this.create_new_mode then build_preset_creator() else build_preset_navigation() end
+	if state.create_new_mode then build_preset_creator() else build_preset_navigation() end
 end
 
 local function tree_node_stateful(label, default_open)
-    if this.force_tree_restore then
-        local saved = this.tree_open[label]
+    if state.force_tree_restore then
+        local saved = state.tree_open[label]
         imgui.set_next_item_open(
             saved ~= nil and saved or (default_open or false),
             1
         )
     end
     local open = imgui.tree_node(label)
-    this.tree_open[label] = open
+    state.tree_open[label] = open
     return open
 end
 
@@ -1860,11 +1950,11 @@ end
 local function build_copy_options_rows()
 	imgui.same_line(); imgui.spacing(); imgui.same_line()
 	if imgui.button("P1 to P2##p1_to_p2", {nil, 16}) then
-		this.config.p2 = deep_copy(this.config.p1)
+		state.config.p2 = deep_copy(state.config.p1)
 	end
 	imgui.same_line(); imgui.spacing(); imgui.same_line()
 	if imgui.button("P2 to P1##p2_to_p1", {nil, 16}) then
-		this.config.p1 = deep_copy(this.config.p2)
+		state.config.p1 = deep_copy(state.config.p2)
 	end
 end
 
@@ -1879,10 +1969,14 @@ local function build_reset_options_row(col_name, func)
 	local handler_p1, handler_p2 = string.format(handler_str, 1, string.lower(col_name), 1), string.format(handler_str, 2, string.lower(col_name), 2)
 	local handler_all = string.format("All##%s_all", string.lower(col_name))
 	imgui.table_next_row()
-	imgui.table_set_column_index(0); imgui.text(col_name)
-	imgui.table_set_column_index(1); if imgui.button(handler_p1, {nil, 16}) then func('p1') end
-	imgui.table_set_column_index(2); if imgui.button(handler_p2, {nil, 16}) then func('p2') end
-	imgui.table_set_column_index(3); if imgui.button(handler_all, {nil, 16}) then func() end
+	imgui.table_set_column_index(0)
+	imgui.text(col_name)
+	imgui.table_set_column_index(1)
+	if imgui.button(handler_p1, {nil, 16}) then func('p1') end
+	imgui.table_set_column_index(2)
+	if imgui.button(handler_p2, {nil, 16}) then func('p2') end
+	imgui.table_set_column_index(3)
+	if imgui.button(handler_all, {nil, 16}) then func() end
 end
 
 local function build_reset_options_rows()
@@ -1899,18 +1993,18 @@ local function build_reset_options()
     end
 
     imgui.spacing()
-    if this.factory_reset_confirm then
+    if state.factory_reset_confirm then
         if imgui.button("Delete All Presets And Restore##factory_reset") then
             restore_factory_defaults()
-            this.factory_reset_confirm = false
+            state.factory_reset_confirm = false
         end
         imgui.same_line()
         if imgui.button("Cancel##factory_cancel") then
-            this.factory_reset_confirm = false
+            state.factory_reset_confirm = false
         end
     else
         if imgui.button("Restore Default Presets##factory_reset") then
-            this.factory_reset_confirm = true
+            state.factory_reset_confirm = true
         end
     end
 
@@ -1919,30 +2013,28 @@ end
 
 local function build_alerts_options_row(label, config_key)
 	local changed
-	changed, this.config.options[config_key] = toggle_setter(label .. "##" .. config_key, this.config.options[config_key])
+	changed, state.config.options[config_key] = toggle_setter(label .. "##" .. config_key, state.config.options[config_key])
 end
 
 local function build_show_alerts_options_checkbox()
 	imgui.same_line()
-	if not imgui.checkbox("Hide##hide_all_alerts", this.config.options.hide_all_alerts) then return end
-	this.config.options.hide_all_alerts = not this.config.options.hide_all_alerts
+	if not imgui.checkbox("Hide##hide_all_alerts", state.config.options.hide_all_alerts) then return end
+	state.config.options.hide_all_alerts = not state.config.options.hide_all_alerts
 end
 
 local function build_alerts_duration_slider()
-	if this.config.options.hide_all_alerts then return end
-	imgui.same_line()
-	imgui.spacing()
-	imgui.same_line()
-	imgui.text("Duration")
+	if state.config.options.hide_all_alerts then return end
+	imgui.text("Duration:")
 	imgui.same_line()
 	imgui.push_item_width(100)
-	local changed, new_val = imgui.slider_float("##notify_duration", this.config.options.notify_duration, 0.1, 10.0, "%.1f s")
+	local changed, new_val = imgui.slider_float("##notify_duration", state.config.options.notify_duration, 0.1, 10.0, "%.1f s")
 	imgui.pop_item_width()
 	if changed then
-		this.config.options.notify_duration = new_val
+		state.config.options.notify_duration = new_val
 		mark_for_save()
 	end
 end
+
 local function build_alerts_options_rows()
     imgui.text("Notify:")
     build_alerts_options_row("Overlay Toggled", "alert_on_toggle")
@@ -1956,7 +2048,7 @@ local function build_alerts_options()
     if not tree_node_stateful("Alerts") then return end
     build_show_alerts_options_checkbox()
     build_alerts_duration_slider()
-    if not this.config.options.hide_all_alerts then
+    if not state.config.options.hide_all_alerts then
         build_alerts_options_rows()
     end
     imgui.tree_pop()
@@ -1985,7 +2077,7 @@ local function build_hotkeys_reset_button()
     if are_hotkeys_default() then return end
     imgui.same_line()
 
-    if this.confirm_restore_hotkeys == nil then this.confirm_restore_hotkeys = false end
+    if state.confirm_restore_hotkeys == nil then state.confirm_restore_hotkeys = false end
 
     if is_any_hotkey_rebinding() then
         if imgui.button("Restore Defaults") then
@@ -1995,36 +2087,38 @@ local function build_hotkeys_reset_button()
                 end
             end
             hk.reset_from_defaults_tbl(hk.default_hotkeys)
-            this.confirm_restore_hotkeys = false
+            state.confirm_restore_hotkeys = false
         end
     else
-        if this.confirm_restore_hotkeys then
+        if state.confirm_restore_hotkeys then
             if imgui.button("Restore Defaults?") then
                 hk.reset_from_defaults_tbl(hk.default_hotkeys)
-                this.confirm_restore_hotkeys = false
+                state.confirm_restore_hotkeys = false
             end
             if imgui.is_mouse_clicked(0) and not imgui.is_item_hovered() then
-                this.confirm_restore_hotkeys = false
+                state.confirm_restore_hotkeys = false
             end
         else
             if imgui.button("Restore Defaults") then
-                this.confirm_restore_hotkeys = true
+                state.confirm_restore_hotkeys = true
             end
         end
     end
 end
 
 local function build_hotkey_button(text, hotkey_str)
-	imgui.text(text); imgui.same_line()
+	imgui.text(text)
+	imgui.same_line()
 	if hk.hotkey_setter(hotkey_str, nil, "") then
-		hk.update_hotkey_table(this.config.hotkeys)
+		hk.update_hotkey_table(state.config.hotkeys)
 		mark_for_save()
 	end
 end
 
 local function build_hotkeys_options()
     if not tree_node_stateful("Hotkeys") then return end
-    imgui.same_line(); imgui.spacing()
+    imgui.same_line()
+    imgui.spacing()
     build_hotkeys_reset_button()
     build_hotkey_button("Toggle Menu:", "toggle_menu")
     build_hotkey_button("Toggle P1:", "toggle_p1")
@@ -2036,20 +2130,27 @@ local function build_hotkeys_options()
     imgui.tree_pop()
 end
 
+local function build_misc_options()
+	if not tree_node_stateful("Misc") then return end
+    local changed
+    changed, state.config.options.color_wall_splat = toggle_setter("Adjust Position color in wall splat range", state.config.options.color_wall_splat)
+	imgui.tree_pop()
+end
+
 local function build_backup_options()
     if not tree_node_stateful("Backup") then return end
-    if this.backup_filename == "" then
-        this.backup_filename = generate_default_backup_filename()
+    if state.backup_filename == "" then
+        state.backup_filename = generate_default_backup_filename()
     end
     imgui.same_line()
     imgui.text("File:")
     imgui.same_line()
     imgui.push_item_width(200)
-    local changed, new_name = imgui.input_text("##backup_filename", this.backup_filename, 256)
-    if changed then this.backup_filename = new_name end
+    local changed, new_name = imgui.input_text("##backup_filename", state.backup_filename, 256)
+    if changed then state.backup_filename = new_name end
     imgui.pop_item_width()
     imgui.same_line()
-    if imgui.button("Export") then perform_backup(this.backup_filename) end
+    if imgui.button("Export") then perform_backup(state.backup_filename) end
     imgui.tree_pop()
 end
 
@@ -2060,6 +2161,7 @@ local function build_options_menu()
     build_reset_options()
     build_alerts_options()
     build_hotkeys_options()
+	build_misc_options()
     build_backup_options()
     imgui.tree_pop()
     imgui.indent(15)
@@ -2068,64 +2170,70 @@ end
 local function get_toggle_hotkey_display()
     local hotkey = hk.hotkeys["toggle_menu"]
     if not hotkey or hotkey == "[Not Bound]" then
-        this.last_menu_hotkey_display = ""
+        state.last_menu_hotkey_display = ""
         return ""
     end
     local full_str = hk.get_button_string("toggle_menu")
     if full_str:find("%[Press Input%]") then
-        return this.last_menu_hotkey_display
+        return state.last_menu_hotkey_display
     end
     local display = " (" .. full_str .. ")"
-    this.last_menu_hotkey_display = display
+    state.last_menu_hotkey_display = display
     return display
 end
 
 local function build_menu()
     local title = "Hitboxes" .. get_toggle_hotkey_display()
-    this.force_tree_restore = (title ~= this.last_menu_title)
-    this.last_menu_title = title
-    if this.menu_window_pos and this.force_tree_restore then
-        imgui.set_next_window_pos(this.menu_window_pos, 1)
+    state.force_tree_restore = (title ~= state.last_menu_title)
+    state.last_menu_title = title
+    if state.menu_window_pos and state.force_tree_restore then
+        imgui.set_next_window_pos(state.menu_window_pos, 1)
     end
     imgui.begin_window(title, true, 64)
-    this.menu_window_pos = imgui.get_window_pos()
-    build_toggle_menu(); build_presets_menu(); build_options_menu()
+    state.menu_window_pos = imgui.get_window_pos()
+    build_toggle_menu()
+    build_presets_menu()
+    build_options_menu()
     imgui.end_window()
-    this.force_tree_restore = false
+    state.force_tree_restore = false
 end
 
 local function gui_handler()
-	if this.config.options.display_menu then build_menu() end
-	if is_pause_menu_closed() and (this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show) then process_hitboxes() end
+	if state.config.options.display_menu then build_menu() end
+	if is_pause_menu_closed() and (state.config.p1.toggle.toggle_show or state.config.p2.toggle.toggle_show) then
+		process_hitboxes()
+	end
 end
 
-local function initialize()
-	load_config()
-	if this.current_preset_name == "" then this.current_preset_name = get_preset_name() end
-	this.initialized = true
+local function draw_ui_handler()
+	if not imgui.tree_node("Hitbox Viewer") then return end
+	_, state.config.options.display_menu = toggle_setter("Display Options Menu", state.config.options.display_menu)
+	imgui.tree_pop()
 end
 
--- Hotkeys
+-- ============================================================================
+-- Hotkey Handling
+-- ============================================================================
 
 local function hotkey_handler()
 	if hk.check_hotkey("toggle_menu") then
-		this.config.options.display_menu = not this.config.options.display_menu
+		state.config.options.display_menu = not state.config.options.display_menu
 		mark_for_save()
 	end
 	if hk.check_hotkey("toggle_p1") then
-		this.config.p1.toggle.toggle_show = not this.config.p1.toggle.toggle_show
-		action_notify("P1 Hitboxes " .. (this.config.p1.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
+		state.config.p1.toggle.toggle_show = not state.config.p1.toggle.toggle_show
+		action_notify("P1 Hitboxes " .. (state.config.p1.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
 		mark_for_save()
 	end
 	if hk.check_hotkey("toggle_p2") then
-		this.config.p2.toggle.toggle_show = not this.config.p2.toggle.toggle_show
-		action_notify("P2 Hitboxes " .. (this.config.p2.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
+		state.config.p2.toggle.toggle_show = not state.config.p2.toggle.toggle_show
+		action_notify("P2 Hitboxes " .. (state.config.p2.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
 		mark_for_save()
 	end
 	if hk.check_hotkey("toggle_all") then
-		local any_active = this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show
-		this.config.p1.toggle.toggle_show = not any_active
-		this.config.p2.toggle.toggle_show = not any_active
+		local any_active = state.config.p1.toggle.toggle_show or state.config.p2.toggle.toggle_show
+		state.config.p1.toggle.toggle_show = not any_active
+		state.config.p2.toggle.toggle_show = not any_active
 		action_notify("All Hitboxes " .. (not any_active and "Enabled" or "Disabled"), "alert_on_toggle")
 		mark_for_save()
 	end
@@ -2136,27 +2244,28 @@ local function hotkey_handler()
 		load_next_preset()
 	end
 	if hk.check_hotkey("save_preset") then
-		save_current_preset(this.current_preset_name)
+		save_current_preset(state.current_preset_name)
 	end
 end
 
-local function draw_ui_handler()
-	if not imgui.tree_node("Hitbox Viewer") then return end
-	local changed
-	changed, this.config.options.display_menu = toggle_setter("Display Options Menu", this.config.options.display_menu)
-	imgui.tree_pop()
+-- ============================================================================
+-- Main Initialization and Frame Loop
+-- ============================================================================
+
+state.initialized = false
+
+local function initialize()
+	load_config()
+	if state.current_preset_name == "" then state.current_preset_name = get_preset_name() end
+	state.initialized = true
 end
 
--- Main
-
-if not this.initialized then initialize() end
-
-re.on_draw_ui(function()
-	draw_ui_handler()
-end)
+re.on_draw_ui(draw_ui_handler)
 
 re.on_frame(function()
-	if not gBattle then gBattle = sdk.find_type_definition("gBattle") else
+	if not gBattle then
+		gBattle = sdk.find_type_definition("gBattle")
+	else
 		save_handler()
 		hotkey_handler()
 		gui_handler()
@@ -2164,3 +2273,5 @@ re.on_frame(function()
 		action_notify_handler()
 	end
 end)
+
+if not state.initialized then initialize() end

@@ -1,4 +1,3 @@
-
 local MOD_NAME = "Hitbox Viewer"
 local CONFIG_PATH = "better_disp_hitboxes.json"
 local SAVE_DELAY = 0.5
@@ -6,10 +5,12 @@ local gBattle, pause_manager
 local this =  {}
 this.prev_key_states, this.presets, this.preset_names, this.string_buffer = {}, {}, {}, {}
 this.current_preset_name, this.previous_preset_name, this.new_preset_name, this.rename_temp_name = "", "", "", ""
-this.initialized, this.rename_mode, this.create_new_mode, this.delete_confirm_name = false, false, false, false
+this.initialized, this.rename_mode, this.create_new_mode, this.delete_confirm_name, this.factory_reset_confirm = false, false, false, false, false
 this.save_pending, this.save_timer, this.config = nil, nil, nil
 this.tooltip_timer, this.tooltip_msg = 0, ""
 this.backup_filename = ""
+this.tree_open = {}
+this.sync_enabled, this.syncing = false, false
 
 -- 
 -- Begin HK
@@ -23,7 +24,6 @@ if not hk then
 	local gp_state = {down = {}, released = {}, triggered={}}
 	local mb_state = {down = {}, released = {}, triggered={}}
 
-	--Merge hashed dictionaries. table_b will be merged into table_a
 	local function merge_tables(table_a, table_b, no_overwrite)
 		table_a = table_a or {}
 		table_b = table_b or {}
@@ -39,7 +39,6 @@ if not hk then
 		return table_a
 	end
 
-	--Merge hashed dictionaries. table_b will be merged into table_a
 	local function merge_tables_recursively(table_a, table_b, no_overwrite)
 		local searched = {}
 
@@ -63,7 +62,6 @@ if not hk then
 		return recurse(table_a, table_b)
 	end
 
-	--Gets an enum
 	local function generate_statics(typename)
 		local t = sdk.find_type_definition(typename)
 		local fields = t:get_fields()
@@ -176,21 +174,16 @@ if not hk then
 		return recurse(main_tbl, defaults_tbl)
 	end
 
-	-- Start with defaults, do NOT load from file here
 	local hk_data = def_hk_data
 
-	-- Sync modifiers from the hotkeys table (should be called after setup_hotkeys)
-	local function sync_modifiers_from_hotkeys()
-		hk_data.modifier_actions = {}
-		for action, key in pairs(hotkeys) do
-			if action:match("_%$$$") then  -- ends with "_$" (modifier)
-				hk_data.modifier_actions[action] = key
-			end
+	local hotkey_change_callbacks = {}
+
+	local function trigger_hotkey_change_callbacks()
+		for _, cb in ipairs(hotkey_change_callbacks) do
+			pcall(cb)
 		end
-		json.dump_file("Hotkeys_data.json", hk_data)
 	end
 
-	--Find the index containing a value (or value as a field) in a table
 	local function find_index(tbl, value, key)
 		if key ~= nil then
 			for i, item in ipairs(tbl) do
@@ -225,6 +218,7 @@ if not hk then
 		end
 		json.dump_file("Hotkeys_data.json", hk_data)
 		setup_active_keys_tbl()
+		trigger_hotkey_change_callbacks()
 	end
 
 	local function update_hotkey_table(hotkey_table)
@@ -271,7 +265,6 @@ if not hk then
 		return (m_button | button) == m_button
 	end
 
-	--Checks if an action's binding is down
 	local function chk_down(action_name)
 		if hotkeys_down[action_name] == nil then
 			local key_name = hotkeys[action_name]
@@ -280,7 +273,6 @@ if not hk then
 		return hotkeys_down[action_name]
 	end
 
-	--Checks if an action's binding is released
 	local function chk_up(action_name)
 		if hotkeys_up[action_name] == nil then
 			local key_name = hotkeys[action_name]
@@ -289,7 +281,6 @@ if not hk then
 		return hotkeys_up[action_name]
 	end
 
-	--Checks if an action's binding is just down
 	local function chk_trig(action_name)
 		if hotkeys_trig[action_name] == nil then
 			local key_name = hotkeys[action_name]
@@ -298,7 +289,6 @@ if not hk then
 		return hotkeys_trig[action_name]
 	end
 
-	--Checks if an action's binding is released or down
 	local function check_hotkey(action_name, check_down, check_triggered)
 		local key_name = hotkeys[action_name]
 		if key_name == "[Not Bound]" then return false end
@@ -318,7 +308,6 @@ if not hk then
 		return hotkeys_up[action_name]
 	end
 
-	--Checks if an action's binding has been pressed twice in the past 0.25 seconds
 	local function check_doubletap(action_name, check_released)
 		if check_hotkey(action_name, nil, not check_released) then
 			local times = check_released and dt_rel_times or dt_times
@@ -330,8 +319,6 @@ if not hk then
 		end
 	end
 
-	--Checks if an action's binding has been held down for 'time_limit' seconds
-	--'check_down' specifies if the function should keep returning true while the button continues to be held
 	local function check_hold(action_name, check_down, time_limit)
 		local times = check_down and hold_dn_times or hold_times
 		if check_hotkey(action_name, true) then
@@ -346,7 +333,6 @@ if not hk then
 		end
 	end
 
-	--Displays an imgui button that you can click then and press a button to assign a button to an action
 	local function hotkey_setter(action_name, hold_action_name, fake_name, title_tooltip)
 
 		local key_updated = false
@@ -409,6 +395,7 @@ if not hk then
 					json.dump_file("Hotkeys_data.json", hk_data)
 				end
 				setup_active_keys_tbl()
+				trigger_hotkey_change_callbacks()
 			end
 
 			if not is_mod_2 and hotkeys[action_name.."_$"] then
@@ -443,35 +430,25 @@ if not hk then
 						hotkeys[action_name] = "[Not Bound]"
 					end
 					key_updated = true
+					setup_active_keys_tbl()
+					trigger_hotkey_change_callbacks()
 				end
 				if not is_mod_2 and default_hotkeys[action_name] and imgui.menu_item("Reset to Default") then
 					hotkeys[action_name] = default_hotkeys[action_name]
 					key_updated = true
+					setup_active_keys_tbl()
+					trigger_hotkey_change_callbacks()
 				end
 				if not is_mod_2 and hotkeys[action_name] ~= "[Not Bound]" and imgui.menu_item((hotkeys[action_name.."_$"] and "Disable " or "Enable ") .. "Modifier") then
 					hotkeys[action_name.."_$"] = not hotkeys[action_name.."_$"] and ((pad and pad:get_Connecting() and ((is_mod_1 and "LB (L1)") or "LT (L2)")) or ((is_mod_1 and "LShift") or "LAlt")) or nil
 					hotkeys[action_name.."_$_$"], hk_data.modifier_actions[action_name.."_$_$"] = nil
 					hk_data.modifier_actions[action_name.."_$"] = hotkeys[action_name.."_$"]
 					json.dump_file("Hotkeys_data.json", hk_data)
+					setup_active_keys_tbl()
+					trigger_hotkey_change_callbacks()
 				end
 				imgui.end_popup()
 			end
-			--[[if not is_mod_1 and not hotkeys[action_name.."_$"] and hotkeys[action_name] ~= "[Not Bound]" then
-				local names = "\n"
-				for act_name, key_name in pairs(hotkeys) do 
-					if act_name ~= action_name and key_name == hotkeys[action_name] and key_name ~= "[Press Input]" and (not hold_action_name or modifiers[act_name] == hold_action_name) then
-						if names == "\n" then
-							imgui.same_line()
-							imgui.text_colored("*", 0xFF00FFFF)
-						end
-						names = names .. "	" .. act_name .. "\n"
-						if imgui.is_item_hovered() then
-							imgui.set_tooltip("Shared with:" .. names)
-						end
-						--break
-					end
-				end
-			end]]
 		imgui.pop_id()
 		if is_down then imgui.end_rect(1); imgui.end_rect(2) end
 
@@ -517,10 +494,6 @@ if not hk then
 				gp_state.triggered[button]  = ((gp_trig | button) == gp_trig)
 			end
 		end
-	end
-
-	local function write()
-
 	end
 
 	re.on_application_entry("UpdateHID", function()
@@ -569,12 +542,27 @@ if not hk then
 		check_mouse_button = check_mouse_button,					-- Fn checks if a mouse input is released, down or triggered (by mbutton name)
 		check_pad_button = check_pad_button,						-- Fn checks if a gamepad input is released, down or triggered (by button name) (such as imgui focus) was removed mid-frame
 
-		sync_modifiers_from_hotkeys = sync_modifiers_from_hotkeys, -- NEW: sync modifiers and save to file
+		-- NEW: register a callback to be called whenever any hotkey changes
+		register_hotkey_change_callback = function(cb)
+			table.insert(hotkey_change_callbacks, cb)
+		end,
+
+		-- NEW: sync modifiers from hotkeys to file (used at startup)
+		sync_modifiers_from_hotkeys = function()
+			hk_data.modifier_actions = {}
+			for action, key in pairs(hotkeys) do
+				if action:match("_%$$$") then  -- ends with "_$" (modifier)
+					hk_data.modifier_actions[action] = key
+				end
+			end
+			json.dump_file("Hotkeys_data.json", hk_data)
+		end,
 	}
 end
+
 -- 
 -- End HK
--- 
+--  
 
 -- Utils
 
@@ -625,6 +613,7 @@ local function create_default_config()
 			alert_on_presets = true,
 			alert_on_save = true,
 			notify_duration = 2.0,
+			hotkey_minimizes = false,
 		},
 		hotkeys = {
 			toggle_menu = "F1",
@@ -644,6 +633,79 @@ local function create_default_config()
 		p1 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)},
 		p2 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)}
 	}
+end
+
+local function create_default_presets()
+    local function make_toggle(overrides)
+        local t = {
+            toggle_show = true,
+            hitboxes = true, hitboxes_outline = true,
+            hurtboxes = true, hurtboxes_outline = true,
+            pushboxes = true, pushboxes_outline = true,
+            throwboxes = true, throwboxes_outline = true,
+            throwhurtboxes = true, throwhurtboxes_outline = true,
+            proximityboxes = true, proximityboxes_outline = true,
+            clashboxes = true, clashboxes_outline = true,
+            uniqueboxes = true, uniqueboxes_outline = true,
+            properties = true, position = true
+        }
+        if overrides then for k, v in pairs(overrides) do t[k] = v end end
+        return t
+    end
+
+    local function make_opacity(fill, outline, props, pos)
+        return {
+            hitbox = fill, hitbox_outline = outline,
+            hurtbox = fill, hurtbox_outline = outline,
+            pushbox = fill, pushbox_outline = outline,
+            throwbox = fill, throwbox_outline = outline,
+            throwhurtbox = fill, throwhurtbox_outline = outline,
+            proximitybox = fill, proximitybox_outline = outline,
+            clashbox = fill, clashbox_outline = outline,
+            uniquebox = fill, uniquebox_outline = outline,
+            properties = props or 100, position = pos or 100
+        }
+    end
+
+    local light_toggle = make_toggle({properties = false, throwhurtboxes_outline = false})
+    local light_opacity = {
+        hitbox = 15, hitbox_outline = 15,
+        hurtbox = 10, hurtbox_outline = 15,
+        pushbox = 5,  pushbox_outline = 15,
+        throwbox = 15, throwbox_outline = 5,
+        throwhurtbox = 5, throwhurtbox_outline = 20,
+        proximitybox = 10, proximitybox_outline = 15,
+        clashbox = 10, clashbox_outline = 15,
+        uniquebox = 10, uniquebox_outline = 15,
+        properties = 15, position = 35
+    }
+
+    local outlines_toggle = make_toggle({
+        hitboxes = false, hurtboxes = false, pushboxes = false,
+        throwboxes = false, throwhurtboxes = false, proximityboxes = false,
+        clashboxes = false, uniqueboxes = false, properties = false
+    })
+    local outlines_opacity = make_opacity(25, 75, 100, 80)
+
+    local presets = {
+        ["Default"] = {
+            p1 = {toggle = make_toggle(), opacity = make_opacity(25, 25)},
+            p2 = {toggle = make_toggle(), opacity = make_opacity(25, 25)}
+        },
+        ["Dark"] = {
+            p1 = {toggle = make_toggle(), opacity = make_opacity(50, 50)},
+            p2 = {toggle = make_toggle(), opacity = make_opacity(50, 50)}
+        },
+        ["Light"] = {
+            p1 = {toggle = deep_copy(light_toggle), opacity = deep_copy(light_opacity)},
+            p2 = {toggle = deep_copy(light_toggle), opacity = deep_copy(light_opacity)}
+        },
+        ["Outlines"] = {
+            p1 = {toggle = deep_copy(outlines_toggle), opacity = deep_copy(outlines_opacity)},
+            p2 = {toggle = deep_copy(outlines_toggle), opacity = deep_copy(outlines_opacity)}
+        },
+    }
+    return presets
 end
 
 local function validate_config(cfg)
@@ -689,10 +751,21 @@ local function load_config()
 		if loaded.config then this.config = validate_config(loaded.config)
 		else this.config = validate_config(loaded) end
 	else
-		this.config = create_default_config()
-		this.presets, this.current_preset_name, this.preset_names = {}, "", {}
-		mark_for_save()
-	end
+        this.config = create_default_config()
+        this.presets = create_default_presets()
+        this.current_preset_name = "Default"
+        rebuild_preset_names()
+        mark_for_save()
+    end
+
+	local defaults = create_default_presets()
+    for name, data in pairs(defaults) do
+        if not this.presets[name] then
+            this.presets[name] = data
+            rebuild_preset_names()
+            mark_for_save()
+        end
+    end
 
 	local default = create_default_config()
 	this.config.hotkeys = this.config.hotkeys or {}
@@ -701,6 +774,10 @@ local function load_config()
 	end
 	hk.setup_hotkeys(this.config.hotkeys, default.hotkeys)
 	hk.sync_modifiers_from_hotkeys()
+	hk.register_hotkey_change_callback(function()
+		hk.update_hotkey_table(this.config.hotkeys)
+		mark_for_save()
+	end)
 end
 
 local function save_handler()
@@ -782,7 +859,7 @@ local function get_dimensions(vTL, vTR, vBL, vBR)
     return (tl.x + tr.x) / 2, (bl.y + tl.y) / 2, (tr.x - tl.x), (tl.y - bl.y)
 end
 
-local function property_flag(parts, idx, bit, str)
+local function property_flag(parts, idx, bit, str, rect)
     if bitand(rect.CondFlag, bit) == bit then
         idx = idx + 1
         parts[idx] = str
@@ -799,21 +876,19 @@ local function draw_box(outline_toggle, fill_toggle, outline_opacity, fill_opaci
     end
 end
 
-local function build_hit_properties(condFlag)
+local function build_hit_properties(condFlag, rect)
     local parts = {}
     local idx = 0
 
-    local cant_hit = false
-    idx = property_flag(parts, idx, 16, "Standing, ")
-    idx = property_flag(parts, idx, 32, "Crouching, ")
-    idx = property_flag(parts, idx, 64, "Airborne, ")
-    idx = property_flag(parts, idx, 256, "Forward, ")
-    idx = property_flag(parts, idx, 512, "Backwards, ")
+    idx = property_flag(parts, idx, 16, "Standing, ", rect)
+    idx = property_flag(parts, idx, 32, "Crouching, ", rect)
+    idx = property_flag(parts, idx, 64, "Airborne, ", rect)
+    idx = property_flag(parts, idx, 256, "Forward, ", rect)
+    idx = property_flag(parts, idx, 512, "Backwards, ", rect)
     if idx > 0 then
         parts[idx] = string.sub(parts[idx], 1, -3)
         idx = idx + 1
         parts[idx] = "\n"
-        cant_hit = true
     end
 
     if bitand(condFlag, 262144) == 262144 or bitand(condFlag, 524288) == 524288 then
@@ -1040,9 +1115,11 @@ end
 local function process_hitboxes()
     local sWork, sPlayer = gBattle:get_field("Work"):get_data(nil), gBattle:get_field("Player"):get_data(nil)
     for _, obj in pairs(sWork.Global_work) do
-        if obj.mpActParam and not obj:get_IsR0Die() then process_entity(obj) end end
+        if obj.mpActParam and not obj:get_IsR0Die() then process_entity(obj) end
+    end
     for _, player in pairs(sPlayer.mcPlayer) do
-        if player.mpActParam then process_entity(player, player.mpActParam) end end
+        if player.mpActParam then process_entity(player) end
+    end
 end
 
 local function is_disabled_state()
@@ -1051,16 +1128,6 @@ end
 
 -- Notifications
 
-local function build_notify_duration_slider()
-    imgui.text("Duration (seconds):")
-    imgui.same_line()
-    local changed, new_val = imgui.slider_float("##notify_duration", this.config.options.notify_duration, 0.1, 10.0, "%.1f s")
-    if changed then
-        this.config.options.notify_duration = new_val
-        mark_for_save()
-    end
-end
-
 local function action_notify(msg, category_toggle)
     if this.config.options.hide_all_alerts then return end
     if category_toggle ~= nil and not this.config.options[category_toggle] then return end
@@ -1068,12 +1135,11 @@ local function action_notify(msg, category_toggle)
     this.tooltip_timer = math.floor(this.config.options.notify_duration * 60 + 0.5)
 end
 
-
 local function tooltip_handler()
 	if this.tooltip_timer > 0 then this.tooltip_timer = this.tooltip_timer - 1 end
 end
 
-local function draw_action_notify()
+local function action_notify_handler()
     if this.tooltip_timer <= 0 then return end
 
     local display = imgui.get_display_size()
@@ -1351,6 +1417,20 @@ local function perform_backup(filename)
     json.dump_file(filename, data)
     action_notify("Backup saved to " .. filename, "alert_on_save")
 end
+local function restore_factory_defaults()
+    local default = create_default_config()
+    this.config.p1 = deep_copy(default.p1)
+    this.config.p2 = deep_copy(default.p2)
+    local factory = create_default_presets()
+    for name, data in pairs(factory) do
+        this.presets[name] = data
+    end
+    rebuild_preset_names()
+    this.current_preset_name = "Default"
+    load_preset("Default")
+    action_notify("Factory defaults restored", "alert_on_presets")
+    mark_for_save()
+end
 
 -- GUI
 
@@ -1361,35 +1441,53 @@ local function build_menu_columns(widths, flags, names)
     end
 end
 
--- Helper: draw a player header with its "toggle_show" checkbox
-local function build_player_header(player_index, toggle_show)
-    -- Column mapping: 0 = labels, 1 = P1, 2 = spacer, 3 = P2
-    local col_index = (player_index == 2) and 3 or 1
-    imgui.table_set_column_index(col_index)
-
-    local label = string.format("P%.0f", player_index)
-    local header_id = string.format("##p%.0f_HideAllHeader", player_index)
-
-    imgui.text(label)
-    imgui.same_line()
-    local cursor = imgui.get_cursor_pos()
-    imgui.set_cursor_pos(Vector2f.new(cursor.x + 20, cursor.y))
-
-    return toggle_setter(header_id, toggle_show)
-end
-
 local function build_toggle_headers()
+    imgui.table_set_column_index(0)
+
     if not (this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show) then
-        imgui.table_set_column_index(0)
-        imgui.text("Show Hidden Elements:")
+        imgui.text("Show Hidden Elements")
+    else
+        local btn_label = this.sync_enabled and "Syncing Changes##sync_btn" or "Sync P1/P2 Changes##sync_btn"
+        if imgui.button(btn_label, {0, 0}) then
+            this.sync_enabled = not this.sync_enabled
+        end
+        if imgui.is_item_hovered() then
+            imgui.set_tooltip("Sync P1/P2: Changes to one side mirror the other")
+        end
     end
 
-    local changed
-    changed, this.config.p1.toggle.toggle_show = build_player_header(1, this.config.p1.toggle.toggle_show)
-    changed, this.config.p2.toggle.toggle_show = build_player_header(2, this.config.p2.toggle.toggle_show)
+    imgui.table_set_column_index(1)
+    local changed1
+    changed1, this.config.p1.toggle.toggle_show = (function()
+        local label = "P1"
+        local id = "##p1_HideAllHeader"
+        imgui.text(label)
+        imgui.same_line()
+        local cursor = imgui.get_cursor_pos()
+        imgui.set_cursor_pos(Vector2f.new(cursor.x + 20, cursor.y))
+        return toggle_setter(id, this.config.p1.toggle.toggle_show)
+    end)()
+
+    imgui.table_set_column_index(3)
+    local changed2
+    changed2, this.config.p2.toggle.toggle_show = (function()
+        local label = "P2"
+        local id = "##p2_HideAllHeader"
+        imgui.text(label)
+        imgui.same_line()
+        local cursor = imgui.get_cursor_pos()
+        imgui.set_cursor_pos(Vector2f.new(cursor.x + 20, cursor.y))
+        return toggle_setter(id, this.config.p2.toggle.toggle_show)
+    end)()
+
+    if changed1 then
+        action_notify("P1 Hitboxes " .. (this.config.p1.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
+    end
+    if changed2 then
+        action_notify("P2 Hitboxes " .. (this.config.p2.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
+    end
 end
 
--- Helper: draw a single toggle + optional opacity slider for one player
 local function build_toggle_column(player_index, visible, toggle_tbl, opacity_tbl, toggle_key, opacity_key)
     imgui.table_set_column_index(player_index)
     if not visible then return end
@@ -1402,12 +1500,32 @@ local function build_toggle_column(player_index, visible, toggle_tbl, opacity_tb
         imgui.same_line()
         imgui.push_item_width(70)
         local opacity_id = string.format("##p%.0f_", player_index) .. opacity_key .. "Opacity"
-        changed, opacity_tbl[opacity_key] = opacity_setter(opacity_id, opacity_tbl[opacity_key], 0.5, 0, 100)
+        local op_changed
+        op_changed, opacity_tbl[opacity_key] = opacity_setter(opacity_id, opacity_tbl[opacity_key], 0.5, 0, 100)
         imgui.pop_item_width()
+
+        if op_changed and this.sync_enabled and not this.syncing then
+            this.syncing = true
+            local other_opacity = (player_index == 1) and this.config.p2.opacity or this.config.p1.opacity
+            other_opacity[opacity_key] = opacity_tbl[opacity_key]
+            this.syncing = false
+            mark_for_save()
+        end
+    end
+
+    if changed and this.sync_enabled and not this.syncing then
+        this.syncing = true
+        local other_toggle = (player_index == 1) and this.config.p2.toggle or this.config.p1.toggle
+        other_toggle[toggle_key] = toggle_tbl[toggle_key]
+        if opacity_key then
+            local other_opacity = (player_index == 1) and this.config.p2.opacity or this.config.p1.opacity
+            other_opacity[opacity_key] = opacity_tbl[opacity_key]
+        end
+        this.syncing = false
+        mark_for_save()
     end
 end
 
--- Helper: draw label column and both players' columns for one row
 local function build_toggle_columns(label, toggle_key, opacity_key)
     imgui.table_set_column_index(0)
     imgui.text(label)
@@ -1417,6 +1535,8 @@ local function build_toggle_columns(label, toggle_key, opacity_key)
         this.config.p1.toggle,
         this.config.p1.opacity,
         toggle_key, opacity_key)
+
+    imgui.table_set_column_index(2)
 
     build_toggle_column(3,
         this.config.p2.toggle.toggle_show,
@@ -1452,6 +1572,17 @@ local function build_player_toggle_all(player_index, toggle_tbl, opacity_tbl)
             end
         end
         mark_for_save()
+        if this.sync_enabled and not this.syncing then
+            this.syncing = true
+            local other = (player_index == 1) and this.config.p2.toggle or this.config.p1.toggle
+            for k, _ in pairs(other) do
+                if k ~= "toggle_show" then
+                    other[k] = all_checked
+                end
+            end
+            this.syncing = false
+            mark_for_save()
+        end
     end
 
     if all_checked then
@@ -1477,6 +1608,15 @@ local function build_player_toggle_all(player_index, toggle_tbl, opacity_tbl)
                 opacity_tbl[k] = current
             end
             mark_for_save()
+            if this.sync_enabled and not this.syncing then
+                this.syncing = true
+                local other = (player_index == 1) and this.config.p2.opacity or this.config.p1.opacity
+                for k, _ in pairs(other) do
+                    other[k] = current
+                end
+                this.syncing = false
+                mark_for_save()
+            end
         end
 
         imgui.pop_item_width()
@@ -1489,6 +1629,7 @@ local function build_toggle_all_row()
     imgui.text("All")
 
     build_player_toggle_all(1, this.config.p1.toggle, this.config.p1.opacity)
+    imgui.table_set_column_index(2)
     build_player_toggle_all(3, this.config.p2.toggle, this.config.p2.opacity)
 end
 
@@ -1525,7 +1666,7 @@ local function build_toggle_menu()
     imgui.set_next_item_open(true, 1 << 3)
     if not imgui.begin_table("ToggleTable", 4) then return end
 
-    build_menu_columns({160, 100, 0, 125}, nil, {"", "P1", "P2"})
+	build_menu_columns({160, 100, 30, 125}, nil, {"", "P1", "", "P2"})
     imgui.table_next_row()
     build_toggle_headers()
 
@@ -1692,17 +1833,28 @@ local function build_preset_display()
 	if this.create_new_mode then build_preset_creator() else build_preset_navigation() end
 end
 
-local function build_presets_menu()
-	imgui.set_next_item_open(true, 1 << 3)
-	imgui.unindent(10)
-	if not imgui.tree_node("Presets") then
-		build_preset_display()
-		return
-	end
+local function tree_node_stateful(label, default_open)
+    if this.force_tree_restore then
+        local saved = this.tree_open[label]
+        imgui.set_next_item_open(
+            saved ~= nil and saved or (default_open or false),
+            1
+        )
+    end
+    local open = imgui.tree_node(label)
+    this.tree_open[label] = open
+    return open
+end
 
-	build_preset_display()
-	build_preset_rows()
-	imgui.tree_pop()
+local function build_presets_menu()
+    imgui.unindent(10)
+    if not tree_node_stateful("Presets", true) then
+        build_preset_display()
+        return
+    end
+    build_preset_display()
+    build_preset_rows()
+    imgui.tree_pop()
 end
 
 local function build_copy_options_rows()
@@ -1716,10 +1868,10 @@ local function build_copy_options_rows()
 	end
 end
 
-local function build_copy_options() -- imgui.set_next_item_open(true, 1 << 3)
-	if not imgui.tree_node("Copy") then return end
-	build_copy_options_rows()
-	imgui.tree_pop()
+local function build_copy_options()
+    if not tree_node_stateful("Copy") then return end
+    build_copy_options_rows()
+    imgui.tree_pop()
 end
 
 local function build_reset_options_row(col_name, func)
@@ -1739,12 +1891,30 @@ local function build_reset_options_rows()
 	build_reset_options_row("All", reset_all_default)
 end
 
-local function build_reset_options() -- imgui.set_next_item_open(true, 1 << 3)
-	if not imgui.tree_node("Reset") then return end
-	if not imgui.begin_table("ResetTable", 4) then return end
-	build_reset_options_rows()
-	imgui.end_table()
-	imgui.tree_pop()
+local function build_reset_options()
+    if not tree_node_stateful("Reset") then return end
+    if imgui.begin_table("ResetTable", 4) then
+        build_reset_options_rows()
+        imgui.end_table()
+    end
+
+    imgui.spacing()
+    if this.factory_reset_confirm then
+        if imgui.button("Delete All Presets And Restore##factory_reset") then
+            restore_factory_defaults()
+            this.factory_reset_confirm = false
+        end
+        imgui.same_line()
+        if imgui.button("Cancel##factory_cancel") then
+            this.factory_reset_confirm = false
+        end
+    else
+        if imgui.button("Restore Default Presets##factory_reset") then
+            this.factory_reset_confirm = true
+        end
+    end
+
+    imgui.tree_pop()
 end
 
 local function build_alerts_options_row(label, config_key)
@@ -1752,18 +1922,9 @@ local function build_alerts_options_row(label, config_key)
 	changed, this.config.options[config_key] = toggle_setter(label .. "##" .. config_key, this.config.options[config_key])
 end
 
-local function build_alerts_options_rows()
-	imgui.text("Notify:")
-	build_alerts_options_row("Overlay Toggled", "alert_on_toggle")
-	imgui.same_line()
-	build_alerts_options_row("Preset Switched", "alert_on_presets")
-	imgui.same_line()
-	build_alerts_options_row("Preset Saved", "alert_on_save")
-end
-
 local function build_show_alerts_options_checkbox()
 	imgui.same_line()
-	if not imgui.checkbox("Hide All##hide_all_alerts", this.config.options.hide_all_alerts) then return end
+	if not imgui.checkbox("Hide##hide_all_alerts", this.config.options.hide_all_alerts) then return end
 	this.config.options.hide_all_alerts = not this.config.options.hide_all_alerts
 end
 
@@ -1782,113 +1943,158 @@ local function build_alerts_duration_slider()
 		mark_for_save()
 	end
 end
+local function build_alerts_options_rows()
+    imgui.text("Notify:")
+    build_alerts_options_row("Overlay Toggled", "alert_on_toggle")
+    imgui.same_line()
+    build_alerts_options_row("Preset Switched", "alert_on_presets")
+    imgui.same_line()
+    build_alerts_options_row("Preset Saved", "alert_on_save")
+end
 
 local function build_alerts_options()
-    if not imgui.tree_node("Alerts") then return end
+    if not tree_node_stateful("Alerts") then return end
     build_show_alerts_options_checkbox()
-	build_alerts_duration_slider()
+    build_alerts_duration_slider()
     if not this.config.options.hide_all_alerts then
         build_alerts_options_rows()
     end
     imgui.tree_pop()
 end
 
+local function are_hotkeys_default()
+    for key, default_val in pairs(hk.default_hotkeys) do
+        local current = hk.hotkeys[key]
+        if current ~= "[Press Input]" and current ~= default_val then
+            return false
+        end
+    end
+    return true
+end
+
+local function is_any_hotkey_rebinding()
+	for _, value in pairs(hk.hotkeys) do
+		if value == "[Press Input]" then
+			return true
+		end
+	end
+	return false
+end
+
+local function build_hotkeys_reset_button()
+    if are_hotkeys_default() then return end
+    imgui.same_line()
+
+    if this.confirm_restore_hotkeys == nil then this.confirm_restore_hotkeys = false end
+
+    if is_any_hotkey_rebinding() then
+        if imgui.button("Restore Defaults") then
+            for name, value in pairs(hk.hotkeys) do
+                if value == "[Press Input]" then
+                    hk.hotkeys[name] = hk.default_hotkeys[name] or "[Not Bound]"
+                end
+            end
+            hk.reset_from_defaults_tbl(hk.default_hotkeys)
+            this.confirm_restore_hotkeys = false
+        end
+    else
+        if this.confirm_restore_hotkeys then
+            if imgui.button("Restore Defaults?") then
+                hk.reset_from_defaults_tbl(hk.default_hotkeys)
+                this.confirm_restore_hotkeys = false
+            end
+            if imgui.is_mouse_clicked(0) and not imgui.is_item_hovered() then
+                this.confirm_restore_hotkeys = false
+            end
+        else
+            if imgui.button("Restore Defaults") then
+                this.confirm_restore_hotkeys = true
+            end
+        end
+    end
+end
+
+local function build_hotkey_button(text, hotkey_str)
+	imgui.text(text); imgui.same_line()
+	if hk.hotkey_setter(hotkey_str, nil, "") then
+		hk.update_hotkey_table(this.config.hotkeys)
+		mark_for_save()
+	end
+end
+
 local function build_hotkeys_options()
-	if not imgui.tree_node("Hotkeys") then return end
-
-	imgui.text("Toggle Menu:")
-	imgui.same_line()
-	if hk.hotkey_setter("toggle_menu", nil, "") then
-		hk.update_hotkey_table(this.config.hotkeys)
-		mark_for_save()
-	end
-
-	imgui.text("Toggle P1:")
-	imgui.same_line()
-	if hk.hotkey_setter("toggle_p1", nil, "") then
-		hk.update_hotkey_table(this.config.hotkeys)
-		mark_for_save()
-	end
-
-	imgui.text("Toggle P2:")
-	imgui.same_line()
-	if hk.hotkey_setter("toggle_p2", nil, "") then
-		hk.update_hotkey_table(this.config.hotkeys)
-		mark_for_save()
-	end
-
-	imgui.text("Toggle All:")
-	imgui.same_line()
-	if hk.hotkey_setter("toggle_all", nil, "") then
-		hk.update_hotkey_table(this.config.hotkeys)
-		mark_for_save()
-	end
-
-	imgui.text("Last Preset:")
-	imgui.same_line()
-	if hk.hotkey_setter("prev_preset", nil, "") then
-		hk.update_hotkey_table(this.config.hotkeys)
-		mark_for_save()
-	end
-
-	imgui.text("Next Preset:")
-	imgui.same_line()
-	if hk.hotkey_setter("next_preset", nil, "") then
-		hk.update_hotkey_table(this.config.hotkeys)
-		mark_for_save()
-	end
-
-	imgui.text("Save Preset:")
-	imgui.same_line()
-	if hk.hotkey_setter("save_preset", nil, "") then
-		hk.update_hotkey_table(this.config.hotkeys)
-		mark_for_save()
-	end
-
-	imgui.tree_pop()
+    if not tree_node_stateful("Hotkeys") then return end
+    imgui.same_line(); imgui.spacing()
+    build_hotkeys_reset_button()
+    build_hotkey_button("Toggle Menu:", "toggle_menu")
+    build_hotkey_button("Toggle P1:", "toggle_p1")
+    build_hotkey_button("Toggle P2:", "toggle_p2")
+    build_hotkey_button("Toggle All:", "toggle_all")
+    build_hotkey_button("Last Preset:", "prev_preset")
+    build_hotkey_button("Next Preset:", "next_preset")
+    build_hotkey_button("Save Preset:", "save_preset")
+    imgui.tree_pop()
 end
 
 local function build_backup_options()
-    if not imgui.tree_node("Backup") then return end
+    if not tree_node_stateful("Backup") then return end
     if this.backup_filename == "" then
         this.backup_filename = generate_default_backup_filename()
     end
-	
-	imgui.same_line()
+    imgui.same_line()
     imgui.text("File:")
-	imgui.same_line()
+    imgui.same_line()
     imgui.push_item_width(200)
     local changed, new_name = imgui.input_text("##backup_filename", this.backup_filename, 256)
-    if changed then
-        this.backup_filename = new_name
-    end
+    if changed then this.backup_filename = new_name end
     imgui.pop_item_width()
-
     imgui.same_line()
     if imgui.button("Export") then perform_backup(this.backup_filename) end
-
     imgui.tree_pop()
 end
 
 local function build_options_menu()
-    if not imgui.tree_node("Options") then return end
-	imgui.unindent(15)
-	build_copy_options()
-	build_reset_options()
-	build_alerts_options()
-	build_hotkeys_options()
-	build_backup_options()
-	imgui.tree_pop()
-	imgui.indent(15)
+    if not tree_node_stateful("Options") then return end
+    imgui.unindent(15)
+    build_copy_options()
+    build_reset_options()
+    build_alerts_options()
+    build_hotkeys_options()
+    build_backup_options()
+    imgui.tree_pop()
+    imgui.indent(15)
+end
+
+local function get_toggle_hotkey_display()
+    local hotkey = hk.hotkeys["toggle_menu"]
+    if not hotkey or hotkey == "[Not Bound]" then
+        this.last_menu_hotkey_display = ""
+        return ""
+    end
+    local full_str = hk.get_button_string("toggle_menu")
+    if full_str:find("%[Press Input%]") then
+        return this.last_menu_hotkey_display
+    end
+    local display = " (" .. full_str .. ")"
+    this.last_menu_hotkey_display = display
+    return display
 end
 
 local function build_menu()
-	imgui.begin_window("Hitboxes", true, 64)
-	build_toggle_menu(); build_presets_menu(); build_options_menu();
-	imgui.end_window()
+    local title = "Hitboxes" .. get_toggle_hotkey_display()
+    this.force_tree_restore = (title ~= this.last_menu_title)
+    this.last_menu_title = title
+    if this.menu_window_pos and this.force_tree_restore then
+        imgui.set_next_window_pos(this.menu_window_pos, 1)
+    end
+    imgui.begin_window(title, true, 64)
+    this.menu_window_pos = imgui.get_window_pos()
+    build_toggle_menu(); build_presets_menu(); build_options_menu()
+    imgui.end_window()
+    this.force_tree_restore = false
 end
 
-local function build_gui()
+local function gui_handler()
 	if this.config.options.display_menu then build_menu() end
 	if is_pause_menu_closed() and (this.config.p1.toggle.toggle_show or this.config.p2.toggle.toggle_show) then process_hitboxes() end
 end
@@ -1901,7 +2107,7 @@ end
 
 -- Hotkeys
 
-local function setup_hotkeys()
+local function hotkey_handler()
 	if hk.check_hotkey("toggle_menu") then
 		this.config.options.display_menu = not this.config.options.display_menu
 		mark_for_save()
@@ -1934,10 +2140,10 @@ local function setup_hotkeys()
 	end
 end
 
-local function build_on_draw_ui()
+local function draw_ui_handler()
 	if not imgui.tree_node("Hitbox Viewer") then return end
 	local changed
-	changed, this.config.options.display_menu = toggle_setter("Display Options Menu (F1)", this.config.options.display_menu)
+	changed, this.config.options.display_menu = toggle_setter("Display Options Menu", this.config.options.display_menu)
 	imgui.tree_pop()
 end
 
@@ -1946,11 +2152,15 @@ end
 if not this.initialized then initialize() end
 
 re.on_draw_ui(function()
-	build_on_draw_ui()
+	draw_ui_handler()
 end)
 
 re.on_frame(function()
 	if not gBattle then gBattle = sdk.find_type_definition("gBattle") else
-		save_handler(); setup_hotkeys(); build_gui(); tooltip_handler(); draw_action_notify()
+		save_handler()
+		hotkey_handler()
+		gui_handler()
+		tooltip_handler()
+		action_notify_handler()
 	end
 end)

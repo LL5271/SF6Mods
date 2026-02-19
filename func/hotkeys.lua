@@ -1,4 +1,4 @@
-local reframework = reframework 
+local reframework = reframework
 
 -- Mouse buttons
 LBUTTON = 0x01

@@ -610,6 +610,7 @@ local function create_default_config()
 	local toggle_options = {
 		toggle_show = true,
 		hitboxes = true, hitboxes_outline = true,
+		hitbox_ticks = true,
 		hurtboxes = true, hurtboxes_outline = true,
 		pushboxes = true, pushboxes_outline = true,
 		throwboxes = true, throwboxes_outline = true,
@@ -622,6 +623,7 @@ local function create_default_config()
 
 	local opacity_options = {
 		hitbox = 25, hitbox_outline = 25,
+		hitbox_tick = 25,
 		hurtbox = 25, hurtbox_outline = 25,
 		pushbox = 25, pushbox_outline = 25,
 		throwbox = 25, throwbox_outline = 25,
@@ -669,6 +671,7 @@ local function create_default_presets()
         local t = {
             toggle_show = true,
             hitboxes = true, hitboxes_outline = true,
+            hitbox_ticks = true,
             hurtboxes = true, hurtboxes_outline = true,
             pushboxes = true, pushboxes_outline = true,
             throwboxes = true, throwboxes_outline = true,
@@ -685,6 +688,7 @@ local function create_default_presets()
     local function make_opacity(fill, outline, props, pos)
         return {
             hitbox = fill, hitbox_outline = outline,
+            hitbox_tick = fill,
             hurtbox = fill, hurtbox_outline = outline,
             pushbox = fill, pushbox_outline = outline,
             throwbox = fill, throwbox_outline = outline,
@@ -699,6 +703,7 @@ local function create_default_presets()
     local light_toggle = make_toggle({properties = false, throwhurtboxes_outline = false})
     local light_opacity = {
         hitbox = 15, hitbox_outline = 15,
+        hitbox_tick = 15,
         hurtbox = 10, hurtbox_outline = 15,
         pushbox = 5,  pushbox_outline = 15,
         throwbox = 15, throwbox_outline = 5,
@@ -718,12 +723,12 @@ local function create_default_presets()
 
     local presets = {
         ["Default"] = {
-            p1 = {toggle = make_toggle(), opacity = make_opacity(25, 25)},
-            p2 = {toggle = make_toggle(), opacity = make_opacity(25, 25)}
+            p1 = {toggle = make_toggle({hitbox_ticks = false}), opacity = make_opacity(25, 25)},
+            p2 = {toggle = make_toggle({hitbox_ticks = false}), opacity = make_opacity(25, 25)}
         },
         ["Dark"] = {
-            p1 = {toggle = make_toggle(), opacity = make_opacity(50, 50)},
-            p2 = {toggle = make_toggle(), opacity = make_opacity(50, 50)}
+            p1 = {toggle = make_toggle({hitbox_ticks = false}), opacity = make_opacity(50, 50)},
+            p2 = {toggle = make_toggle({hitbox_ticks = false}), opacity = make_opacity(50, 50)}
         },
         ["Light"] = {
             p1 = {toggle = deep_copy(light_toggle), opacity = deep_copy(light_opacity)},
@@ -732,6 +737,10 @@ local function create_default_presets()
         ["Outlines"] = {
             p1 = {toggle = deep_copy(outlines_toggle), opacity = deep_copy(outlines_opacity)},
             p2 = {toggle = deep_copy(outlines_toggle), opacity = deep_copy(outlines_opacity)}
+        },
+        ["Hitbox Ticks"] = {
+            p1 = {toggle = make_toggle({hitbox_ticks = true}), opacity = make_opacity(25, 25)},
+            p2 = {toggle = make_toggle({hitbox_ticks = true}), opacity = make_opacity(25, 25)}
         },
     }
     return presets
@@ -1205,7 +1214,7 @@ state.range_ticks = { p1 = nil, p2 = nil }
 
 local function apply_opacity(opacity, colorWithoutAlpha)
 	local alpha = math.floor(opacity * 2.55)
-	return alpha * 0x1000000 + colorWithoutAlpha
+	return alpha * 0x1000000 + (colorWithoutAlpha % 0x1000000)
 end
 
 local function is_pause_menu_closed()
@@ -1489,63 +1498,73 @@ local function draw_position_marker(entity, player_config)
 end
 
 local function get_farthest_hitbox_reach(entity)
-    if not entity.mpActParam then return nil, nil end
-    local col = entity.mpActParam.Collision
-    if not col or not col.Infos or not col.Infos._items then return nil, nil end
+	local col = entity.mpActParam.Collision
+	if not col or not col.Infos or not col.Infos._items then return nil, nil end
 
-    local facing_right = is_facing_right(entity)
-    local farthest_edge = nil
-    local farthest_cy   = nil
+	local facing_right = is_facing_right(entity)
+	local farthest_edge = nil
+	local inside_edge = nil
+	local y_midpoints = {}
 
-    for _, rect in pairs(col.Infos._items) do
-        if rect and rect:get_field("HitPos") ~= nil and rect.TypeFlag > 0 then
-            local vTL, vTR, vBL, vBR = get_vectors(rect)
-            local x, y, w, h = get_dimensions(vTL, vTR, vBL, vBR)
-            if x and y and w then
-                local edge = facing_right and (x + w) or x
-                
-                if farthest_edge == nil
-                    or (facing_right  and edge > farthest_edge)
-                    or (not facing_right and edge < farthest_edge)
-                then
-                    farthest_edge = edge
-                    farthest_cy   = y
-                end
-            end
-        end
-    end
+	for _, rect in pairs(col.Infos._items) do
+		if rect and rect:get_field("HitPos") ~= nil and rect.TypeFlag > 0 then
+			local vTL, vTR, vBL, vBR = get_vectors(rect)
+			local x, y, w, h = get_dimensions(vTL, vTR, vBL, vBR)
 
-    return farthest_edge, farthest_cy
+			if x and y and w and h then
+				local edge = facing_right and (x + w) or x
+				local current_mid_y = y + (h / 2)
+
+				if farthest_edge ~= nil and math.abs(edge - farthest_edge) < 0.001 then
+					table.insert(y_midpoints, current_mid_y)
+				elseif farthest_edge == nil or (facing_right and edge > farthest_edge) or (not facing_right and edge < farthest_edge) then
+					farthest_edge = edge
+					inside_edge = facing_right and x or (x + w)
+					y_midpoints = { current_mid_y }
+				end
+			end
+		end
+	end
+
+	local average_y = nil
+	if #y_midpoints > 0 then
+		local sum_y = 0
+		for _, y_val in ipairs(y_midpoints) do sum_y = sum_y + y_val end
+		average_y = sum_y / #y_midpoints
+	end
+
+	return farthest_edge, average_y
 end
 
 local function update_range_tick(entity, player_key)
-    if not state.config.options.range_ticks_show then return end
+	if not state.config.options.range_ticks_show then return end
+	local player_config = state.config[player_key]
+	if not player_config or not player_config.toggle.hitbox_ticks then return end
 
-    local x_val = entity.pos and entity.pos.x and entity.pos.x.v
-    local y_val = entity.pos and entity.pos.y and entity.pos.y.v
-    if not x_val or not y_val then return end
+	local x_val = entity.pos and entity.pos.x and entity.pos.x.v
+	local y_val = entity.pos and entity.pos.y and entity.pos.y.v
+	if not x_val or not y_val then return end
 
-    local vOrigin = Vector3f.new(x_val / 6553600.0, y_val / 6553600.0, 0)
-    local origin = draw.world_to_screen(vOrigin)
-    if not origin then return end
+	local vOrigin = Vector3f.new(x_val / 6553600.0, y_val / 6553600.0, 0)
+	local origin = draw.world_to_screen(vOrigin)
+	if not origin then return end
 
-    local far_sx, far_sy = get_farthest_hitbox_reach(entity)
-    if far_sx and far_sy then
-        local current_age = 0
-        local prev_tick = state.range_ticks[player_key]
-        
-        if prev_tick and prev_tick.timer >= 59 then
-            current_age = prev_tick.age or 0
-        end
-        
-        state.range_ticks[player_key] = {
-            ox = origin.x,
-            fy = far_sy,
-            fx = far_sx,
-            timer = 60,
-            age = current_age + 1
-        }
-    end
+	local far_sx, far_sy = get_farthest_hitbox_reach(entity)
+	if far_sx and far_sy then
+		local current_age = 0
+		local prev_tick = state.range_ticks[player_key]
+		if prev_tick and prev_tick.timer > 0 then
+			current_age = prev_tick.age or 0
+		end
+
+		state.range_ticks[player_key] = {
+			ox = origin.x,
+			fy = far_sy,
+			fx = far_sx,
+			timer = 60,
+			age = current_age + 1
+		}
+	end
 end
 
 local function process_entity(entity, draw_pos)
@@ -1567,9 +1586,10 @@ local function process_entity(entity, draw_pos)
 end
 
 local function draw_range_ticks()
-    if not state.config.options.range_ticks_show then return end
+	if not state.config.options.range_ticks_show then return end
 
-    local TICK_HALF_HEIGHT = 14
+	local TICK_HALF_HEIGHT = 10
+	local BORDER_THICKNESS = 0
 
     local function thick_hline(x1, y, x2, col)
         for dy = -2, 2 do
@@ -1583,25 +1603,49 @@ local function draw_range_ticks()
         end
     end
 
-    for _, key in ipairs({"p1", "p2"}) do
-        local tick = state.range_ticks[key]
-        if tick and tick.timer > 0 then
-            tick.timer = tick.timer - 1
-            local ox, fy, fx = tick.ox, tick.fy, tick.fx
+	for player_key, tick in pairs(state.range_ticks) do
+		local player_config = state.config[player_key]
+		if tick and tick.timer > 0 and player_config and player_config.toggle.hitbox_ticks then
+			local ox, fy, fx = tick.ox, tick.fy, tick.fx
+			local opacity = player_config.opacity.hitbox_tick or 25
 
-            local fade_out = math.min(tick.timer / 45, 1)
-            local fade_in = math.min((tick.age or 5) / 5.0, 1)
-            local fade = fade_out * fade_in
-            
-            local line_opacity = math.floor(60  * fade)
-            local tick_opacity = math.floor(100 * fade)
-            local LINE_COLOR = apply_opacity(line_opacity, 0xFF0000FF)
-            local TICK_COLOR = apply_opacity(tick_opacity, 0xFF0000FF)
+			-- Full opacity on frame 1, fades out completely by frame 20
+			local dim_fade = math.min(math.max(tick.timer - 41, 0) / 19, 1)
 
-            thick_hline(ox, fy, fx, LINE_COLOR)
-            thick_vline(fx, fy - TICK_HALF_HEIGHT, fy + TICK_HALF_HEIGHT, TICK_COLOR)
-        end
-    end
+			-- Movement: only begins retracting in the last 20 frames
+			local move_fade = math.min(math.max(tick.timer - 5, 0) / 20.0, 1)
+
+			-- Line and tick mark grow/shrink spatially from origin outward
+			local cur_ox = fx - move_fade * (fx - ox)
+
+			local line_max = opacity * 0.625
+			local LINE_COLOR = apply_opacity(math.floor(line_max * dim_fade), 0xFF0000FF)
+			local TICK_COLOR = apply_opacity(math.floor(opacity * dim_fade), 0xFF0000FF)
+			local BORDER_COLOR = apply_opacity(math.floor(opacity * dim_fade), 0x000000)
+
+			-- Shift tick inward to sit on the inside face of the far edge
+			local inward = ox < fx and -2 or 2
+			local tick_x = fx + inward
+
+			for offset = -BORDER_THICKNESS, BORDER_THICKNESS do
+				draw.line(cur_ox, fy + offset, tick_x, fy + offset, BORDER_COLOR)
+			end
+
+			for x_off = -BORDER_THICKNESS, BORDER_THICKNESS do
+				thick_vline(tick_x + x_off,
+					fy - TICK_HALF_HEIGHT - BORDER_THICKNESS,
+					fy + TICK_HALF_HEIGHT + BORDER_THICKNESS,
+					BORDER_COLOR)
+			end
+
+			thick_hline(cur_ox, fy, tick_x, LINE_COLOR)
+			thick_vline(tick_x, fy - TICK_HALF_HEIGHT, fy + TICK_HALF_HEIGHT, TICK_COLOR)
+
+			tick.timer = tick.timer - 1
+		else
+			state.range_ticks[player_key] = nil
+		end
+	end
 end
 
 local function update_timestop_state()
@@ -1880,6 +1924,7 @@ end
 local toggle_rows = {
     {"Hitbox", "hitboxes", "hitbox"},
     {"Hitbox Outline", "hitboxes_outline", "hitbox_outline"},
+    {"Hitbox Tick Marks", "hitbox_ticks", "hitbox_tick"},
     {"Hurtbox", "hurtboxes", "hurtbox"},
     {"Hurtbox Outline", "hurtboxes_outline", "hurtbox_outline"},
     {"Pushbox", "pushboxes", "pushbox"},

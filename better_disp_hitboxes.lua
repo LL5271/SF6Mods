@@ -8,6 +8,14 @@ local gBattle, pause_manager
 local state = {}
 
 -- ============================================================================
+-- Timestop State
+-- ============================================================================
+local timestop_frame = 0
+local timestop_total_frames = 0
+local frozen_draw_calls = {}   -- last pre-timestop frame's draw calls
+local draw_call_buffer = nil   -- non-nil while recording a normal frame
+
+-- ============================================================================
 -- Hotkey System (hk) – self‑contained module; do not modify
 -- ============================================================================
 if not hk then
@@ -536,16 +544,14 @@ if not hk then
 		check_mouse_button = check_mouse_button,					-- Fn checks if a mouse input is released, down or triggered (by mbutton name)
 		check_pad_button = check_pad_button,						-- Fn checks if a gamepad input is released, down or triggered (by button name) (such as imgui focus) was removed mid-frame
 
-		-- NEW: register a callback to be called whenever any hotkey changes
 		register_hotkey_change_callback = function(cb)
 			table.insert(hotkey_change_callbacks, cb)
 		end,
 
-		-- NEW: sync modifiers from hotkeys to file (used at startup)
 		sync_modifiers_from_hotkeys = function()
 			hk_data.modifier_actions = {}
 			for action, key in pairs(hotkeys) do
-				if action:match("_%$$$") then  -- ends with "_$" (modifier)
+				if action:match("_%$$$") then
 					hk_data.modifier_actions[action] = key
 				end
 			end
@@ -636,6 +642,7 @@ local function create_default_config()
 			notify_duration = 2.0,
 			hotkey_minimizes = false,
 			color_wall_splat = true,
+			range_ticks_show = true,
 		},
 		hotkeys = {
 			toggle_menu = "F1",
@@ -1194,6 +1201,8 @@ end
 -- Hitbox Drawing Logic
 -- ============================================================================
 
+state.range_ticks = { p1 = nil, p2 = nil }
+
 local function apply_opacity(opacity, colorWithoutAlpha)
 	local alpha = math.floor(opacity * 2.55)
 	return alpha * 0x1000000 + colorWithoutAlpha
@@ -1233,12 +1242,22 @@ local function property_flag(parts, idx, bit, str, rect)
 end
 
 local function draw_box(outline_toggle, fill_toggle, outline_opacity, fill_opacity, color, x, y, w, h)
+    if draw_call_buffer then
+        draw_call_buffer[#draw_call_buffer + 1] = {"box", outline_toggle, fill_toggle, outline_opacity, fill_opacity, color, x, y, w, h}
+    end
     if outline_toggle then
         draw.outline_rect(x, y, w, h, apply_opacity(outline_opacity, color))
     end
     if fill_toggle then
         draw.filled_rect(x, y, w, h, apply_opacity(fill_opacity, color))
     end
+end
+
+local function draw_text_buffered(text, x, y, color)
+    if draw_call_buffer then
+        draw_call_buffer[#draw_call_buffer + 1] = {"text", text, x, y, color}
+    end
+    draw.text(text, x, y, color)
 end
 
 local function build_hit_properties(condFlag, rect)
@@ -1335,7 +1354,7 @@ local function draw_hitbox(rect, player_config)
             if player_config.toggle.properties then
                 local propText = build_hit_properties(rect.CondFlag)
                 if propText then
-                    draw.text(propText, x, y + h, apply_opacity(player_config.opacity.properties, 0xFFFFFF))
+                    draw_text_buffered(propText, x, y + h, apply_opacity(player_config.opacity.properties, 0xFFFFFF))
                 end
             end
         elseif (rect.TypeFlag == 0 and rect.PoseBit > 0) or rect.CondFlag == 0x2C0 then
@@ -1350,7 +1369,7 @@ local function draw_hitbox(rect, player_config)
             if player_config.toggle.properties then
                 local propText = build_hit_properties(rect.CondFlag)
                 if propText then
-                    draw.text(propText, x, y + h, apply_opacity(player_config.opacity.properties, 0xFFFFFF))
+                    draw_text_buffered(propText, x, y + h, apply_opacity(player_config.opacity.properties, 0xFFFFFF))
                 end
             end
         elseif rect.GuardBit == 0 then
@@ -1397,7 +1416,7 @@ local function draw_hitbox(rect, player_config)
             if player_config.toggle.properties then
                 local propText = build_hurt_properties(rect.TypeFlag, rect.Immune)
                 if propText then
-                    draw.text(propText, x, y + h, apply_opacity(player_config.opacity.properties, 0xFFFFFF))
+                    draw_text_buffered(propText, x, y + h, apply_opacity(player_config.opacity.properties, 0xFFFFFF))
                 end
             end
         else
@@ -1461,26 +1480,166 @@ local function draw_position_marker(entity, player_config)
 					color = 0xB729FF
 				end
 			end
-        draw.filled_circle(screenPos.x, screenPos.y, 10,
-            apply_opacity(player_config.opacity.position, color), 10)
+        local circle_color = apply_opacity(player_config.opacity.position, color)
+        if draw_call_buffer then
+            draw_call_buffer[#draw_call_buffer + 1] = {"circle", screenPos.x, screenPos.y, 10, circle_color, 10}
+        end
+        draw.filled_circle(screenPos.x, screenPos.y, 10, circle_color, 10)
+    end
+end
+
+local function get_farthest_hitbox_reach(entity)
+    if not entity.mpActParam then return nil, nil end
+    local col = entity.mpActParam.Collision
+    if not col or not col.Infos or not col.Infos._items then return nil, nil end
+
+    local facing_right = is_facing_right(entity)
+    local farthest_edge = nil
+    local farthest_cy   = nil
+
+    for _, rect in pairs(col.Infos._items) do
+        if rect and rect:get_field("HitPos") ~= nil and rect.TypeFlag > 0 then
+            local vTL, vTR, vBL, vBR = get_vectors(rect)
+            local x, y, w, h = get_dimensions(vTL, vTR, vBL, vBR)
+            if x and y and w then
+                local edge = facing_right and (x + w) or x
+                
+                if farthest_edge == nil
+                    or (facing_right  and edge > farthest_edge)
+                    or (not facing_right and edge < farthest_edge)
+                then
+                    farthest_edge = edge
+                    farthest_cy   = y
+                end
+            end
+        end
+    end
+
+    return farthest_edge, farthest_cy
+end
+
+local function update_range_tick(entity, player_key)
+    if not state.config.options.range_ticks_show then return end
+
+    local x_val = entity.pos and entity.pos.x and entity.pos.x.v
+    local y_val = entity.pos and entity.pos.y and entity.pos.y.v
+    if not x_val or not y_val then return end
+
+    local vOrigin = Vector3f.new(x_val / 6553600.0, y_val / 6553600.0, 0)
+    local origin = draw.world_to_screen(vOrigin)
+    if not origin then return end
+
+    local far_sx, far_sy = get_farthest_hitbox_reach(entity)
+    if far_sx and far_sy then
+        local current_age = 0
+        local prev_tick = state.range_ticks[player_key]
+        
+        if prev_tick and prev_tick.timer >= 59 then
+            current_age = prev_tick.age or 0
+        end
+        
+        state.range_ticks[player_key] = {
+            ox = origin.x,
+            fy = far_sy,
+            fx = far_sx,
+            timer = 60,
+            age = current_age + 1
+        }
     end
 end
 
 local function process_entity(entity, draw_pos)
     local config = nil
+    local player_key = nil
     if entity:get_IsTeam1P() then
         config = state.config.p1
+        player_key = "p1"
     elseif entity:get_IsTeam2P() then
         config = state.config.p2
+        player_key = "p2"
     end
     if not config or not config.toggle.toggle_show then return end
     draw_hitboxes(entity, entity.mpActParam, config)
     if draw_pos then
         draw_position_marker(entity, config)
+        update_range_tick(entity, player_key)
+    end
+end
+
+local function draw_range_ticks()
+    if not state.config.options.range_ticks_show then return end
+
+    local TICK_HALF_HEIGHT = 14
+
+    local function thick_hline(x1, y, x2, col)
+        for dy = -2, 2 do
+            draw.line(x1, y + dy, x2, y + dy, col)
+        end
+    end
+
+    local function thick_vline(x, y1, y2, col)
+        for dx = -2, 2 do
+            draw.line(x + dx, y1, x + dx, y2, col)
+        end
+    end
+
+    for _, key in ipairs({"p1", "p2"}) do
+        local tick = state.range_ticks[key]
+        if tick and tick.timer > 0 then
+            tick.timer = tick.timer - 1
+            local ox, fy, fx = tick.ox, tick.fy, tick.fx
+
+            local fade_out = math.min(tick.timer / 45, 1)
+            local fade_in = math.min((tick.age or 5) / 5.0, 1)
+            local fade = fade_out * fade_in
+            
+            local line_opacity = math.floor(60  * fade)
+            local tick_opacity = math.floor(100 * fade)
+            local LINE_COLOR = apply_opacity(line_opacity, 0xFF0000FF)
+            local TICK_COLOR = apply_opacity(tick_opacity, 0xFF0000FF)
+
+            thick_hline(ox, fy, fx, LINE_COLOR)
+            thick_vline(fx, fy - TICK_HALF_HEIGHT, fy + TICK_HALF_HEIGHT, TICK_COLOR)
+        end
+    end
+end
+
+local function update_timestop_state()
+    local ok, BattleChronos = pcall(function()
+        return gBattle:get_field("Chronos"):get_data(nil)
+    end)
+    if not ok or not BattleChronos then return end
+    local frame, frames = BattleChronos.WorldElapsed, BattleChronos.WorldNotch
+    local current_frame, total_frames = frame, frames
+    if frame > 0 and frames > 0 and frame == frames then
+        current_frame, total_frames = 0, 0
+    end
+    timestop_frame, timestop_total_frames = current_frame, total_frames
+end
+
+local function replay_frozen_draw_calls()
+    for _, call in ipairs(frozen_draw_calls) do
+        if call[1] == "box" then
+            if call[2] then draw.outline_rect(call[7], call[8], call[9], call[10], apply_opacity(call[4], call[6])) end
+            if call[3] then draw.filled_rect(call[7], call[8], call[9], call[10], apply_opacity(call[5], call[6])) end
+        elseif call[1] == "text" then
+            draw.text(call[2], call[3], call[4], call[5])
+        elseif call[1] == "circle" then
+            draw.filled_circle(call[2], call[3], call[4], call[5], call[6])
+        end
     end
 end
 
 local function process_hitboxes()
+    update_timestop_state()
+
+    if timestop_total_frames == 11 and not (timestop_frame == timestop_total_frames) then
+        replay_frozen_draw_calls()
+        draw_range_ticks()
+        return
+    end
+
+    draw_call_buffer = {}
     local sWork, sPlayer = gBattle:get_field("Work"):get_data(nil), gBattle:get_field("Player"):get_data(nil)
     for _, obj in pairs(sWork.Global_work) do
         if obj.mpActParam and not obj:get_IsR0Die() then process_entity(obj, false) end
@@ -1488,6 +1647,9 @@ local function process_hitboxes()
     for _, player in pairs(sPlayer.mcPlayer) do
         if player.mpActParam then process_entity(player, true) end
     end
+    frozen_draw_calls = draw_call_buffer
+    draw_call_buffer = nil
+    draw_range_ticks()
 end
 
 -- ============================================================================
@@ -2134,6 +2296,7 @@ local function build_misc_options()
 	if not tree_node_stateful("Misc") then return end
     local changed
     changed, state.config.options.color_wall_splat = toggle_setter("Adjust Position color in wall splat range", state.config.options.color_wall_splat)
+    changed, state.config.options.range_ticks_show = toggle_setter("Show hitbox tick marks", state.config.options.range_ticks_show)
 	imgui.tree_pop()
 end
 

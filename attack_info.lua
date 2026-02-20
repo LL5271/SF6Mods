@@ -160,7 +160,7 @@ function ComboData.update_state(p1, p2)
 
         if state.started then
             state.finish = { p1 = Utils.deep_copy(p1), p2 = Utils.deep_copy(p2) }
-            if atk.combo_count == 0 or (def and def_prev and def.death_count ~= def_prev.death_count) then
+            if (atk and atk.combo_count == 0) or (def and def_prev and def.death_count ~= def_prev.death_count) then
                 state.finished, state.started = true, false
                 if Config.settings.combo_timer_duration > 0 then
                     state.timer_remaining = Config.settings.combo_timer_duration
@@ -340,7 +340,7 @@ function UI.render_combo_window_table(state)
         -- Fix: when both endpoints share the same incapacitated state the -60 000 shift cancels
         -- in the subtraction and finish-minus-start is correct.  When the state changed the two
         -- values cannot be meaningfully compared, so we return 0 (displayed as "--").
-        
+
         local function adjust_drive(finish_val, start_val, finish_incap, start_incap)
             if finish_incap ~= start_incap then return 0 end
             return finish_val - start_val

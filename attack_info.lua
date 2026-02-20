@@ -153,7 +153,7 @@ function ComboData.update_state(p1, p2)
         local atk, def = (i == 0 and p1 or p2), (i == 0 and p2 or p1)
         local def_prev = (i == 0 and ComboData.p2_prev or ComboData.p1_prev)
 
-        if not state.started and atk.combo_count > 0 and ComboData.p1_prev.hp_current then
+        if not state.started and atk and atk.combo_count > 0 and ComboData.p1_prev.hp_current then
             state.started, state.finished = true, false
             state.start = { p1 = Utils.deep_copy(ComboData.p1_prev), p2 = Utils.deep_copy(ComboData.p2_prev) }
         end
@@ -340,6 +340,7 @@ function UI.render_combo_window_table(state)
         -- Fix: when both endpoints share the same incapacitated state the -60 000 shift cancels
         -- in the subtraction and finish-minus-start is correct.  When the state changed the two
         -- values cannot be meaningfully compared, so we return 0 (displayed as "--").
+        
         local function adjust_drive(finish_val, start_val, finish_incap, start_incap)
             if finish_incap ~= start_incap then return 0 end
             return finish_val - start_val

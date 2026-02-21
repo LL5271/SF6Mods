@@ -1,19 +1,179 @@
 local MOD_NAME = "Better Hitbox Viewer"
-local CONFIG_PATH = "better_disp_hitboxes.json"
-local SAVE_DELAY = 0.5
-local LEFT_SPLAT_POS, RIGHT_SPLAT_POS = -585.2, 585.2
-
-local gBattle, pause_manager
-
 local state = {}
 
 -- ============================================================================
--- Timestop State
+-- General Utilities
 -- ============================================================================
-local timestop_frame = 0
-local timestop_total_frames = 0
-local frozen_draw_calls = {}   -- last pre-timestop frame's draw calls
-local draw_call_buffer = nil   -- non-nil while recording a normal frame
+
+local function deep_copy(obj)
+	if type(obj) ~= 'table' then return obj end
+	local copy = {}
+	for k, v in pairs(obj) do copy[k] = deep_copy(v) end
+	return copy
+end
+
+local function bitand(a, b) return (a % (b + b) >= b) and b or 0 end
+
+local function reverse_pairs(aTable)
+    local keys = {}
+    for k, _ in pairs(aTable) do keys[#keys+1] = k end
+    table.sort(keys, function(a, b) return a > b end)
+    local n = 0
+    return function()
+        n = n + 1
+        if n > #keys then return nil, nil end
+        return keys[n], aTable[keys[n]]
+    end
+end
+
+local function is_facing_right(entity)
+    local bitval = entity:get_field("BitValue")
+    if bitval and type(bitval) == "number" then
+        return (bitand(bitval, 128) == 128)
+    end
+    return true
+end
+
+local function is_disabled_state()
+	return not state.config.p1.toggle.toggle_show and not state.config.p2.toggle.toggle_show
+end
+
+local function setup_hook(type_name, method_name, pre_func, post_func)
+	local type_def = sdk.find_type_definition(type_name)
+	if type_def then
+		local method = type_def:get_method(method_name)
+		if method then
+			sdk.hook(method, pre_func, post_func)
+		end
+	end
+end
+
+-- ============================================================================
+-- Game Objects
+-- ============================================================================
+
+local gBattle, PauseManager, TrainingManager, bFlowManager
+
+local function object_handler()
+	if not PauseManager then 
+		PauseManager = sdk.get_managed_singleton("app.PauseManager")
+	end
+
+	if not TrainingManager then
+		TrainingManager = sdk.get_managed_singleton("app.training.TrainingManager")
+	end
+
+    if not bFlowManager then
+        bFlowManager = sdk.get_managed_singleton("app.bFlowManager")
+    end
+
+    if gBattle then
+		state.sWork = state.sWork or gBattle:get_field("Work"):get_data(nil)
+		state.sPlayer = state.sPlayer or gBattle:get_field("Player"):get_data(nil)
+        state.sSetting = state.sSetting or gBattle:get_field("Setting"):get_data(nil)
+		return
+	end
+
+	gBattle = sdk.find_type_definition("gBattle")
+end
+
+local GAME_MODES = {
+    [0]  = "NONE",
+    [1]  = "ARCADE",
+    [2]  = "TRAINING",
+    [3]  = "VERSUS_2P",
+    [4]  = "VERSUS_CPU",
+    [5]  = "TUTORIAL",
+    [6]  = "CHARACTER_GUIDE",
+    [7]  = "MISSION",
+    [8]  = "DEATHMATCH",
+    [9]  = "STORY",
+    [10] = "STORY_TRAINING",
+    [11] = "STORY_MATCH",
+    [12] = "STORY_TUTORIAL",
+    [13] = "STORY_SPECTATE",
+    [14] = "RANKED_MATCH",
+    [15] = "PLAYER_MATCH",
+    [16] = "CABINET_MATCH",
+    [17] = "CUSTOM_ROOM_MATCH",
+    [18] = "ONLINE_TRAINING",
+    [19] = "TEAMBATTLE",
+    [20] = "EXAM_CPU_MATCH",
+    [21] = "CABINET_CPU_MATCH",
+    [22] = "LEARNING_AI_MATCH",
+    [23] = "LEARNING_AI_SPECTATE",
+    [24] = "REPLAY",
+    [25] = "SPECTATE",
+    [26] = "LOCAL_MATCH",
+    [27] = "STORY_LOCAL_MATCH",
+    [28] = "JOY_MATCH",
+    [29] = "JOY_BATTLE",
+}
+
+local SINGLE_PLAYER_MODES = {
+    1, 3, 4, 5, 6, 7, 8, 9, 10, 
+    11, 12, 13, 24, 25, 26, 27
+}
+
+local function get_scene_id()
+    if not bFlowManager then return nil end
+    return bFlowManager:get_GameMode() or 0
+end
+
+local function is_in_battle()
+    if not state.sPlayer then return false end
+    for _, player in pairs(state.sPlayer.mcPlayer) do
+        if player.mpActParam then return true end
+    end
+    return false
+end
+
+local function get_game_mode_id()
+    if not state.sSetting then return 0 end
+    if not is_in_battle() then return 0 end
+    return state.sSetting:get_field("GameMode") or 0
+end
+
+local function get_game_mode_name()
+    local mode_id = get_game_mode_id()
+    return GAME_MODES[mode_id]
+end
+
+local function is_training_mode()
+    local scene = get_game_mode_id()
+    return scene == 2  -- TRAINING
+        or scene == 18 -- ONLINE_TRAINING
+        or scene == 10 -- STORY_TRAINING
+end
+
+local function is_single_player_mode()
+    local mode_id = get_game_mode_id()
+    return SINGLE_PLAYER_MODES[mode_id]
+end
+
+local function is_mode_allowed()
+    local mode = get_game_mode_id()
+    -- Training (offline, online, story)
+    if mode == 2 or mode == 18 or mode == 10 then
+        return state.config.options.mode_training
+    end
+    -- Replays
+    if mode == 24 then
+        return state.config.options.mode_replay
+    end
+    -- Local Versus (2P, local match, story local)
+    if mode == 3 or mode == 26 or mode == 27 then
+        return state.config.options.mode_local_versus
+    end
+    -- Everything else (arcade, vs cpu, tutorial, story, spectate, etc.)
+    return state.config.options.mode_single_player
+end
+
+local function is_pause_menu_closed()
+    if not PauseManager then return end
+    local pause_type_bit = PauseManager:get_field("_CurrentPauseTypeBit")
+    return pause_type_bit == 64 or pause_type_bit == 2112
+end
 
 -- ============================================================================
 -- Hotkey System (hk)
@@ -575,41 +735,11 @@ if not hk then
 end
 
 -- ============================================================================
--- General Utilities
--- ============================================================================
-
-local function deep_copy(obj)
-	if type(obj) ~= 'table' then return obj end
-	local copy = {}
-	for k, v in pairs(obj) do copy[k] = deep_copy(v) end
-	return copy
-end
-
-local function bitand(a, b) return (a % (b + b) >= b) and b or 0 end
-
-local function reverse_pairs(aTable)
-    local keys = {}
-    for k, _ in pairs(aTable) do keys[#keys+1] = k end
-    table.sort(keys, function(a, b) return a > b end)
-    local n = 0
-    return function()
-        n = n + 1
-        if n > #keys then return nil, nil end
-        return keys[n], aTable[keys[n]]
-    end
-end
-
-local function is_facing_right(entity)
-    local bitval = entity:get_field("BitValue")
-    if bitval and type(bitval) == "number" then
-        return (bitand(bitval, 128) == 128)
-    end
-    return true
-end
-
--- ============================================================================
 -- Configuration Management
 -- ============================================================================
+
+local CONFIG_PATH = "better_disp_hitboxes.json"
+local SAVE_DELAY = 0.5
 
 state.save_pending = nil
 state.save_timer = nil
@@ -659,6 +789,10 @@ local function create_default_config()
 			hotkey_minimizes = false,
 			color_wall_splat = true,
 			range_ticks_show = true,
+			mode_training = true,
+			mode_replay = true,
+			mode_local_versus = false,
+			mode_single_player = false,
 		},
 		hotkeys = {
 			hotkeys_toggle_menu = "F1",
@@ -882,14 +1016,6 @@ local function reset_opacity_default(player)
 		state.config[player].opacity = deep_copy(default[player].opacity) end
 	mark_for_save()
 	return state.config
-end
-
--- ============================================================================
--- General helper – used by both drawing and presets
--- ============================================================================
-
-local function is_disabled_state()
-	return not state.config.p1.toggle.toggle_show and not state.config.p2.toggle.toggle_show
 end
 
 -- ============================================================================
@@ -1218,24 +1344,23 @@ end
 -- Hitbox Drawing Logic
 -- ============================================================================
 
-state.range_ticks = { p1 = nil, p2 = nil }
+local RIGHT_SPLAT_POS = 585.2
+local LEFT_SPLAT_POS = -1 * RIGHT_SPLAT_POS
+
 
 -- Property text persistence: each entry keyed by "player_key|text"
 -- Stores the last-seen screen position and counts down for 20 frames after
 -- the source hitbox disappears.
-state.prop_persist       = {}   -- { [key] = {text,x,y,base_opacity,player_key,timer,last_live_frame} }
-state.prop_persist_frame = 0    -- monotonic counter; incremented once per live hitbox pass
+-- prop_persist: { [key] = {text,x,y,base_opacity,player_key,timer,last_live_frame} }
+-- prop_persist_frame: monotonic counter; incremented once per live hitbox pass
+
+state.range_ticks = { p1 = nil, p2 = nil }
+state.prop_persist = {}
+state.prop_persist_frame = 0
 
 local function apply_opacity(opacity, colorWithoutAlpha)
 	local alpha = math.floor(opacity * 2.55)
 	return alpha * 0x1000000 + (colorWithoutAlpha % 0x1000000)
-end
-
-local function is_pause_menu_closed()
-	local pause_type_bit = 0
-	if not pause_manager then pause_manager = sdk.get_managed_singleton("app.PauseManager")
-	elseif pause_manager then pause_type_bit = pause_manager:get_field("_CurrentPauseTypeBit") end
-	return pause_type_bit == 64 or pause_type_bit == 2112
 end
 
 local function get_vectors(rect)
@@ -1271,8 +1396,8 @@ local function build_hit_properties(condFlag, rect)
     idx = property_flag(parts, idx, 16, "Standing, ", rect)
     idx = property_flag(parts, idx, 32, "Crouching, ", rect)
     idx = property_flag(parts, idx, 64, "Airborne, ", rect)
-    idx = property_flag(parts, idx, 256, "Forward, ", rect)
-    idx = property_flag(parts, idx, 512, "Backwards, ", rect)
+    idx = property_flag(parts, idx, 256, "Can't Hit Forward, ", rect)
+    idx = property_flag(parts, idx, 512, "Can't Hit Backward, ", rect)
     if idx > 0 then
         parts[idx] = string.sub(parts[idx], 1, -3)
         idx = idx + 1
@@ -1345,8 +1470,7 @@ local function classify_hitbox(rect, player_config)
     local vTL, vTR, vBL, vBR = get_vectors(rect)
     local x, y, w, h = get_dimensions(vTL, vTR, vBL, vBR)
     if not (x and y and w and h) then return nil end
-    -- get_dimensions returns h = tl.y - bl.y which is negative in screen space
-    -- (Y increases downward).  Normalise so w and h are always positive; the
+    -- (Y increases downward).  Normalize so w and h are always positive; the
     -- origin shifts to the geometric top-left corner.
     if w < 0 then x, w = x + w, -w end
     if h < 0 then y, h = y + h, -h end
@@ -1398,11 +1522,18 @@ local function classify_hitbox(rect, player_config)
     }
 end
 
+
 -- Draws the filled union of a set of screen-space AABBs using coordinate
 -- compression so that overlapping regions are painted exactly once.
 -- All cells share the same pre-computed full_color (alpha already embedded).
 -- Pre-merged "filled_rect" entries are written to draw_call_buffer for
 -- correct timestop replay.
+
+local timestop_frame = 0
+local timestop_total_frames = 0
+local frozen_draw_calls = {}   -- last pre-timestop frame's draw calls
+local draw_call_buffer = nil   -- non-nil while recording a normal frame
+
 local function draw_union_fills(boxes, full_color)
     if #boxes == 0 then return end
 
@@ -1546,8 +1677,6 @@ local function draw_prop_persist()
         -- last_live_frame == prop_persist_frame → already drawn this frame, nothing to do.
     end
 end
-
-
 
 local function draw_hitboxes(work, actParam, player_config, player_key)
     local col = actParam.Collision
@@ -1809,6 +1938,7 @@ end
 local function process_hitboxes()
     update_timestop_state()
 
+	-- DR 11F timestop: Keep drawing
     if timestop_total_frames == 11 and not (timestop_frame == timestop_total_frames) then
         replay_frozen_draw_calls()
         draw_range_ticks()
@@ -1817,20 +1947,21 @@ local function process_hitboxes()
 
     draw_call_buffer = {}
     state.prop_persist_frame = state.prop_persist_frame + 1
-    local sWork, sPlayer = gBattle:get_field("Work"):get_data(nil), gBattle:get_field("Player"):get_data(nil)
-    for _, obj in pairs(sWork.Global_work) do
+
+	if not state.sWork or not state.sPlayer then return end
+    
+    for _, obj in pairs(state.sWork.Global_work) do
         if obj.mpActParam and not obj:get_IsR0Die() then process_entity(obj, false) end
     end
-    for _, player in pairs(sPlayer.mcPlayer) do
+    for _, player in pairs(state.sPlayer.mcPlayer) do
         if player.mpActParam then process_entity(player, true) end
     end
+
     frozen_draw_calls = draw_call_buffer
     draw_call_buffer = nil
     draw_prop_persist()
     draw_range_ticks()
 end
-
--- GUI – Menu Building Functions
 
 state.tree_open = {}
 state.sync_enabled = false
@@ -1844,20 +1975,23 @@ state.menu_window_focused = false
 
 -- Controller Menu Navigation
 
--- Left-stick / D-pad digital bitmask constants (via.hid.GamePadButton LUp/LDown/LLeft/LRight)
+-- Left-stick / D-pad digital bitmask constants
+-- (via.hid.GamePadButton LUp/LDown/LLeft/LRight)
 local NAV_UP, NAV_DOWN, NAV_LEFT, NAV_RIGHT = 1, 2, 4, 8
 
 local menu_nav = {
-    active    = false,
-    selected  = 1,
-    column    = 1,
-    rep_timer = 0,
-    prev_dy   = 0,
-    prev_dx   = 0,
-    REP_DELAY = 22,
-    REP_RATE  = 7,
+    active        = false,
+    selected      = 1,     -- 0 = header row, 1..n = toggle rows
+    column        = 1,     -- 0 = sync (header only), 1 = P1, 2 = P2
+    rep_timer     = 0,
+    prev_dy       = 0,
+    prev_dx       = 0,
+    REP_DELAY     = 22,
+    REP_RATE      = 7,
+    slider_active = false, -- currently editing an opacity slider
+    slider_orig   = nil,   -- value before slider edit started (for cancel)
+    slider_rep    = 0,
 }
-
 local _nav_reading = false
 
 local function _nav_raw_down()
@@ -1904,6 +2038,7 @@ local build = {
     toggle = {},
     preset = {},
     option = {},
+    backup = {},
 }
 
 function build.on_sync(to_sync, condition)
@@ -1933,15 +2068,182 @@ function build.tree_node_stateful(label, default_open)
     return open
 end
 
+
+local function menu_nav_handler()
+    if not state.config.options.display_menu or not state.menu_window_focused then
+        menu_nav.active = false
+        menu_nav.rep_timer = 0
+        menu_nav.slider_active = false
+        return
+    end
+    menu_nav.active = true
+
+    local n = #build.toggle.rows_list
+
+    local axis_dy, axis_dx = _nav_axis()
+    local axis_dy_trig = axis_dy ~= 0 and axis_dy ~= menu_nav.prev_dy
+    local axis_dx_trig = axis_dx ~= 0 and axis_dx ~= menu_nav.prev_dx
+    menu_nav.prev_dy, menu_nav.prev_dx = axis_dy, axis_dx
+
+    local a_mask = (hk and hk.buttons and hk.buttons["A (X)"])       or 131104
+    local b_mask = (hk and hk.buttons and hk.buttons["B (Circle)"])  or 262272
+    local y_mask = (hk and hk.buttons and hk.buttons["Y (Triangle)"]) or 0
+
+    -- ── Slider editing mode ──────────────────────────────────────────────────
+    if menu_nav.slider_active then
+        local trig_dx2 = (_nav_btn_trig(NAV_LEFT) and -1 or _nav_btn_trig(NAV_RIGHT) and 1 or 0)
+        if trig_dx2 == 0 and axis_dx_trig then trig_dx2 = axis_dx end
+
+        local held_dx2 = (_nav_btn_held(NAV_LEFT) and -1 or _nav_btn_held(NAV_RIGHT) and 1 or 0)
+        if held_dx2 == 0 and axis_dx ~= 0 then held_dx2 = axis_dx end
+
+        local delta = 0
+        if trig_dx2 ~= 0 then
+            delta = trig_dx2
+            menu_nav.slider_rep = 0
+        elseif held_dx2 ~= 0 then
+            menu_nav.slider_rep = menu_nav.slider_rep + 1
+            if menu_nav.slider_rep >= menu_nav.REP_DELAY then
+                menu_nav.slider_rep = menu_nav.REP_DELAY - menu_nav.REP_RATE
+                delta = held_dx2
+            end
+        else
+            menu_nav.slider_rep = 0
+        end
+
+        if delta ~= 0 then
+            local cfg = menu_nav.column == 1 and state.config.p1 or state.config.p2
+            local row = build.toggle.rows_list[menu_nav.selected]
+            if row and row[3] and cfg and cfg.opacity[row[3]] ~= nil then
+                cfg.opacity[row[3]] = math.max(0, math.min(100, cfg.opacity[row[3]] + delta))
+            end
+        end
+
+        -- A: confirm save
+        if _nav_btn_trig(a_mask) then
+            mark_for_save()
+            menu_nav.slider_active = false
+            menu_nav.slider_orig   = nil
+        end
+        -- B: cancel, restore original
+        if _nav_btn_trig(b_mask) then
+            local cfg = menu_nav.column == 1 and state.config.p1 or state.config.p2
+            local row = build.toggle.rows_list[menu_nav.selected]
+            if row and row[3] and cfg and menu_nav.slider_orig ~= nil then
+                cfg.opacity[row[3]] = menu_nav.slider_orig
+            end
+            menu_nav.slider_active = false
+            menu_nav.slider_orig   = nil
+        end
+        return
+    end
+
+    -- ── Y: toggle sync ───────────────────────────────────────────────────────
+    if y_mask ~= 0 and _nav_btn_trig(y_mask) then
+        state.sync_enabled = not state.sync_enabled
+    end
+
+    -- ── Vertical movement ────────────────────────────────────────────────────
+    local trig_dy = (_nav_btn_trig(NAV_UP) and -1 or _nav_btn_trig(NAV_DOWN) and 1 or 0)
+    if trig_dy == 0 and axis_dy_trig then trig_dy = axis_dy end
+
+    local held_dy = (_nav_btn_held(NAV_UP) and -1 or _nav_btn_held(NAV_DOWN) and 1 or 0)
+    if held_dy == 0 and axis_dy ~= 0 then held_dy = axis_dy end
+
+    local function move_vertical(dy)
+        menu_nav.selected = math.max(0, math.min(n, menu_nav.selected + dy))
+        -- Snap off sync column when leaving header row
+        if menu_nav.selected > 0 and menu_nav.column == 0 then
+            menu_nav.column = 1
+        end
+    end
+
+    if trig_dy ~= 0 then
+        move_vertical(trig_dy)
+        menu_nav.rep_timer = 0
+    elseif held_dy ~= 0 then
+        menu_nav.rep_timer = menu_nav.rep_timer + 1
+        if menu_nav.rep_timer >= menu_nav.REP_DELAY then
+            menu_nav.rep_timer = menu_nav.REP_DELAY - menu_nav.REP_RATE
+            move_vertical(held_dy)
+        end
+    else
+        menu_nav.rep_timer = 0
+    end
+
+    -- ── Horizontal movement ──────────────────────────────────────────────────
+    local trig_dx = (_nav_btn_trig(NAV_LEFT) and -1 or _nav_btn_trig(NAV_RIGHT) and 1 or 0)
+    if trig_dx == 0 and axis_dx_trig then trig_dx = axis_dx end
+    if trig_dx ~= 0 then
+        if menu_nav.selected == 0 then
+            -- Header row: cycle 0 (sync) → 1 (P1) → 2 (P2) → 0
+            menu_nav.column = (menu_nav.column + trig_dx) % 3
+        else
+            menu_nav.column = menu_nav.column == 1 and 2 or 1
+        end
+    end
+
+    -- ── A button ─────────────────────────────────────────────────────────────
+    if _nav_btn_trig(a_mask) then
+        if menu_nav.selected == 0 then
+            if menu_nav.column == 0 then
+                state.sync_enabled = not state.sync_enabled
+            elseif menu_nav.column == 1 then
+                state.config.p1.toggle.toggle_show = not state.config.p1.toggle.toggle_show
+                mark_for_save()
+            elseif menu_nav.column == 2 then
+                state.config.p2.toggle.toggle_show = not state.config.p2.toggle.toggle_show
+                mark_for_save()
+            end
+        else
+            local row = build.toggle.rows_list[menu_nav.selected]
+            if row then
+                local cfg         = menu_nav.column == 1 and state.config.p1 or state.config.p2
+                local toggle_key  = row[2]
+                local opacity_key = row[3]
+                if cfg and cfg.toggle[toggle_key] ~= nil then
+                    -- Checkbox ON + slider visible → enter slider editing mode
+                    if cfg.toggle[toggle_key] and opacity_key and cfg.opacity[opacity_key] ~= nil then
+                        menu_nav.slider_active = true
+                        menu_nav.slider_orig   = cfg.opacity[opacity_key]
+                        menu_nav.slider_rep    = 0
+                    else
+                        cfg.toggle[toggle_key] = not cfg.toggle[toggle_key]
+                        mark_for_save()
+                    end
+                end
+            end
+        end
+    end
+
+    -- ── LB / RB: previous / next preset ─────────────────────────────────────
+    local lb = (hk and hk.buttons and hk.buttons["LB (L1)"]) or 0
+    local rb = (hk and hk.buttons and hk.buttons["RB (R1)"]) or 0
+    if lb ~= 0 and _nav_btn_trig(lb) then load_previous_preset() end
+    if rb ~= 0 and _nav_btn_trig(rb) then load_next_preset() end
+
+    -- ── B: exit nav ──────────────────────────────────────────────────────────
+    if _nav_btn_trig(b_mask) then
+        menu_nav.active = false
+        state.menu_window_focused = false
+    end
+end
+
 -- build.toggle functions
 
 function build.toggle.sync_button()
+    local is_nav_on_sync = menu_nav.active and menu_nav.selected == 0 and menu_nav.column == 0
     local btn_label = state.sync_enabled and "Syncing Changes##sync_btn" or "Sync P1/P2 Changes##sync_btn"
-    if not imgui.button(btn_label, {0, 0}) then return end
-    state.sync_enabled = not state.sync_enabled
 
-    if not imgui.is_item_hovered() then return end
-    imgui.set_tooltip("Sync P1/P2: Changes to one side mirror the other")
+    if state.sync_enabled then imgui.begin_rect() end
+    if is_nav_on_sync     then imgui.begin_rect() end
+
+    if imgui.button(btn_label, {0, 0}) then
+        state.sync_enabled = not state.sync_enabled
+    end
+
+    if is_nav_on_sync     then imgui.end_rect(2) end
+    if state.sync_enabled then imgui.end_rect(1) end
 end
 
 function build.toggle.column_header_sync()
@@ -1971,13 +2273,16 @@ local function handle_toggle_column_header_player_notify(changed, player_str)
     action_notify(player_str .. " Hitboxes " .. (state.config.p1.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
 end
 
-function build.toggle.column_header_player(label, id, conf)
+function build.toggle.column_header_player(label, id, conf, nav_col)
+    local is_nav = menu_nav.active and menu_nav.selected == 0 and menu_nav.column == nav_col
+    if is_nav then imgui.begin_rect() end
     imgui.text(label)
     imgui.same_line()
     local cursor = imgui.get_cursor_pos()
     local changed
     imgui.set_cursor_pos(Vector2f.new(cursor.x + 20, cursor.y))
     changed, conf = build.checkbox(id, conf)
+    if is_nav then imgui.end_rect(2) end
     handle_toggle_column_header_player_notify(changed, label)
 end
 
@@ -1991,38 +2296,52 @@ function build.toggle.column_headers()
     build.toggle.column_header_player(
         "P1",
         "##p1_HideAllHeader",
-        state.config.p1.toggle.toggle_show
+        state.config.p1.toggle.toggle_show,
+        1
     )
 
     imgui.table_set_column_index(3)
     build.toggle.column_header_player(
         "P2",
         "##p2_HideAllHeader",
-        state.config.p2.toggle.toggle_show
+        state.config.p2.toggle.toggle_show,
+        2
     )
 end
 
-function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, toggle_key, opacity_key)
+function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, toggle_key, opacity_key, row_idx)
     if not visible then return end
     imgui.table_set_column_index(player_index)
 
+    local nav_col    = player_index == 1 and 1 or 2
+    local is_nav_cell = menu_nav.active
+                     and menu_nav.selected == (row_idx or -1)
+                     and menu_nav.column   == nav_col
+    local is_slider_editing = is_nav_cell and menu_nav.slider_active
+
+    if is_slider_editing then imgui.begin_rect() end
+    if is_nav_cell and not is_slider_editing then imgui.begin_rect() end
+
     local id = string.format("##p%.0f_", player_index) .. toggle_key
-	
-	local changed
+
+    local changed
     changed, toggle_tbl[toggle_key] = build.checkbox(id, toggle_tbl[toggle_key])
 
     if opacity_key and opacity_tbl[opacity_key] ~= nil and toggle_tbl[toggle_key] then
         imgui.push_item_width(70); imgui.same_line()
         local opacity_id = string.format("##p%.0f_", player_index) .. opacity_key .. "Opacity"
-        local changed
-        changed, opacity_tbl[opacity_key] = build.toggle.opacity_slider(opacity_id, opacity_tbl[opacity_key], 0.5, 0, 100)
+        local op_changed
+        op_changed, opacity_tbl[opacity_key] = build.toggle.opacity_slider(opacity_id, opacity_tbl[opacity_key], 0.5, 0, 100)
         imgui.pop_item_width()
 
         build.on_sync(function()
             local other_opacity = (player_index == 1) and state.config.p2.opacity or state.config.p1.opacity
             other_opacity[opacity_key] = opacity_tbl[opacity_key]
-        end, changed)
+        end, op_changed)
     end
+
+    if is_nav_cell and not is_slider_editing then imgui.end_rect(2) end
+    if is_slider_editing then imgui.end_rect(1) end
 
     build.on_sync(function()
         local other_toggle = (player_index == 1) and state.config.p2.toggle or state.config.p1.toggle
@@ -2038,8 +2357,7 @@ end
 function build.toggle.columns(label, toggle_key, opacity_key, row_idx)
     imgui.table_set_column_index(0)
     if menu_nav.active and menu_nav.selected == (row_idx or 0) then
-        local col_tag = menu_nav.column == 1 and " [P1]" or " [P2]"
-        imgui.text_colored("-> " .. label .. col_tag, 0xFFFFD040)
+        imgui.text_colored("-> " .. label, 0xFFFFD040)
     else
         imgui.text(label)
     end
@@ -2048,13 +2366,13 @@ function build.toggle.columns(label, toggle_key, opacity_key, row_idx)
         state.config.p1.toggle.toggle_show,
         state.config.p1.toggle,
         state.config.p1.opacity,
-        toggle_key, opacity_key)
+        toggle_key, opacity_key, row_idx)
 
     build.toggle.column(3,
         state.config.p2.toggle.toggle_show,
         state.config.p2.toggle,
         state.config.p2.opacity,
-        toggle_key, opacity_key)
+        toggle_key, opacity_key, row_idx)
 end
 
 function build.toggle.row(label, toggle_key, opacity_key, row_idx)
@@ -2377,6 +2695,15 @@ function build.preset.menu()
     imgui.tree_pop()
 end
 
+-- build.backup functions (merged Backup/Reset)
+
+function build.backup.menu()
+    if not build.tree_node_stateful("Backup/Reset") then return end
+    build.option.reset()
+    build.option.backup()
+    imgui.tree_pop()
+end
+
 -- build.option functions
 
 function build.option.copy_rows()
@@ -2565,6 +2892,27 @@ function build.option.hotkeys()
     imgui.tree_pop()
 end
 
+function build.option.modes()
+    local open = build.tree_node_stateful("Modes")
+    if open then
+        imgui.same_line()
+        if imgui.button("Defaults##modes") then
+            local default = create_default_config()
+            state.config.options.mode_training      = default.options.mode_training
+            state.config.options.mode_replay        = default.options.mode_replay
+            state.config.options.mode_local_versus  = default.options.mode_local_versus
+            state.config.options.mode_single_player = default.options.mode_single_player
+            mark_for_save()
+        end
+        local changed
+        changed, state.config.options.mode_training      = build.checkbox("Training",            state.config.options.mode_training)
+        changed, state.config.options.mode_replay        = build.checkbox("Replays",              state.config.options.mode_replay)
+        changed, state.config.options.mode_local_versus  = build.checkbox("Local Versus",         state.config.options.mode_local_versus)
+        changed, state.config.options.mode_single_player = build.checkbox("Single Player Modes",  state.config.options.mode_single_player)
+        imgui.tree_pop()
+    end
+end
+
 function build.option.misc()
     if not build.tree_node_stateful("Misc") then return end
     local changed
@@ -2596,11 +2944,11 @@ function build.option.menu()
     if not build.tree_node_stateful("Options") then return end
     imgui.unindent(15)
     build.option.copy()
-    build.option.reset()
+    build.backup.menu()   -- merged Backup/Reset group
     build.option.alerts()
     build.option.hotkeys()
+    build.option.modes()
     build.option.misc()
-    build.option.backup()
     imgui.tree_pop()
     imgui.indent(15)
 end
@@ -2629,94 +2977,39 @@ local function build_menu()
     end
     imgui.begin_window(title, true, 64)
     state.menu_window_pos = imgui.get_window_pos()
-    state.menu_window_focused = imgui.is_item_focused()
+    local wpos  = imgui.get_window_pos()
+    local wsize = imgui.get_window_size()
+    local mouse = imgui.get_mouse()
+    state.menu_window_focused = mouse.x >= wpos.x and mouse.x <= wpos.x + wsize.x
+                             and mouse.y >= wpos.y and mouse.y <= wpos.y + wsize.y
     build.toggle.table()
     build.preset.menu()
     build.option.menu()
+
+    -- Draw controller-nav active outline (sampled after layout so size is final)
+    if menu_nav.active then
+        local p  = imgui.get_window_pos()
+        local sz = imgui.get_window_size()
+        local cx, cy = p.x + sz.x * 0.5, p.y + sz.y * 0.5
+        draw.outline_rect(cx, cy, sz.x,     sz.y,     0xFFFFD040)
+        draw.outline_rect(cx, cy, sz.x - 2, sz.y - 2, 0x80FFD040)
+    end
+
     imgui.end_window()
     state.force_tree_restore = false
 end
 
--- Controller Menu Navigation
-
-local function menu_nav_handler()
-    if not state.config.options.display_menu or not state.menu_window_focused then
-        menu_nav.active = false
-        menu_nav.rep_timer = 0
-        return
-    end
-    menu_nav.active = true
-
-    local n = #build.toggle.rows_list
-
-    -- Analog axis (edge detection: only trigger on direction change)
-    local axis_dy, axis_dx = _nav_axis()
-    local axis_dy_trig = axis_dy ~= 0 and axis_dy ~= menu_nav.prev_dy
-    local axis_dx_trig = axis_dx ~= 0 and axis_dx ~= menu_nav.prev_dx
-    menu_nav.prev_dy, menu_nav.prev_dx = axis_dy, axis_dx
-
-    -- Vertical movement (digital trigger first, analog edge as fallback)
-    local trig_dy = (_nav_btn_trig(NAV_UP) and -1 or _nav_btn_trig(NAV_DOWN) and 1 or 0)
-    if trig_dy == 0 and axis_dy_trig then trig_dy = axis_dy end
-
-    local held_dy = (_nav_btn_held(NAV_UP) and -1 or _nav_btn_held(NAV_DOWN) and 1 or 0)
-    if held_dy == 0 and axis_dy ~= 0 then held_dy = axis_dy end
-
-    if trig_dy ~= 0 then
-        menu_nav.selected = math.max(1, math.min(n, menu_nav.selected + trig_dy))
-        menu_nav.rep_timer = 0
-    elseif held_dy ~= 0 then
-        menu_nav.rep_timer = menu_nav.rep_timer + 1
-        if menu_nav.rep_timer >= menu_nav.REP_DELAY then
-            menu_nav.rep_timer = menu_nav.REP_DELAY - menu_nav.REP_RATE
-            menu_nav.selected = math.max(1, math.min(n, menu_nav.selected + held_dy))
-        end
-    else
-        menu_nav.rep_timer = 0
-    end
-
-    -- Horizontal: switch P1/P2 column
-    local trig_dx = (_nav_btn_trig(NAV_LEFT) and -1 or _nav_btn_trig(NAV_RIGHT) and 1 or 0)
-    if trig_dx == 0 and axis_dx_trig then trig_dx = axis_dx end
-    if trig_dx ~= 0 then
-        menu_nav.column = menu_nav.column == 1 and 2 or 1
-    end
-
-    -- A (Cross): toggle checkbox for current row + column
-    local a_mask = (hk and hk.buttons and hk.buttons["A (X)"]) or 131104
-    if _nav_btn_trig(a_mask) then
-        local row = build.toggle.rows_list[menu_nav.selected]
-        if row then
-            local cfg = menu_nav.column == 1 and state.config.p1 or state.config.p2
-            local k = row[2]
-            if cfg and cfg.toggle[k] ~= nil then
-                cfg.toggle[k] = not cfg.toggle[k]
-                mark_for_save()
-            end
-        end
-    end
-
-    -- LB / RB: previous / next preset
-    local lb = (hk and hk.buttons and hk.buttons["LB (L1)"]) or 0
-    local rb = (hk and hk.buttons and hk.buttons["RB (R1)"]) or 0
-    if lb ~= 0 and _nav_btn_trig(lb) then load_previous_preset() end
-    if rb ~= 0 and _nav_btn_trig(rb) then load_next_preset() end
-
-    -- B (Circle): unfocus menu / exit nav mode
-    local b_mask = (hk and hk.buttons and hk.buttons["B (Circle)"]) or 262272
-    if _nav_btn_trig(b_mask) then
-        menu_nav.active = false
-        state.menu_window_focused = false
-    end
+local function all_toggles_hidden()
+    return state.config.p1.toggle.toggle_show or state.config.p2.toggle.toggle_show
 end
-
--- GUI handler (unchanged except internal calls)
 
 local function gui_handler()
     if state.config.options.display_menu then build_menu() end
-    if is_pause_menu_closed() and (state.config.p1.toggle.toggle_show or state.config.p2.toggle.toggle_show) then
-        process_hitboxes()
-    end
+    if not is_in_battle() then return end
+    if not is_pause_menu_closed() then return end
+    if not all_toggles_hidden() then return end
+    if not is_mode_allowed() then return end
+    process_hitboxes()
 end
 
 local function draw_ui_handler()
@@ -2767,7 +3060,9 @@ state.initialized = false
 
 local function initialize()
     load_config()
-    if state.current_preset_name == "" then state.current_preset_name = get_preset_name() end
+    if state.current_preset_name == "" then 
+        state.current_preset_name = get_preset_name()
+    end
     state.initialized = true
 end
 
@@ -2775,33 +3070,49 @@ re.on_draw_ui(draw_ui_handler)
 
 -- Block game pad input while nav is active.
 -- _nav_reading guard ensures our own reads in menu_nav_handler pass through.
-pcall(function()
-    local gp_type = sdk.find_type_definition("via.hid.GamePad")
-    if not gp_type then return end
-    for _, m_name in ipairs({"get_Button", "get_ButtonDown", "get_ButtonUp"}) do
-        local method = gp_type:get_method(m_name)
-        if method then
-            sdk.hook(method, nil, function(retval)
-                if menu_nav.active and not _nav_reading then
-                    return sdk.to_ptr(0)
-                end
-                return retval
-            end)
-        end
-    end
-end)
+
+-- setup_hook("via.hid.GamePadDevice", "get_Button", function(args)
+-- 	thread.get_hook_storage()["this"] = sdk.to_managed_object(args[2])
+-- end, function(retval)
+-- 	local obj = thread.get_hook_storage()["this"]
+-- 	if obj and obj.get_method_Button ~= "None" then
+-- 		imgui.set_tooltip("ggj")
+-- 	-- if menu_nav.active then
+-- 	-- 	-- imgui.set_tooltip('yo')
+-- 	-- end
+-- 	end
+-- end)
+
+
+-- pcall(function()
+--     local function apply_hooks(type_name)
+--         local gp_type = sdk.find_type_definition(type_name)
+--         if not gp_type then return end
+        
+--         -- Include analog sticks alongside the buttons
+--         local method = gp_type:get_method("get_Button")
+-- 		if not method then return end
+-- 		sdk.hook(method, nil, function(retval)
+-- 			if menu_nav.active then
+-- 				imgui.set_tooltip('hi')
+-- 				return 0
+-- 			end
+-- 			return retval
+-- 		end)
+--     end
+
+--     -- Hook the actual device instances the game loops over
+--     apply_hooks("via.hid.GamePadDevice")
+-- end)
 
 re.on_frame(function()
-    if not gBattle then
-        gBattle = sdk.find_type_definition("gBattle")
-    else
-        save_handler()
-        hotkey_handler()
-        menu_nav_handler()
-        gui_handler()
-        tooltip_handler()
-        action_notify_handler()
-    end
+	object_handler()
+	save_handler()
+	hotkey_handler()
+	menu_nav_handler()
+	gui_handler()
+	tooltip_handler()
+	action_notify_handler()
 end)
 
 if not state.initialized then initialize() end

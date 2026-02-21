@@ -12,7 +12,6 @@ if not hk then
 	local gp_state = {down = {}, released = {}, triggered={}}
 	local mb_state = {down = {}, released = {}, triggered={}}
 
-	--Merge hashed dictionaries. table_b will be merged into table_a
 	local function merge_tables(table_a, table_b, no_overwrite)
 		table_a = table_a or {}
 		table_b = table_b or {}
@@ -28,7 +27,6 @@ if not hk then
 		return table_a
 	end
 
-	--Merge hashed dictionaries. table_b will be merged into table_a
 	local function merge_tables_recursively(table_a, table_b, no_overwrite)
 		local searched = {}
 
@@ -52,7 +50,6 @@ if not hk then
 		return recurse(table_a, table_b)
 	end
 
-	--Gets an enum
 	local function generate_statics(typename)
 		local t = sdk.find_type_definition(typename)
 		local fields = t:get_fields()
@@ -123,7 +120,7 @@ if not hk then
 		gp_state.released = {}
 		gp_state.triggered = {}
 
-		for action_name, key_name in pairs(hotkeys) do
+		for _, key_name in pairs(hotkeys) do
 			if buttons[key_name] ~= nil then
 				gp_state.down[buttons[key_name] ] = false
 				gp_state.released[buttons[key_name] ] = false
@@ -165,13 +162,16 @@ if not hk then
 		return recurse(main_tbl, defaults_tbl)
 	end
 
-	local hk_data = recurse_def_settings(json.load_file("Hotkeys_data.json") or {}, def_hk_data)
+	local hk_data = def_hk_data
 
-	for act_name, button_name in pairs(hk_data.modifier_actions) do
-		hotkeys[act_name] = button_name
+	local hotkey_change_callbacks = {}
+
+	local function trigger_hotkey_change_callbacks()
+		for _, cb in ipairs(hotkey_change_callbacks) do
+			pcall(cb)
+		end
 	end
 
-	--Find the index containing a value (or value as a field) in a table
 	local function find_index(tbl, value, key)
 		if key ~= nil then
 			for i, item in ipairs(tbl) do
@@ -206,11 +206,17 @@ if not hk then
 		end
 		json.dump_file("Hotkeys_data.json", hk_data)
 		setup_active_keys_tbl()
+		trigger_hotkey_change_callbacks()
 	end
 
 	local function update_hotkey_table(hotkey_table)
 		for key, value in pairs(hotkeys) do
 			hotkey_table[key] = value
+		end
+		for key in pairs(hotkey_table) do
+			if hotkeys[key] == nil then
+				hotkey_table[key] = nil
+			end
 		end
 	end
 
@@ -252,7 +258,6 @@ if not hk then
 		return (m_button | button) == m_button
 	end
 
-	--Checks if an action's binding is down
 	local function chk_down(action_name)
 		if hotkeys_down[action_name] == nil then
 			local key_name = hotkeys[action_name]
@@ -261,7 +266,6 @@ if not hk then
 		return hotkeys_down[action_name]
 	end
 
-	--Checks if an action's binding is released
 	local function chk_up(action_name)
 		if hotkeys_up[action_name] == nil then
 			local key_name = hotkeys[action_name]
@@ -270,7 +274,6 @@ if not hk then
 		return hotkeys_up[action_name]
 	end
 
-	--Checks if an action's binding is just down
 	local function chk_trig(action_name)
 		if hotkeys_trig[action_name] == nil then
 			local key_name = hotkeys[action_name]
@@ -279,7 +282,6 @@ if not hk then
 		return hotkeys_trig[action_name]
 	end
 
-	--Checks if an action's binding is released or down
 	local function check_hotkey(action_name, check_down, check_triggered)
 		local key_name = hotkeys[action_name]
 		if key_name == "[Not Bound]" then return false end
@@ -299,7 +301,6 @@ if not hk then
 		return hotkeys_up[action_name]
 	end
 
-	--Checks if an action's binding has been pressed twice in the past 0.25 seconds
 	local function check_doubletap(action_name, check_released)
 		if check_hotkey(action_name, nil, not check_released) then
 			local times = check_released and dt_rel_times or dt_times
@@ -311,8 +312,6 @@ if not hk then
 		end
 	end
 
-	--Checks if an action's binding has been held down for 'time_limit' seconds
-	--'check_down' specifies if the function should keep returning true while the button continues to be held
 	local function check_hold(action_name, check_down, time_limit)
 		local times = check_down and hold_dn_times or hold_times
 		if check_hotkey(action_name, true) then
@@ -327,7 +326,13 @@ if not hk then
 		end
 	end
 
-	--Displays an imgui button that you can click then and press a button to assign a button to an action
+	-- Keys permitted in modifier slots: Ctrl, Shift, Alt variants only (gamepad buttons always allowed)
+	local valid_modifier_keys = {
+		LControl=true, RControl=true, Control=true,
+		LShift=true, RShift=true,
+		LAlt=true, RAlt=true, Alt=true,
+	}
+
 	local function hotkey_setter(action_name, hold_action_name, fake_name, title_tooltip)
 
 		local key_updated = false
@@ -356,7 +361,7 @@ if not hk then
 						end
 					end
 				end
-				if mouse and m_up and m_up ~= 0 then
+				if not (is_mod_1 or is_mod_2) and mouse and m_up and m_up ~= 0 then
 					for button_name, id in pairs(mbuttons) do
 						if (m_up | id) == m_up then
 							hotkeys[action_name] = button_name
@@ -367,9 +372,11 @@ if not hk then
 				end
 				for key_name, id in pairs(keys) do
 					if kb and kb:call("isRelease", id) then
-						hotkeys[action_name] = key_name
-						key_updated = true
-						goto exit
+						if (not (is_mod_1 or is_mod_2)) or valid_modifier_keys[key_name] then
+							hotkeys[action_name] = key_name
+							key_updated = true
+							goto exit
+						end
 					end
 				end
 
@@ -390,10 +397,11 @@ if not hk then
 					json.dump_file("Hotkeys_data.json", hk_data)
 				end
 				setup_active_keys_tbl()
+				trigger_hotkey_change_callbacks()
 			end
 
 			if not is_mod_2 and hotkeys[action_name.."_$"] then
-				hotkey_setter(action_name.."_$", nil, true)
+				if hotkey_setter(action_name.."_$", nil, true) then key_updated = true end
 				imgui.same_line()
 				imgui.text("+")
 				imgui.same_line()
@@ -416,7 +424,7 @@ if not hk then
 				imgui.set_tooltip(hotkeys[action_name]=="[Press Input]" and "Click to cancel" or "Set " .. (is_mod_1 and "Modifier" or "Hotkey").."\nRight click for options")
 			end
 			if imgui.begin_popup_context_item(action_name) then
-				if hotkeys[action_name] ~= "[Not Bound]" and not hotkeys[action_name.."_$_$"] and imgui.menu_item("Clear") then
+				if hotkeys[action_name] ~= "[Not Bound]" and imgui.menu_item("Clear") then
 					if is_mod_1 then
 						hotkeys[action_name], hk_data.modifier_actions[action_name], hotkeys[action_name.."_$"], hk_data.modifier_actions[action_name.."_$"]  = hotkeys[action_name.."_$"], hk_data.modifier_actions[action_name.."_$"]
 						json.dump_file("Hotkeys_data.json", hk_data)
@@ -424,35 +432,25 @@ if not hk then
 						hotkeys[action_name] = "[Not Bound]"
 					end
 					key_updated = true
+					setup_active_keys_tbl()
+					trigger_hotkey_change_callbacks()
 				end
 				if not is_mod_2 and default_hotkeys[action_name] and imgui.menu_item("Reset to Default") then
 					hotkeys[action_name] = default_hotkeys[action_name]
 					key_updated = true
+					setup_active_keys_tbl()
+					trigger_hotkey_change_callbacks()
 				end
-				if not is_mod_2 and hotkeys[action_name] ~= "[Not Bound]" and imgui.menu_item((hotkeys[action_name.."_$"] and "Disable " or "Enable ") .. "Modifier") then
-					hotkeys[action_name.."_$"] = not hotkeys[action_name.."_$"] and ((pad and pad:get_Connecting() and ((is_mod_1 and "LB (L1)") or "LT (L2)")) or ((is_mod_1 and "LShift") or "LAlt")) or nil
-					hotkeys[action_name.."_$_$"], hk_data.modifier_actions[action_name.."_$_$"] = nil
+				if not is_mod_1 and not is_mod_2 and hotkeys[action_name] ~= "[Not Bound]" and imgui.menu_item((hotkeys[action_name.."_$"] and "Disable " or "Enable ") .. "Modifier") then
+					hotkeys[action_name.."_$"] = not hotkeys[action_name.."_$"] and ((pad and pad:get_Connecting() and "LT (L2)") or "LAlt") or nil
 					hk_data.modifier_actions[action_name.."_$"] = hotkeys[action_name.."_$"]
 					json.dump_file("Hotkeys_data.json", hk_data)
+					setup_active_keys_tbl()
+					trigger_hotkey_change_callbacks()
+					key_updated = true
 				end
 				imgui.end_popup()
 			end
-			--[[if not is_mod_1 and not hotkeys[action_name.."_$"] and hotkeys[action_name] ~= "[Not Bound]" then
-				local names = "\n"
-				for act_name, key_name in pairs(hotkeys) do 
-					if act_name ~= action_name and key_name == hotkeys[action_name] and key_name ~= "[Press Input]" and (not hold_action_name or modifiers[act_name] == hold_action_name) then
-						if names == "\n" then
-							imgui.same_line()
-							imgui.text_colored("*", 0xFF00FFFF)
-						end
-						names = names .. "	" .. act_name .. "\n"
-						if imgui.is_item_hovered() then
-							imgui.set_tooltip("Shared with:" .. names)
-						end
-						--break
-					end
-				end
-			end]]
 		imgui.pop_id()
 		if is_down then imgui.end_rect(1); imgui.end_rect(2) end
 
@@ -500,10 +498,6 @@ if not hk then
 		end
 	end
 
-	local function write()
-
-	end
-
 	re.on_application_entry("UpdateHID", function()
 		update_states()
 	end)
@@ -549,8 +543,23 @@ if not hk then
 		check_kb_key = check_kb_key,								-- Fn checks if a keyboard input is released, down or triggered (by key name)
 		check_mouse_button = check_mouse_button,					-- Fn checks if a mouse input is released, down or triggered (by mbutton name)
 		check_pad_button = check_pad_button,						-- Fn checks if a gamepad input is released, down or triggered (by button name) (such as imgui focus) was removed mid-frame
+
+		register_hotkey_change_callback = function(cb)
+			table.insert(hotkey_change_callbacks, cb)
+		end,
+
+		sync_modifiers_from_hotkeys = function()
+			hk_data.modifier_actions = {}
+			for action, key in pairs(hotkeys) do
+				if action:match("_%$$$") then
+					hk_data.modifier_actions[action] = key
+				end
+			end
+			json.dump_file("Hotkeys_data.json", hk_data)
+		end,
 	}
 end
+
 
 -- 
 -- End HK
@@ -593,13 +602,13 @@ local default_config = {
 		display_p2_projectiles = false
 	},
 	hotkeys = {
-		toggle_player_info = "F5",
-		toggle_vitals = "V",
-		["toggle_vitals_$"] = "Alt",
-		toggle_p1 = "Alpha1",
-		["toggle_p1_$"] = "Alt",
-		toggle_p2 = "Alpha2",
-		["toggle_p2_$"] = "Alt"
+		info_toggle_player_info = "F5",
+		info_toggle_vitals = "V",
+		["info_toggle_vitals_$"] = "Alt",
+		info_toggle_p1 = "Alpha1",
+		["info_toggle_p1_$"] = "Alt",
+		info_toggle_p2 = "Alpha2",
+		["info_toggle_p2_$"] = "Alt"
 	}
 }
 
@@ -651,10 +660,23 @@ local function initialize()
 	config = hk.recurse_def_settings(config, default_config)
 
 	for k, v in pairs(default_config.hotkeys) do
-		if config.hotkeys[k] == nil then config.hotkeys[k] = v end
+		if config.hotkeys[k] == nil then
+			local is_modifier = k:sub(-2) == "_$"
+			if not is_modifier then
+				config.hotkeys[k] = v
+			elseif config.hotkeys[k:sub(1, -3)] == nil then
+				-- Only restore modifier default if base key is also absent (first run)
+				config.hotkeys[k] = v
+			end
+		end
 	end
 
 	hk.setup_hotkeys(config.hotkeys, default_config.hotkeys)
+	hk.sync_modifiers_from_hotkeys()
+	hk.register_hotkey_change_callback(function()
+		hk.update_hotkey_table(config.hotkeys)
+		mark_for_save()
+	end)
 	initialized = true
 end
 
@@ -924,19 +946,19 @@ local indentation_unit = 3
 local function build_options()
 	changed, config.options.display_player_info = imgui.checkbox(string.format("Display Main Window", hk.hotkeys.toggle_player_info), config.options.display_player_info)
 	if changed then mark_for_save() end
-	imgui.same_line(); if hk.hotkey_setter("toggle_player_info", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
+	imgui.same_line(); if hk.hotkey_setter("info_toggle_player_info", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
 
 	changed, config.options.display_vitals = imgui.checkbox(string.format("Display Vitals", hk.hotkeys.toggle_vitals), config.options.display_vitals)
 	if changed then mark_for_save() end
-	imgui.same_line(); if hk.hotkey_setter("toggle_vitals", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
+	imgui.same_line(); if hk.hotkey_setter("info_toggle_vitals", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
 
 	changed, config.options.display_p1_section = imgui.checkbox(string.format("Display P1 Section", hk.hotkeys.toggle_p1), config.options.display_p1_section)
 	if changed then mark_for_save() end
-	imgui.same_line(); if hk.hotkey_setter("toggle_p1", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
+	imgui.same_line(); if hk.hotkey_setter("info_toggle_p1", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
 
 	changed, config.options.display_p2_section = imgui.checkbox(string.format("Display P2 Section", hk.hotkeys.toggle_p2), config.options.display_p2_section)
 	if changed then mark_for_save() end
-	imgui.same_line(); if hk.hotkey_setter("toggle_p2", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
+	imgui.same_line(); if hk.hotkey_setter("info_toggle_p2", nil, "") then hk.update_hotkey_table(config.hotkeys); mark_for_save() end
 end
 
 local function build_options_menu()
@@ -946,7 +968,7 @@ local function build_options_menu()
 end
 
 local function build_vitals_section()
-	local hk_str = hk.get_button_string("toggle_vitals") or ""
+	local hk_str = hk.get_button_string("info_toggle_vitals") or ""
 	local subbed = string.gsub(hk_str, "%s*Alpha%s*", "")
 
 	if not config.options.display_vitals then
@@ -1015,7 +1037,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 
 	local config_key = player_index == 0 and "display_p1_section" or "display_p2_section"
 	local opp_config_key = player_index == 0 and "display_p2_section" or "display_p1_section"
-	local hk_name = player_index == 0 and "toggle_p1" or "toggle_p2"
+	local hk_name = player_index == 0 and "info_toggle_p1" or "info_toggle_p2"
 
 	local hk_str = hk.get_button_string(hk_name) or ""
 	local subbed = string.gsub(hk_str, "%s*[Aa]lpha%s*", "")
@@ -1253,10 +1275,10 @@ local function setup_hotkey(hk_str, func)
 end
 
 local function hotkey_handler()
-	setup_hotkey("toggle_player_info", "display_player_info")
-	setup_hotkey("toggle_vitals", "display_vitals")
-	setup_hotkey("toggle_p1", "display_p1_section")
-	setup_hotkey("toggle_p2", "display_p2_section")
+	setup_hotkey("info_toggle_player_info", "display_player_info")
+	setup_hotkey("info_toggle_vitals", "display_vitals")
+	setup_hotkey("info_toggle_p1", "display_p1_section")
+	setup_hotkey("info_toggle_p2", "display_p2_section")
 end
 
 initialize()

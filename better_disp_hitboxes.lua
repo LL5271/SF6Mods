@@ -68,15 +68,28 @@ local function object_handler()
     end
 
     if gBattle then
-		state.sWork = state.sWork or gBattle:get_field("Work"):get_data(nil)
-		state.sPlayer = state.sPlayer or gBattle:get_field("Player"):get_data(nil)
-        state.sSetting = state.sSetting or gBattle:get_field("Setting"):get_data(nil)
+		state.sWork = gBattle:get_field("Work"):get_data(nil)
+		state.sPlayer = gBattle:get_field("Player"):get_data(nil)
+        state.sSetting = gBattle:get_field("Setting"):get_data(nil)
 		return
 	end
 
 	gBattle = sdk.find_type_definition("gBattle")
 end
 
+local TRAINING_MODES = {
+    [1]  = true,  -- TRAINING
+    [2]  = true,  -- ONLINE_TRAINING
+    [10] = true,  -- WT_TRAINING
+}
+
+local function is_any_training_mode()
+    if not TrainingManager then return false end
+    TrainingManager:get_field("GameMode")
+    return TRAINING_MODES[mode] == true
+end
+
+-- app::EGameMode
 local GAME_MODES = {
     [0]  = "NONE",
     [1]  = "ARCADE",
@@ -170,8 +183,9 @@ local function is_mode_allowed()
 end
 
 local function is_pause_menu_closed()
+    local pause_type_bit = 0
     if not PauseManager then return end
-    local pause_type_bit = PauseManager:get_field("_CurrentPauseTypeBit")
+    pause_type_bit = PauseManager:get_field("_CurrentPauseTypeBit")
     return pause_type_bit == 64 or pause_type_bit == 2112
 end
 
@@ -807,7 +821,8 @@ local function create_default_config()
 			hotkeys_next_preset = "Right",
 			["hotkeys_next_preset_$"] = "Control",
 			hotkeys_save_preset = "Space",
-			["hotkeys_save_preset_$"] = "Control"
+			["hotkeys_save_preset_$"] = "Control",
+			hotkeys_toggle_sync = "Y (Triangle)",
 		},
 		p1 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)},
 		p2 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)}
@@ -1470,7 +1485,8 @@ local function classify_hitbox(rect, player_config)
     local vTL, vTR, vBL, vBR = get_vectors(rect)
     local x, y, w, h = get_dimensions(vTL, vTR, vBL, vBR)
     if not (x and y and w and h) then return nil end
-    -- (Y increases downward).  Normalize so w and h are always positive; the
+    -- get_dimensions returns h = tl.y - bl.y which is negative in screen space
+    -- (Y increases downward).  Normalise so w and h are always positive; the
     -- origin shifts to the geometric top-left corner.
     if w < 0 then x, w = x + w, -w end
     if h < 0 then y, h = y + h, -h end
@@ -1982,7 +1998,8 @@ local NAV_UP, NAV_DOWN, NAV_LEFT, NAV_RIGHT = 1, 2, 4, 8
 local menu_nav = {
     active        = false,
     selected      = 1,     -- 0 = header row, 1..n = toggle rows
-    column        = 1,     -- 0 = sync (header only), 1 = P1, 2 = P2
+    column        = 1,     -- header: 0=sync, 1=P1, 2=P2
+                           -- rows:   1=P1_toggle, 2=P1_opacity, 3=P2_toggle, 4=P2_opacity
     rep_timer     = 0,
     prev_dy       = 0,
     prev_dx       = 0,
@@ -1991,6 +2008,10 @@ local menu_nav = {
     slider_active = false, -- currently editing an opacity slider
     slider_orig   = nil,   -- value before slider edit started (for cancel)
     slider_rep    = 0,
+    SLIDER_STEP   = 3,     -- opacity units per tick when editing
+    SLIDER_DELAY  = 10,    -- frames before slider repeat starts
+    SLIDER_RATE   = 3,     -- frames per repeat tick while held
+    just_moved    = false, -- true for exactly one frame after nav cursor moves
 }
 local _nav_reading = false
 
@@ -2070,6 +2091,8 @@ end
 
 
 local function menu_nav_handler()
+    menu_nav.just_moved = false
+
     if not state.config.options.display_menu or not state.menu_window_focused then
         menu_nav.active = false
         menu_nav.rep_timer = 0
@@ -2085,12 +2108,18 @@ local function menu_nav_handler()
     local axis_dx_trig = axis_dx ~= 0 and axis_dx ~= menu_nav.prev_dx
     menu_nav.prev_dy, menu_nav.prev_dx = axis_dy, axis_dx
 
-    local a_mask = (hk and hk.buttons and hk.buttons["A (X)"])       or 131104
-    local b_mask = (hk and hk.buttons and hk.buttons["B (Circle)"])  or 262272
-    local y_mask = (hk and hk.buttons and hk.buttons["Y (Triangle)"]) or 0
+    local a_mask = (hk and hk.buttons and hk.buttons["A (X)"])      or 131104
+    local b_mask = (hk and hk.buttons and hk.buttons["B (Circle)"]) or 262272
+
+    -- ── Sync toggle via configurable hotkey (Y by default) ───────────────────
+    if hk.check_hotkey("hotkeys_toggle_sync", nil, true) then
+        state.sync_enabled = not state.sync_enabled
+    end
 
     -- ── Slider editing mode ──────────────────────────────────────────────────
-    if menu_nav.slider_active then
+    -- In row columns: 2 = P1 opacity, 4 = P2 opacity
+    local on_opacity_col = (menu_nav.column == 2 or menu_nav.column == 4)
+    if menu_nav.slider_active and on_opacity_col then
         local trig_dx2 = (_nav_btn_trig(NAV_LEFT) and -1 or _nav_btn_trig(NAV_RIGHT) and 1 or 0)
         if trig_dx2 == 0 and axis_dx_trig then trig_dx2 = axis_dx end
 
@@ -2103,8 +2132,8 @@ local function menu_nav_handler()
             menu_nav.slider_rep = 0
         elseif held_dx2 ~= 0 then
             menu_nav.slider_rep = menu_nav.slider_rep + 1
-            if menu_nav.slider_rep >= menu_nav.REP_DELAY then
-                menu_nav.slider_rep = menu_nav.REP_DELAY - menu_nav.REP_RATE
+            if menu_nav.slider_rep >= menu_nav.SLIDER_DELAY then
+                menu_nav.slider_rep = menu_nav.SLIDER_DELAY - menu_nav.SLIDER_RATE
                 delta = held_dx2
             end
         else
@@ -2112,35 +2141,56 @@ local function menu_nav_handler()
         end
 
         if delta ~= 0 then
-            local cfg = menu_nav.column == 1 and state.config.p1 or state.config.p2
+            -- column 2 = P1 opacity, column 4 = P2 opacity
+            local on_p1 = (menu_nav.column == 2)
+            local cfg = on_p1 and state.config.p1 or state.config.p2
             local row = build.toggle.rows_list[menu_nav.selected]
             if row and row[3] and cfg and cfg.opacity[row[3]] ~= nil then
-                cfg.opacity[row[3]] = math.max(0, math.min(100, cfg.opacity[row[3]] + delta))
+                local new_op = math.max(0, math.min(100, cfg.opacity[row[3]] + delta * menu_nav.SLIDER_STEP))
+                cfg.opacity[row[3]] = new_op
+                -- Live-sync to other player, matching mouse-drag behaviour
+                if state.sync_enabled then
+                    local other = on_p1 and state.config.p2 or state.config.p1
+                    if other.opacity[row[3]] ~= nil then
+                        other.opacity[row[3]] = new_op
+                    end
+                end
             end
         end
 
-        -- A: confirm save
+        -- A: confirm & save (with sync)
         if _nav_btn_trig(a_mask) then
+            local on_p1 = (menu_nav.column == 2)
+            local cfg   = on_p1 and state.config.p1 or state.config.p2
+            local row   = build.toggle.rows_list[menu_nav.selected]
+            if state.sync_enabled and row and row[3] and cfg then
+                local other = on_p1 and state.config.p2 or state.config.p1
+                if other.opacity[row[3]] ~= nil then
+                    other.opacity[row[3]] = cfg.opacity[row[3]]
+                end
+            end
             mark_for_save()
             menu_nav.slider_active = false
             menu_nav.slider_orig   = nil
         end
-        -- B: cancel, restore original
+        -- B: cancel & restore original value (and sync the restore)
         if _nav_btn_trig(b_mask) then
-            local cfg = menu_nav.column == 1 and state.config.p1 or state.config.p2
-            local row = build.toggle.rows_list[menu_nav.selected]
-            if row and row[3] and cfg and menu_nav.slider_orig ~= nil then
-                cfg.opacity[row[3]] = menu_nav.slider_orig
+            local on_p1_b = (menu_nav.column == 2)
+            local cfg_b = on_p1_b and state.config.p1 or state.config.p2
+            local row_b = build.toggle.rows_list[menu_nav.selected]
+            if row_b and row_b[3] and cfg_b and menu_nav.slider_orig ~= nil then
+                cfg_b.opacity[row_b[3]] = menu_nav.slider_orig
+                if state.sync_enabled then
+                    local other_b = on_p1_b and state.config.p2 or state.config.p1
+                    if other_b.opacity[row_b[3]] ~= nil then
+                        other_b.opacity[row_b[3]] = menu_nav.slider_orig
+                    end
+                end
             end
             menu_nav.slider_active = false
             menu_nav.slider_orig   = nil
         end
         return
-    end
-
-    -- ── Y: toggle sync ───────────────────────────────────────────────────────
-    if y_mask ~= 0 and _nav_btn_trig(y_mask) then
-        state.sync_enabled = not state.sync_enabled
     end
 
     -- ── Vertical movement ────────────────────────────────────────────────────
@@ -2150,11 +2200,52 @@ local function menu_nav_handler()
     local held_dy = (_nav_btn_held(NAV_UP) and -1 or _nav_btn_held(NAV_DOWN) and 1 or 0)
     if held_dy == 0 and axis_dy ~= 0 then held_dy = axis_dy end
 
+    local prev_sel, prev_col = menu_nav.selected, menu_nav.column
+
+    local function opacity_available(row_idx, col)
+        -- col 2 = P1 opacity, col 4 = P2 opacity
+        local cfg = (col == 2) and state.config.p1 or state.config.p2
+        local row = build.toggle.rows_list[row_idx]
+        return row and row[3]
+            and cfg.toggle[row[2]]
+            and cfg.opacity[row[3]] ~= nil
+    end
+
     local function move_vertical(dy)
+        local from_sel = menu_nav.selected
+        local from_col = menu_nav.column
         menu_nav.selected = math.max(0, math.min(n, menu_nav.selected + dy))
-        -- Snap off sync column when leaving header row
-        if menu_nav.selected > 0 and menu_nav.column == 0 then
-            menu_nav.column = 1
+
+        local going_to_header = (menu_nav.selected == 0)
+        local coming_from_header = (from_sel == 0)
+
+        if going_to_header then
+            -- Map row col-space (1=P1tog, 2=P1op, 3=P2tog, 4=P2op) → header col-space (0=sync, 1=P1, 2=P2)
+            if from_col == 1 or from_col == 2 then
+                menu_nav.column = 1          -- P1 side → P1 header
+            elseif from_col == 3 or from_col == 4 then
+                menu_nav.column = 2          -- P2 side → P2 header
+            end
+            -- from_col==0 (sync) stays at 0 (only reachable if coming from the sync col in some edge case)
+
+        elseif coming_from_header then
+            -- Map header col-space → row col-space (always land on a toggle column)
+            if from_col == 0 or from_col == 1 then
+                menu_nav.column = 1          -- sync or P1 header → P1 toggle
+            elseif from_col == 2 then
+                menu_nav.column = 3          -- P2 header → P2 toggle
+            end
+
+        else
+            -- Row → row: preserve player side, but check opacity availability
+            if from_col == 2 or from_col == 4 then
+                if opacity_available(menu_nav.selected, from_col) then
+                    menu_nav.column = from_col
+                else
+                    menu_nav.column = (from_col == 2) and 1 or 3
+                end
+            end
+            -- from_col 1 or 3 (toggle columns) carry over unchanged
         end
     end
 
@@ -2171,44 +2262,99 @@ local function menu_nav_handler()
         menu_nav.rep_timer = 0
     end
 
-    -- ── Horizontal movement ──────────────────────────────────────────────────
+    -- ── Horizontal movement / slider activation ──────────────────────────────
+    -- Column layout:
+    --   Header row:  0=sync, 1=P1_header, 2=P2_header
+    --   Toggle rows: 1=P1_toggle, 2=P1_opacity, 3=P2_toggle, 4=P2_opacity
     local trig_dx = (_nav_btn_trig(NAV_LEFT) and -1 or _nav_btn_trig(NAV_RIGHT) and 1 or 0)
     if trig_dx == 0 and axis_dx_trig then trig_dx = axis_dx end
     if trig_dx ~= 0 then
         if menu_nav.selected == 0 then
-            -- Header row: cycle 0 (sync) → 1 (P1) → 2 (P2) → 0
+            -- Header row: cycle sync(0) → P1(1) → P2(2) → sync(0)
             menu_nav.column = (menu_nav.column + trig_dx) % 3
         else
-            menu_nav.column = menu_nav.column == 1 and 2 or 1
+            local row = build.toggle.rows_list[menu_nav.selected]
+            local col = menu_nav.column
+
+            -- Navigate 4-column layout: P1_toggle(1) ↔ P1_opacity(2)  /  P2_toggle(3) ↔ P2_opacity(4)
+            -- Moving right from P1_opacity goes to P2_toggle, left from P2_toggle goes to P1_opacity
+            local col_order = {1, 2, 3, 4}
+            local col_pos = ({[1]=1,[2]=2,[3]=3,[4]=4})[col] or 1
+            local new_col_pos = math.max(1, math.min(4, col_pos + trig_dx))
+            local new_col = col_order[new_col_pos]
+
+            -- Check whether the target opacity column actually has a slider to navigate to
+            local function has_slider(player_col)
+                local cfg = (player_col == 1 or player_col == 2) and state.config.p1 or state.config.p2
+                return row and row[3] and cfg
+                    and cfg.toggle[row[2]]
+                    and cfg.opacity[row[3]] ~= nil
+            end
+
+            if (new_col == 2 or new_col == 4) and not has_slider(new_col) then
+                -- Skip opacity column if no slider exists
+                if trig_dx == 1 and new_col == 2 then new_col = 3       -- P1 opacity → P2 toggle
+                elseif trig_dx == -1 and new_col == 2 then new_col = 1  -- already leftmost
+                elseif trig_dx == 1 and new_col == 4 then new_col = 4   -- already rightmost
+                elseif trig_dx == -1 and new_col == 4 then new_col = 3  -- P2 opacity → P2 toggle
+                end
+            end
+
+            -- Just move the cursor; slider activation requires an explicit A press
+            menu_nav.column        = new_col
+            menu_nav.slider_active = false
+            menu_nav.slider_orig   = nil
         end
     end
 
-    -- ── A button ─────────────────────────────────────────────────────────────
+    if menu_nav.selected ~= prev_sel or menu_nav.column ~= prev_col then
+        menu_nav.just_moved = true
+    end
+
+    -- ── A: activate slider / toggle checkbox ─────────────────────────────────
     if _nav_btn_trig(a_mask) then
         if menu_nav.selected == 0 then
             if menu_nav.column == 0 then
                 state.sync_enabled = not state.sync_enabled
             elseif menu_nav.column == 1 then
-                state.config.p1.toggle.toggle_show = not state.config.p1.toggle.toggle_show
+                local new_val = not state.config.p1.toggle.toggle_show
+                state.config.p1.toggle.toggle_show = new_val
+                if state.sync_enabled then
+                    state.config.p2.toggle.toggle_show = new_val
+                end
                 mark_for_save()
             elseif menu_nav.column == 2 then
-                state.config.p2.toggle.toggle_show = not state.config.p2.toggle.toggle_show
+                local new_val = not state.config.p2.toggle.toggle_show
+                state.config.p2.toggle.toggle_show = new_val
+                if state.sync_enabled then
+                    state.config.p1.toggle.toggle_show = new_val
+                end
                 mark_for_save()
             end
         else
             local row = build.toggle.rows_list[menu_nav.selected]
             if row then
-                local cfg         = menu_nav.column == 1 and state.config.p1 or state.config.p2
-                local toggle_key  = row[2]
-                local opacity_key = row[3]
-                if cfg and cfg.toggle[toggle_key] ~= nil then
-                    -- Checkbox ON + slider visible → enter slider editing mode
-                    if cfg.toggle[toggle_key] and opacity_key and cfg.opacity[opacity_key] ~= nil then
+                local on_p1 = (menu_nav.column == 1 or menu_nav.column == 2)
+                local cfg = on_p1 and state.config.p1 or state.config.p2
+
+                if (menu_nav.column == 2 or menu_nav.column == 4) then
+                    -- On an opacity column: A activates slider-edit mode
+                    if cfg and row[3] and cfg.opacity[row[3]] ~= nil
+                       and cfg.toggle[row[2]] then
                         menu_nav.slider_active = true
-                        menu_nav.slider_orig   = cfg.opacity[opacity_key]
+                        menu_nav.slider_orig   = cfg.opacity[row[3]]
                         menu_nav.slider_rep    = 0
-                    else
-                        cfg.toggle[toggle_key] = not cfg.toggle[toggle_key]
+                    end
+                else
+                    -- On a toggle column: A toggles the checkbox and syncs
+                    local toggle_key = row[2]
+                    if cfg and cfg.toggle[toggle_key] ~= nil then
+                        local new_val = not cfg.toggle[toggle_key]
+                        cfg.toggle[toggle_key] = new_val
+                        if state.sync_enabled then
+                            local other = on_p1 and state.config.p2 or state.config.p1
+                            other.toggle[toggle_key] = new_val
+                        end
                         mark_for_save()
                     end
                 end
@@ -2240,6 +2386,12 @@ function build.toggle.sync_button()
 
     if imgui.button(btn_label, {0, 0}) then
         state.sync_enabled = not state.sync_enabled
+    end
+
+    -- Hover → update nav position (mouse and controller stay in sync)
+    if imgui.is_item_hovered() and not menu_nav.slider_active then
+        menu_nav.selected = 0
+        menu_nav.column   = 0
     end
 
     if is_nav_on_sync     then imgui.end_rect(2) end
@@ -2282,6 +2434,11 @@ function build.toggle.column_header_player(label, id, conf, nav_col)
     local changed
     imgui.set_cursor_pos(Vector2f.new(cursor.x + 20, cursor.y))
     changed, conf = build.checkbox(id, conf)
+    -- Hover → update nav position
+    if imgui.is_item_hovered() and not menu_nav.slider_active then
+        menu_nav.selected = 0
+        menu_nav.column   = nav_col
+    end
     if is_nav then imgui.end_rect(2) end
     handle_toggle_column_header_player_notify(changed, label)
 end
@@ -2313,42 +2470,94 @@ function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, tog
     if not visible then return end
     imgui.table_set_column_index(player_index)
 
-    local nav_col    = player_index == 1 and 1 or 2
-    local is_nav_cell = menu_nav.active
-                     and menu_nav.selected == (row_idx or -1)
-                     and menu_nav.column   == nav_col
-    local is_slider_editing = is_nav_cell and menu_nav.slider_active
+    -- 4-column nav scheme: P1 toggle=1, P1 opacity=2, P2 toggle=3, P2 opacity=4
+    local toggle_col_nav  = player_index == 1 and 1 or 3
+    local opacity_col_nav = player_index == 1 and 2 or 4
 
-    if is_slider_editing then imgui.begin_rect() end
-    if is_nav_cell and not is_slider_editing then imgui.begin_rect() end
+    local is_toggle_nav = menu_nav.active
+                       and menu_nav.selected == (row_idx or -1)
+                       and menu_nav.column   == toggle_col_nav
+
+    local is_opacity_nav = menu_nav.active
+                        and menu_nav.selected == (row_idx or -1)
+                        and menu_nav.column   == opacity_col_nav
+
+    -- ── Checkbox ─────────────────────────────────────────────────────────────
+    if is_toggle_nav then
+        imgui.begin_rect()
+        imgui.begin_rect()
+    end
 
     local id = string.format("##p%.0f_", player_index) .. toggle_key
-
     local changed
     changed, toggle_tbl[toggle_key] = build.checkbox(id, toggle_tbl[toggle_key])
 
-    if opacity_key and opacity_tbl[opacity_key] ~= nil and toggle_tbl[toggle_key] then
-        imgui.push_item_width(70); imgui.same_line()
-        local opacity_id = string.format("##p%.0f_", player_index) .. opacity_key .. "Opacity"
-        local op_changed
-        op_changed, opacity_tbl[opacity_key] = build.toggle.opacity_slider(opacity_id, opacity_tbl[opacity_key], 0.5, 0, 100)
-        imgui.pop_item_width()
-
-        build.on_sync(function()
-            local other_opacity = (player_index == 1) and state.config.p2.opacity or state.config.p1.opacity
-            other_opacity[opacity_key] = opacity_tbl[opacity_key]
-        end, op_changed)
+    -- Hover → update nav position
+    if imgui.is_item_hovered() and not menu_nav.slider_active then
+        menu_nav.selected = row_idx or -1
+        menu_nav.column   = toggle_col_nav
     end
 
-    if is_nav_cell and not is_slider_editing then imgui.end_rect(2) end
-    if is_slider_editing then imgui.end_rect(1) end
+    if is_toggle_nav then
+        imgui.end_rect(1)
+        imgui.end_rect(2)
+    end
+
+    -- ── Opacity slider ────────────────────────────────────────────────────────
+    local has_slider = opacity_key
+                    and opacity_tbl ~= nil
+                    and opacity_tbl[opacity_key] ~= nil
+                    and toggle_tbl[toggle_key]
+
+    if has_slider then
+        imgui.push_item_width(70); imgui.same_line()
+        local opacity_id     = string.format("##p%.0f_", player_index) .. opacity_key .. "Opacity"
+        local is_slider_edit = is_opacity_nav and menu_nav.slider_active
+
+        if is_slider_edit then
+            -- Triple nested: very prominent "actively editing" state
+            imgui.begin_rect()
+            imgui.begin_rect()
+            imgui.begin_rect()
+        elseif is_opacity_nav then
+            -- Double rect: slider is accessible
+            imgui.begin_rect()
+            imgui.begin_rect()
+        end
+
+        local op_changed, new_val = imgui.drag_int(opacity_id, opacity_tbl[opacity_key], 0.5, 0, 100)
+        -- Only auto-save from mouse drag; nav-slider edits are saved explicitly via A
+        if op_changed and not is_slider_edit then
+            opacity_tbl[opacity_key] = new_val
+            mark_for_save()
+            build.on_sync(function()
+                local other = (player_index == 1) and state.config.p2.opacity or state.config.p1.opacity
+                other[opacity_key] = new_val
+            end, op_changed)
+        end
+
+        -- Hover → update nav position (but don't override active slider)
+        if imgui.is_item_hovered() and not menu_nav.slider_active then
+            menu_nav.selected = row_idx or -1
+            menu_nav.column   = opacity_col_nav
+        end
+
+        imgui.pop_item_width()
+
+        if is_slider_edit then
+            imgui.end_rect(1)
+            imgui.end_rect(2)
+            imgui.end_rect(1)
+        elseif is_opacity_nav then
+            imgui.end_rect(2)
+            imgui.end_rect(1)
+        end
+    end
 
     build.on_sync(function()
         local other_toggle = (player_index == 1) and state.config.p2.toggle or state.config.p1.toggle
         other_toggle[toggle_key] = toggle_tbl[toggle_key]
-
         if not opacity_key then return end
-
         local other_opacity = (player_index == 1) and state.config.p2.opacity or state.config.p1.opacity
         other_opacity[opacity_key] = opacity_tbl[opacity_key]
     end, changed)
@@ -2356,7 +2565,9 @@ end
 
 function build.toggle.columns(label, toggle_key, opacity_key, row_idx)
     imgui.table_set_column_index(0)
-    if menu_nav.active and menu_nav.selected == (row_idx or 0) then
+    -- Highlight row label whenever any column on this row is active
+    if menu_nav.active and menu_nav.selected == (row_idx or 0)
+       and menu_nav.column >= 1 and menu_nav.column <= 4 then
         imgui.text_colored("-> " .. label, 0xFFFFD040)
     else
         imgui.text(label)
@@ -2878,6 +3089,7 @@ function build.option.hotkey_buttons()
     build.option.hotkey_button("Toggle P1:", "hotkeys_toggle_p1")
     build.option.hotkey_button("Toggle P2:", "hotkeys_toggle_p2")
     build.option.hotkey_button("Toggle All:", "hotkeys_toggle_all")
+    build.option.hotkey_button("Toggle Sync:", "hotkeys_toggle_sync")
     build.option.hotkey_button("Last Preset:", "hotkeys_prev_preset")
     build.option.hotkey_button("Next Preset:", "hotkeys_next_preset")
     build.option.hotkey_button("Save Preset:", "hotkeys_save_preset")
@@ -3067,43 +3279,6 @@ local function initialize()
 end
 
 re.on_draw_ui(draw_ui_handler)
-
--- Block game pad input while nav is active.
--- _nav_reading guard ensures our own reads in menu_nav_handler pass through.
-
--- setup_hook("via.hid.GamePadDevice", "get_Button", function(args)
--- 	thread.get_hook_storage()["this"] = sdk.to_managed_object(args[2])
--- end, function(retval)
--- 	local obj = thread.get_hook_storage()["this"]
--- 	if obj and obj.get_method_Button ~= "None" then
--- 		imgui.set_tooltip("ggj")
--- 	-- if menu_nav.active then
--- 	-- 	-- imgui.set_tooltip('yo')
--- 	-- end
--- 	end
--- end)
-
-
--- pcall(function()
---     local function apply_hooks(type_name)
---         local gp_type = sdk.find_type_definition(type_name)
---         if not gp_type then return end
-        
---         -- Include analog sticks alongside the buttons
---         local method = gp_type:get_method("get_Button")
--- 		if not method then return end
--- 		sdk.hook(method, nil, function(retval)
--- 			if menu_nav.active then
--- 				imgui.set_tooltip('hi')
--- 				return 0
--- 			end
--- 			return retval
--- 		end)
---     end
-
---     -- Hook the actual device instances the game loops over
---     apply_hooks("via.hid.GamePadDevice")
--- end)
 
 re.on_frame(function()
 	object_handler()

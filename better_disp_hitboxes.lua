@@ -802,7 +802,6 @@ local function create_default_config()
 			notify_duration = 2.0,
 			hotkey_minimizes = false,
 			color_wall_splat = true,
-			range_ticks_show = true,
 			mode_training = true,
 			mode_replay = true,
 			mode_local_versus = false,
@@ -1813,7 +1812,6 @@ local function get_farthest_hitbox_reach(entity)
 end
 
 local function update_range_tick(entity, player_key)
-	if not state.config.options.range_ticks_show then return end
 	local player_config = state.config[player_key]
 	if not player_config or not player_config.toggle.hitbox_ticks then return end
 
@@ -1862,8 +1860,6 @@ local function process_entity(entity, draw_pos)
 end
 
 local function draw_range_ticks()
-	if not state.config.options.range_ticks_show then return end
-
 	local TICK_HALF_HEIGHT = 10
 	local BORDER_THICKNESS = 0
 
@@ -3129,7 +3125,6 @@ function build.option.misc()
     if not build.tree_node_stateful("Misc") then return end
     local changed
     changed, state.config.options.color_wall_splat = build.checkbox("Adjust Position color in wall splat range", state.config.options.color_wall_splat)
-    changed, state.config.options.range_ticks_show = build.checkbox("Show hitbox tick marks", state.config.options.range_ticks_show)
     imgui.tree_pop()
 end
 
@@ -3198,13 +3193,22 @@ local function build_menu()
     build.preset.menu()
     build.option.menu()
 
-    -- Draw controller-nav active outline (sampled after layout so size is final)
+    -- Draw controller-nav active outline (sampled after layout so size is final).
+    -- Uses the imgui foreground draw list so coordinates match the window exactly.
+    -- Multiple lines are drawn 5px outward and 5px inward to simulate thickness.
     if menu_nav.active then
         local p  = imgui.get_window_pos()
         local sz = imgui.get_window_size()
-        local cx, cy = p.x + sz.x * 0.5, p.y + sz.y * 0.5
-        draw.outline_rect(cx, cy, sz.x,     sz.y,     0xFFFFD040)
-        draw.outline_rect(cx, cy, sz.x - 2, sz.y - 2, 0x80FFD040)
+        local dl = imgui.get_foreground_draw_list()
+        local x1, y1 = p.x, p.y
+        local x2, y2 = p.x + sz.x, p.y + sz.y
+        for i = -5, 5 do
+            -- Outermost/innermost lines are faint; lines near the border edge are bright.
+            local t   = 1.0 - math.abs(i) / 6.0   -- 1.0 at centre, ~0.17 at ±5
+            local a   = math.floor(0xFF * t + 0.5)
+            local col = (a << 24) | 0x40D0FF        -- packed 0xAABBGGRR gold (R=0xFF,G=0xD0,B=0x40)
+            dl:add_rect(x1 + i, y1 + i, x2 - i, y2 - i, col)
+        end
     end
 
     imgui.end_window()
@@ -3277,6 +3281,43 @@ local function initialize()
     end
     state.initialized = true
 end
+
+
+-- Block game pad input while nav is active.
+-- _nav_reading guard ensures our own reads in menu_nav_handler pass through.
+
+-- setup_hook("via.hid.GamePadDevice", "get_Button", function(args)
+-- 	thread.get_hook_storage()["this"] = sdk.to_managed_object(args[2])
+-- end, function(retval)
+-- 	local obj = thread.get_hook_storage()["this"]
+-- 	if obj and obj.get_method_Button ~= "None" then
+-- 		imgui.set_tooltip("ggj")
+-- 	-- if menu_nav.active then
+-- 	-- 	-- imgui.set_tooltip('yo')
+-- 	-- end
+-- 	end
+-- end)
+
+
+-- pcall(function()
+--     local function apply_hooks(type_name)
+--         local gp_type = sdk.find_type_definition(type_name)
+--         if not gp_type then return end
+        
+--         -- Include analog sticks alongside the buttons
+--         local method = gp_type:get_method("get_Button")
+-- 		if not method then return end
+-- 		sdk.hook(method, nil, function(retval)
+-- 			if menu_nav.active then
+-- 				imgui.set_tooltip('hi')
+-- 				return 0
+-- 			end
+-- 			return retval
+-- 		end)
+--     end
+--     -- Hook the actual device instances the game loops over
+--     apply_hooks("via.hid.GamePadDevice")
+-- end)
 
 re.on_draw_ui(draw_ui_handler)
 

@@ -827,7 +827,9 @@ local function extract_player_data(player_index, player_table, engine, opponent_
 	player_table.mFollowFrame = engine.mParam.action.ActionFrame.FollowFrame
 
 	-- Frame Meter Data
-	local meter_data = display_data.FrameMeterSSData.MeterDatas[display_meter_index]
+	-- TODO: Fix meter_data
+	-- meter_data = display_data.FrameMeterSSData.MeterDatas[display_meter_index]
+	local meter_data = {}
 	player_table.whole_frame = meter_data.WholeFrame or ""
 	player_table.meaty_frame = meter_data.MeatyFrame or ""
 	player_table.apper_frame = meter_data.ApperFrame or ""
@@ -918,14 +920,16 @@ local function extract_player_data(player_index, player_table, engine, opponent_
 end
 
 local function player_data_handler()
-	training_manager = sdk.get_managed_singleton("app.training.TrainingManager")
-	local snap = training_manager
-	if snap then
-		local t_common = snap._tCommon
-		if t_common and t_common.SnapShotDatas then
-			display_data = t_common.SnapShotDatas[0]._DisplayData or {}
-		end
-	end
+	-- training_manager = sdk.get_managed_singleton("app.training.TrainingManager")
+	-- local snap = training_manager
+	-- if snap then
+	-- 	local t_common = snap._tCommon
+	-- 	if t_common and t_common.SnapShotDatas then
+	-- 		if t_common.SnapShotDatas[0] then
+	-- 			display_data = t_common.SnapShotDatas[0]._DisplayData or {}
+	-- 		end
+	-- 	end
+	-- end
 
 	-- Get action engines
 	local p1Engine = cPlayer[0].mpActParam.ActionPart._Engine

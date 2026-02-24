@@ -1,9 +1,7 @@
 local MOD_NAME = "Better Hitbox Viewer"
 local state = {}
 
--- ============================================================================
--- General Utilities
--- ============================================================================
+-- Utilities
 
 local function deep_copy(obj)
 	if type(obj) ~= 'table' then return obj end
@@ -38,19 +36,7 @@ local function is_disabled_state()
 	return not state.config.p1.toggle.toggle_show and not state.config.p2.toggle.toggle_show
 end
 
-local function setup_hook(type_name, method_name, pre_func, post_func)
-	local type_def = sdk.find_type_definition(type_name)
-	if type_def then
-		local method = type_def:get_method(method_name)
-		if method then
-			sdk.hook(method, pre_func, post_func)
-		end
-	end
-end
-
--- ============================================================================
--- Game Objects
--- ============================================================================
+-- Game Objects & Context
 
 local gBattle, PauseManager, TrainingManager, bFlowManager
 
@@ -68,69 +54,58 @@ local function object_handler()
     end
 
     if gBattle then
-		state.sWork = gBattle:get_field("Work"):get_data(nil)
-		state.sPlayer = gBattle:get_field("Player"):get_data(nil)
-        state.sSetting = gBattle:get_field("Setting"):get_data(nil)
+		state.sWork = state.sWork or
+            gBattle:get_field("Work"):get_data(nil)
+		state.sPlayer = state.sPlayer or
+            gBattle:get_field("Player"):get_data(nil)
+        state.sSetting = state.sSetting or
+            gBattle:get_field("Setting"):get_data(nil)
 		return
 	end
 
 	gBattle = sdk.find_type_definition("gBattle")
 end
 
-local TRAINING_MODES = {
-    [1]  = true,  -- TRAINING
-    [2]  = true,  -- ONLINE_TRAINING
-    [10] = true,  -- WT_TRAINING
-}
-
-local function is_any_training_mode()
-    if not TrainingManager then return false end
-    TrainingManager:get_field("GameMode")
-    return TRAINING_MODES[mode] == true
-end
-
--- app::EGameMode
 local GAME_MODES = {
-    [0]  = "NONE",
-    [1]  = "ARCADE",
-    [2]  = "TRAINING",
-    [3]  = "VERSUS_2P",
-    [4]  = "VERSUS_CPU",
-    [5]  = "TUTORIAL",
-    [6]  = "CHARACTER_GUIDE",
-    [7]  = "MISSION",
-    [8]  = "DEATHMATCH",
-    [9]  = "STORY",
-    [10] = "STORY_TRAINING",
-    [11] = "STORY_MATCH",
-    [12] = "STORY_TUTORIAL",
-    [13] = "STORY_SPECTATE",
-    [14] = "RANKED_MATCH",
-    [15] = "PLAYER_MATCH",
-    [16] = "CABINET_MATCH",
-    [17] = "CUSTOM_ROOM_MATCH",
-    [18] = "ONLINE_TRAINING",
-    [19] = "TEAMBATTLE",
-    [20] = "EXAM_CPU_MATCH",
-    [21] = "CABINET_CPU_MATCH",
-    [22] = "LEARNING_AI_MATCH",
-    [23] = "LEARNING_AI_SPECTATE",
-    [24] = "REPLAY",
-    [25] = "SPECTATE",
-    [26] = "LOCAL_MATCH",
-    [27] = "STORY_LOCAL_MATCH",
-    [28] = "JOY_MATCH",
-    [29] = "JOY_BATTLE",
+    [0] = "NONE", [1] = "ARCADE",
+    [2] = "TRAINING", [3] = "VERSUS_2P",
+    [4] = "VERSUS_CPU", [5] = "TUTORIAL",
+    [6] = "CHARACTER_GUIDE", [7] = "MISSION",
+    [8] = "DEATHMATCH", [9] = "STORY",
+    [10] = "STORY_TRAINING", [11] = "STORY_MATCH",
+    [12] = "STORY_TUTORIAL", [13] = "STORY_SPECTATE",
+    [14] = "RANKED_MATCH", [15] = "PLAYER_MATCH",
+    [16] = "CABINET_MATCH", [17] = "CUSTOM_ROOM_MATCH",
+    [18] = "ONLINE_TRAINING", [19] = "TEAMBATTLE",
+    [20] = "EXAM_CPU_MATCH", [21] = "CABINET_CPU_MATCH",
+    [22] = "LEARNING_AI_MATCH", [23] = "LEARNING_AI_SPECTATE",
+    [24] = "REPLAY", [25] = "SPECTATE",
+    [26] = "LOCAL_MATCH", [27] = "STORY_LOCAL_MATCH",
+    [28] = "JOY_MATCH", [29] = "JOY_BATTLE",
 }
+
+local TRAINING_MODES = { [2]=true, [10]=true, [18]=true }
+
+local REPLAY_MODES = { [24]=true }
+
+local SPECTATE_MODES = { [13]=true, [23]=true, [25]=true }
 
 local SINGLE_PLAYER_MODES = {
-    1, 3, 4, 5, 6, 7, 8, 9, 10, 
-    11, 12, 13, 24, 25, 26, 27
+    [1]=true, [4]=true, [5]=true, 
+    [6]=true, [7]=true, [9]=true,
+    [10]=true, [11]=true, [12]=true, 
+    [13]=true, [26]=true, [27]=true
 }
 
 local function get_scene_id()
     if not bFlowManager then return nil end
     return bFlowManager:get_GameMode() or 0
+end
+
+local function is_training_mode()
+    if not TrainingManager then return false end
+    local mode = TrainingManager:get_field("GameMode")
+    return TRAINING_MODES[mode] == true
 end
 
 local function is_in_battle()
@@ -142,56 +117,62 @@ local function is_in_battle()
 end
 
 local function get_game_mode_id()
-    if not state.sSetting then return 0 end
     if not is_in_battle() then return 0 end
-    return state.sSetting:get_field("GameMode") or 0
-end
-
-local function get_game_mode_name()
-    local mode_id = get_game_mode_id()
-    return GAME_MODES[mode_id]
-end
-
-local function is_training_mode()
-    local scene = get_game_mode_id()
-    return scene == 2  -- TRAINING
-        or scene == 18 -- ONLINE_TRAINING
-        or scene == 10 -- STORY_TRAINING
-end
-
-local function is_single_player_mode()
-    local mode_id = get_game_mode_id()
-    return SINGLE_PLAYER_MODES[mode_id]
+    if TrainingManager then
+        local mode = TrainingManager:get_field("GameMode")
+        if mode and mode ~= 0 then return mode end
+    end
+    if state.sSetting then
+        local mode = state.sSetting:get_field("GameMode")
+        if mode and mode ~= 0 then return mode end
+    end
+    if bFlowManager then
+        local mode = bFlowManager:get_GameMode()
+        if mode and mode ~= 0 then return mode end
+    end
+    return 0
 end
 
 local function is_mode_allowed()
     local mode = get_game_mode_id()
-    -- Training (offline, online, story)
-    if mode == 2 or mode == 18 or mode == 10 then
+    if TRAINING_MODES[mode] then
         return state.config.options.mode_training
     end
-    -- Replays
-    if mode == 24 then
+    if REPLAY_MODES[mode]   then
         return state.config.options.mode_replay
     end
-    -- Local Versus (2P, local match, story local)
-    if mode == 3 or mode == 26 or mode == 27 then
-        return state.config.options.mode_local_versus
+    if SPECTATE_MODES[mode] then
+        return state.config.options.mode_spectate
     end
-    -- Everything else (arcade, vs cpu, tutorial, story, spectate, etc.)
-    return state.config.options.mode_single_player
+    if SINGLE_PLAYER_MODES[mode] then
+        return state.config.options.mode_single_player 
+    end
+    return state.config.options.mode_other
 end
+
+local PAUSE_TYPE_BITS = {
+    [2]=true, [320]=true, [256]=true,
+    [324]=true, [2112]=true, [4294967616]=true
+}
+
+-- Modes where pause_type_bit=0 means unpaused and any non-zero value means paused.
+-- (Most modes use specific non-zero bits to signal unpaused states, but these
+-- modes use 0 as their unpaused sentinel instead.)
+local ZERO_UNPAUSED_MODES = { [10]=true, [13]=true }
 
 local function is_pause_menu_closed()
-    local pause_type_bit = 0
-    if not PauseManager then return end
-    pause_type_bit = PauseManager:get_field("_CurrentPauseTypeBit")
-    return pause_type_bit == 64 or pause_type_bit == 2112
+    if not PauseManager then return true end
+    local pause_type_bit = PauseManager:get_field("_CurrentPauseTypeBit")
+    local mode = get_game_mode_id()
+    if ZERO_UNPAUSED_MODES[mode] then
+        -- bit=0 → unpaused (closed); any non-zero bit → paused (open)
+        return pause_type_bit == 0
+    end
+    return not PAUSE_TYPE_BITS[pause_type_bit]
 end
 
--- ============================================================================
--- Hotkey System (hk)
--- ============================================================================
+-- Hotkeys (hk)
+
 if not hk then
 	local kb, mouse, pad
 	local m_up, m_down, m_trig
@@ -376,10 +357,16 @@ if not hk then
 		end
 	end
 
+	-- Converts internal key names to user-friendly display strings.
+	-- "Alpha1" → "1", "Alpha2" → "2", etc.  All other names pass through unchanged.
+	local function fmt_key_display(key_name)
+		return (key_name:gsub("^Alpha(%d+)$", "%1"))
+	end
+
 	local function get_button_string(action_name)
-		local b1 = hotkeys[action_name.."_$_$"]; b1 = b1 and b1.." + " or ""
-		local b2 = hotkeys[action_name.."_$"]; b2 = b2 and b2.." + " or ""
-		return b1 .. b2 .. hotkeys[action_name]
+		local b1 = hotkeys[action_name.."_$_$"]; b1 = b1 and fmt_key_display(b1).." + " or ""
+		local b2 = hotkeys[action_name.."_$"]; b2 = b2 and fmt_key_display(b2).." + " or ""
+		return b1 .. b2 .. fmt_key_display(hotkeys[action_name])
 	end
 
 	local function reset_from_defaults_tbl(default_hotkey_table)
@@ -521,6 +508,89 @@ if not hk then
 		LAlt=true, RAlt=true, Alt=true,
 	}
 
+	-- Returns the set of key names considered equivalent to key_name for conflict
+	-- checking.  Handles the three modifier families where a logical name ("Control")
+	-- and its physical variants ("LControl", "RControl") are interchangeable.
+	local function get_key_family(key_name)
+		if key_name == "LControl" or key_name == "RControl" or key_name == "Control" then
+			return {LControl=true, RControl=true, Control=true}
+		elseif key_name == "LAlt" or key_name == "RAlt" or key_name == "Alt" then
+			return {LAlt=true, RAlt=true, Alt=true}
+		elseif key_name == "LShift" or key_name == "RShift" then
+			return {LShift=true, RShift=true}
+		end
+		return {[key_name]=true}
+	end
+
+	-- Returns true when key_name (or any family member) is already used in a slot
+	-- that does not belong to the action currently being rebound.
+	--
+	-- Rule for modifier slots (_$): other modifier slots are skipped — the same
+	-- modifier key may be shared across multiple hotkeys.  Main binding slots of
+	-- other actions still block (can't use a key as both a main binding and a
+	-- modifier of a different action).
+	--
+	-- Rule for main binding slots: all foreign slots (main + modifier) are checked,
+	-- so a key in use as anyone's modifier cannot become a main binding.
+	local function is_key_bound_elsewhere(key_name, current_action)
+		local family = get_key_family(key_name)
+		local base = current_action
+		if base:sub(-4) == "_$_$" then base = base:sub(1, -5)
+		elseif base:sub(-2) == "_$" then base = base:sub(1, -3) end
+		local own = { [base]=true, [base.."_$"]=true, [base.."_$_$"]=true }
+		local current_is_mod = (current_action:sub(-2) == "_$")
+		for name, bound_key in pairs(hotkeys) do
+			if not own[name] and family[bound_key] then
+				-- When binding a modifier slot, skip other modifier slots
+				-- (shared modifier keys are allowed; combo uniqueness is enforced separately).
+				if current_is_mod and name:sub(-2) == "_$" then
+					-- allowed — do not flag as conflict
+				else
+					return true
+				end
+			end
+		end
+		return false
+	end
+
+	-- Returns true when key_name (or any family member) matches this action's own
+	-- modifier.  Only meaningful for main binding slots; modifier slots have no
+	-- modifier of their own.
+	local function is_key_own_modifier_family(key_name, action_name)
+		if action_name:sub(-2) == "_$" then return false end
+		local own_mod = hotkeys[action_name .. "_$"]
+		if not own_mod or own_mod == "[Not Bound]" or own_mod == "[Press Input]" then
+			return false
+		end
+		return get_key_family(own_mod)[key_name] ~= nil
+	end
+
+	-- When binding a modifier slot, checks that the resulting combo (candidate
+	-- modifier + this action's main key) is not already in use by another action.
+	-- E.g. if "Ctrl+Left" is taken, binding "Ctrl" as the modifier for any other
+	-- action whose main key is "Left" is rejected.
+	local function is_combo_bound_elsewhere(modifier_key, action_name)
+		if action_name:sub(-2) ~= "_$" then return false end
+		local base = action_name:sub(1, -3)
+		local main_key = hotkeys[base]
+		if not main_key or main_key == "[Not Bound]" or main_key == "[Press Input]" then
+			return false
+		end
+		local mod_family = get_key_family(modifier_key)
+		for name, bound_key in pairs(hotkeys) do
+			-- Check all main binding slots other than this action's own base
+			if name:sub(-2) ~= "_$" and name ~= base and bound_key == main_key then
+				local their_mod = hotkeys[name .. "_$"]
+				if their_mod and their_mod ~= "[Not Bound]" and their_mod ~= "[Press Input]" then
+					if mod_family[their_mod] then
+						return true
+					end
+				end
+			end
+		end
+		return false
+	end
+
 	local function hotkey_setter(action_name, hold_action_name, fake_name, title_tooltip)
 
 		local key_updated = false
@@ -543,27 +613,42 @@ if not hk then
 				if up and up ~= 0 then
 					for button_name, id in pairs(buttons) do
 						if (up | id) == up then
-							hotkeys[action_name] = button_name
-							key_updated = true
-							goto exit
+							if not is_key_bound_elsewhere(button_name, action_name)
+							   and not is_key_own_modifier_family(button_name, action_name)
+							   and not is_combo_bound_elsewhere(button_name, action_name) then
+								hotkeys[action_name] = button_name
+								key_updated = true
+								goto exit
+							end
 						end
 					end
 				end
 				if not (is_mod_1 or is_mod_2) and mouse and m_up and m_up ~= 0 then
 					for button_name, id in pairs(mbuttons) do
 						if (m_up | id) == m_up then
-							hotkeys[action_name] = button_name
-							key_updated = true
-							goto exit
+							-- L Mouse and R Mouse are reserved for UI interaction
+							if button_name ~= "L Mouse" and button_name ~= "R Mouse"
+							   and not is_key_bound_elsewhere(button_name, action_name)
+							   and not is_key_own_modifier_family(button_name, action_name)
+							   and not is_combo_bound_elsewhere(button_name, action_name) then
+								hotkeys[action_name] = button_name
+								key_updated = true
+								goto exit
+							end
 						end
 					end
 				end
 				for key_name, id in pairs(keys) do
-					if kb and kb:call("isRelease", id) then
+					-- F1 is a fixed system hotkey and cannot be rebound to any action
+					if key_name ~= "F1" and kb and kb:call("isRelease", id) then
 						if (not (is_mod_1 or is_mod_2)) or valid_modifier_keys[key_name] then
-							hotkeys[action_name] = key_name
-							key_updated = true
-							goto exit
+							if not is_key_bound_elsewhere(key_name, action_name)
+							   and not is_key_own_modifier_family(key_name, action_name)
+							   and not is_combo_bound_elsewhere(key_name, action_name) then
+								hotkeys[action_name] = key_name
+								key_updated = true
+								goto exit
+							end
 						end
 					end
 				end
@@ -595,7 +680,7 @@ if not hk then
 				imgui.same_line()
 			end
 
-			if imgui.button( ((modifier_hotkey and (modifier_hotkey .. " + ")) or "") .. hotkeys[action_name]) then
+			if imgui.button( ((modifier_hotkey and (modifier_hotkey .. " + ")) or "") .. fmt_key_display(hotkeys[action_name])) then
 				if hotkeys[action_name] == "[Press Input]" then
 					hotkeys[action_name] = backup_hotkeys[action_name]
 				else
@@ -690,52 +775,40 @@ if not hk then
 		update_states()
 	end)
 
-	-- Script functionality:
 	hk = hk or {
-		kb = kb, 													-- Keyboard device Managed Object, updated every frame
-		mouse = mouse, 												-- Mouse device Managed Object, updated every frame
-		pad = pad, 													-- Gamepad device Managed Object, updated every frame
-
-		keys = keys, 												-- Enum of keyboard key names vs key IDs (some tweaked names)
-		buttons = buttons, 											-- Enum of gamepad button names vs button IDs (some tweaked names)
-		mbuttons = mbuttons, 										-- Enum of mouse button names vs button IDs (some tweaked names)
-
-		hotkeys = hotkeys, 											-- Table of current action names vs button strings
-		default_hotkeys = default_hotkeys, 							-- Table of default action names vs button strings
-
-		kb_state = kb_state,										-- Table with state (up/down/triggered) of all used keyboard keys, updated every frame
-		gp_state = gp_state, 										-- Table with state (up/down/triggered) of all used gamepad buttons, updated every frame
-		mb_state = mb_state, 										-- Table with state (up/down/triggered) of all used mouse buttons, updated every frame
-
-		recurse_def_settings = recurse_def_settings, 				-- Fn takes a table 'tbl' and its paired 'defaults_tbl' and copies mismatched/missing fields from defaults_tbl to tbl, then does the same for any child tables of defaults_tbl
-		find_index = find_index, 									-- Fn takes a table and a value (and optionally a key), then finds the index containing a value (or of the value containing that value as a field 'key') in that table
-		merge_tables = merge_tables,								-- Fn takes table A and B then merges table A into table B
-		merge_tables_recursively = merge_tables_recursively,		-- Fn takes table A and B then merges table A into table B and does the same for any child tables in the table
-		generate_statics = generate_statics, 						-- Fn takes a typedef name for a System.Enum and returns a lua table from it
-
-		setup_hotkeys = setup_hotkeys, 								-- Fn takes a table of hotkeys (action names vs button names) and a paired table of default_hotkeys and sets them up for use in this script
-		reset_from_defaults_tbl = reset_from_defaults_tbl, 			-- Fn takes a defaults table and resets all matching hotkeys in this script to the button strings from it
-		update_hotkey_table = update_hotkey_table, 					-- Fn takes a table of hotkeys (action names vs button names) from an outside script and updates the keys internally in this script to match
-		get_button_string = get_button_string, 						-- Fn takes and action name and returns the full button combination required to trigger an action, including modifiers if they exist
-
-		hotkey_setter = hotkey_setter, 								-- Fn takes an action name and displays an imgui button that you can click then and press an input to assign that input to that action name. Returns true if updated
-
-		check_hotkey = check_hotkey, 								-- Fn checks if an input (by action name) is just released, and also if its modifiers are down (if they exist). Send "true" as 2nd argument to check if input is down, "1" or use argument#3 to check if just-triggered
-		check_doubletap = check_doubletap,							-- Fn uses 'check_hotkey' to check if an input (by action name) has been pressed twice in the past 0.25 seconds
-		check_hold = check_hold,									-- Fn uses 'check_hotkey' to check if an input (by action name) has been held for as long as its argument#2
-
-		chk_up = chk_up, 											-- Fn checks if an input (by action name) is released
-		chk_down = chk_down, 										-- Fn checks if an input (by action name) is down
-		chk_trig = chk_trig, 										-- Fn checks if an input (by action name) is just pressed
-
-		check_kb_key = check_kb_key,								-- Fn checks if a keyboard input is released, down or triggered (by key name)
-		check_mouse_button = check_mouse_button,					-- Fn checks if a mouse input is released, down or triggered (by mbutton name)
-		check_pad_button = check_pad_button,						-- Fn checks if a gamepad input is released, down or triggered (by button name) (such as imgui focus) was removed mid-frame
-
+		kb = kb,
+		mouse = mouse,
+		pad = pad,
+		keys = keys,
+		buttons = buttons,
+		mbuttons = mbuttons,
+		hotkeys = hotkeys,
+		default_hotkeys = default_hotkeys,
+		kb_state = kb_state,
+		gp_state = gp_state,
+		mb_state = mb_state,
+		recurse_def_settings = recurse_def_settings,
+		find_index = find_index,
+		merge_tables = merge_tables,
+		merge_tables_recursively = merge_tables_recursively,
+		generate_statics = generate_statics,
+		setup_hotkeys = setup_hotkeys,
+		reset_from_defaults_tbl = reset_from_defaults_tbl,
+		update_hotkey_table = update_hotkey_table,
+		get_button_string = get_button_string,
+		hotkey_setter = hotkey_setter,
+		check_hotkey = check_hotkey,
+		check_doubletap = check_doubletap,
+		check_hold = check_hold,
+		chk_up = chk_up,
+		chk_down = chk_down,
+		chk_trig = chk_trig,
+		check_kb_key = check_kb_key,
+		check_mouse_button = check_mouse_button,
+		check_pad_button = check_pad_button,
 		register_hotkey_change_callback = function(cb)
 			table.insert(hotkey_change_callbacks, cb)
 		end,
-
 		sync_modifiers_from_hotkeys = function()
 			hk_data.modifier_actions = {}
 			for action, key in pairs(hotkeys) do
@@ -748,9 +821,7 @@ if not hk then
 	}
 end
 
--- ============================================================================
--- Configuration Management
--- ============================================================================
+-- Config Management
 
 local CONFIG_PATH = "better_disp_hitboxes.json"
 local SAVE_DELAY = 0.5
@@ -804,11 +875,14 @@ local function create_default_config()
 			color_wall_splat = true,
 			mode_training = true,
 			mode_replay = true,
-			mode_local_versus = false,
+			mode_spectate = true,
 			mode_single_player = false,
+			mode_other = false,
+            enable_debug_menu = false,
+            remember_window_pos = false,
 		},
 		hotkeys = {
-			hotkeys_toggle_menu = "F1",
+			hotkeys_toggle_menu = "[Not Bound]",
 			hotkeys_toggle_p1 = "Alpha1",
 			["hotkeys_toggle_p1_$"] = "Control",
 			hotkeys_toggle_p2 = "Alpha2",
@@ -821,7 +895,10 @@ local function create_default_config()
 			["hotkeys_next_preset_$"] = "Control",
 			hotkeys_save_preset = "Space",
 			["hotkeys_save_preset_$"] = "Control",
-			hotkeys_toggle_sync = "Y (Triangle)",
+			hotkeys_discard_preset = "Z",
+			["hotkeys_discard_preset_$"] = "Control",
+			hotkeys_toggle_sync = "C",
+			["hotkeys_toggle_sync_$"] = "Control",
 		},
 		p1 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)},
 		p2 = {toggle = deep_copy(toggle_options), opacity = deep_copy(opacity_options)}
@@ -979,7 +1056,6 @@ local function load_config()
 			if not is_modifier then
 				state.config.hotkeys[k] = v
 			elseif state.config.hotkeys[k:sub(1, -3)] == nil then
-				-- Only restore modifier default if base key is also absent (first run)
 				state.config.hotkeys[k] = v
 			end
 		end
@@ -999,42 +1075,38 @@ local function save_handler()
 	end
 end
 
-local function reset_all_default(player)
-	local default = create_default_config()
-	if player == nil then
-		state.config.p1 = deep_copy(default.p1)
-		state.config.p2 = deep_copy(default.p2)
-	elseif player == "p1" or player == "p2" then
-		state.config[player] = deep_copy(default[player]) end
-	mark_for_save()
-	return state.config
+local FACTORY_PRESET_NAMES = {
+    ["Dark"] = true, ["Default"] = true, ["Hitbox Ticks"] = true,
+    ["Light"] = true, ["Outlines"] = true,
+}
+
+local function reset_defaults(category, player)
+    local default_cfg = create_default_config()
+    local target_players = player and {player} or {"p1", "p2"}
+
+    local preset_src = nil
+    local cur = state.current_preset_name
+    if FACTORY_PRESET_NAMES[cur] then
+        local factory = create_default_presets()
+        preset_src = factory[cur]
+    end
+
+    for _, p in ipairs(target_players) do
+        if category == "all" then
+            local src = preset_src and preset_src[p] or default_cfg[p]
+            state.config[p].toggle  = deep_copy(src.toggle)
+            state.config[p].opacity = deep_copy(src.opacity)
+        else
+            local src = preset_src and preset_src[p] or default_cfg[p]
+            state.config[p][category] = deep_copy(src[category])
+        end
+    end
+
+    mark_for_save()
+    return state.config
 end
 
-local function reset_toggle_default(player)
-	local default = create_default_config()
-	if player == nil then
-		state.config.p1.toggle = deep_copy(default.p1.toggle)
-		state.config.p2.toggle = deep_copy(default.p2.toggle)
-	elseif player == "p1" or player == "p2" then
-		state.config[player].toggle = deep_copy(default[player].toggle) end
-	mark_for_save()
-	return state.config
-end
-
-local function reset_opacity_default(player)
-	local default = create_default_config()
-	if player == nil then
-		state.config.p1.opacity = deep_copy(default.p1.opacity)
-		state.config.p2.opacity = deep_copy(default.p2.opacity)
-	elseif player == "p1" or player == "p2" then
-		state.config[player].opacity = deep_copy(default[player].opacity) end
-	mark_for_save()
-	return state.config
-end
-
--- ============================================================================
 -- Notifications
--- ============================================================================
 
 state.tooltip_timer = 0
 state.tooltip_msg = ""
@@ -1068,9 +1140,7 @@ local function action_notify_handler()
     imgui.end_window()
 end
 
--- ============================================================================
 -- Preset Management
--- ============================================================================
 
 state.presets = {}
 state.preset_names = {}
@@ -1173,7 +1243,7 @@ local function delete_preset(name)
 		if fallback then
 			load_preset(fallback)
 		else
-			reset_all_default()
+			reset_defaults("all")
 			state.current_preset_name = get_preset_name()
 			save_current_preset(state.current_preset_name)
 		end
@@ -1354,9 +1424,7 @@ local function restore_presets()
     mark_for_save()
 end
 
--- ============================================================================
--- Hitbox Drawing Logic
--- ============================================================================
+-- Hitbox Drawing
 
 local RIGHT_SPLAT_POS = 585.2
 local LEFT_SPLAT_POS = -1 * RIGHT_SPLAT_POS
@@ -1602,9 +1670,7 @@ local function draw_text_buffered(text, x, y, color)
     draw.text(text, x, y, color)
 end
 
--- ============================================================================
 -- Property Text Persistence
--- ============================================================================
 
 -- Total lifetime of a ghost label after its hitbox disappears.
 local PROP_PERSIST_TOTAL  = 20
@@ -1920,6 +1986,8 @@ local function draw_range_ticks()
 	end
 end
 
+-- Timestop 
+
 local function update_timestop_state()
     local ok, BattleChronos = pcall(function()
         return gBattle:get_field("Chronos"):get_data(nil)
@@ -1984,6 +2052,16 @@ state.last_menu_hotkey_display = ""
 state.force_tree_restore = false
 state.confirm_restore_hotkeys = false
 state.menu_window_focused = false
+state.debug_panel_was_visible = false
+state.debug_force_sys_open    = false
+state.slider_mouse_active          = false  -- was any drag_int active last frame?
+state.slider_mouse_active_this_frame = false  -- accumulator reset each frame
+-- Unified single-row hover tracker. Only one row across all sections can be
+-- highlighted at a time. hov_cur is written this frame by any hovered widget;
+-- hov_prev is the result from last frame used for pre-widget style decisions.
+-- Structure: {section = "toggle"|"preset"|"header", key = row_idx|preset_name|nil, col = col_num}
+state.hov_prev = nil
+state.hov_cur  = nil
 
 -- Controller Menu Navigation
 
@@ -2001,13 +2079,16 @@ local menu_nav = {
     prev_dx       = 0,
     REP_DELAY     = 22,
     REP_RATE      = 7,
-    slider_active = false, -- currently editing an opacity slider
-    slider_orig   = nil,   -- value before slider edit started (for cancel)
-    slider_rep    = 0,
-    SLIDER_STEP   = 3,     -- opacity units per tick when editing
-    SLIDER_DELAY  = 10,    -- frames before slider repeat starts
-    SLIDER_RATE   = 3,     -- frames per repeat tick while held
-    just_moved    = false, -- true for exactly one frame after nav cursor moves
+    slider_active  = false, -- currently editing an opacity slider
+    slider_orig    = nil,   -- value before slider edit started (for cancel)
+    slider_rep     = 0,
+    SLIDER_STEP    = 3,     -- opacity units per tick when editing
+    SLIDER_DELAY   = 10,    -- frames before slider repeat starts
+    SLIDER_RATE    = 3,     -- frames per repeat tick while held
+    just_moved     = false, -- true for exactly one frame after nav cursor moves (legacy, kept for compat)
+    nav_lock       = 0,     -- frames remaining where mouse hover cannot override gamepad/KB nav
+    NAV_LOCK_FRAMES = 20,   -- how long to suppress hover after a gamepad/KB navigation
+    sync_mod_active = false, -- true when the modifier key force-enabled sync (so release can undo it)
 }
 local _nav_reading = false
 
@@ -2037,6 +2118,17 @@ local function _nav_btn_held(mask)
     return v % (mask + mask) >= mask
 end
 
+-- Keyboard equivalents for mouse-hover navigation.
+-- Only meaningful when menu_nav_handler is reached (i.e. mouse is over window).
+local function _kb_trig(key) return hk.check_kb_key(key, nil, true) end
+local function _kb_held(key) return hk.check_kb_key(key, true) end
+
+-- Sync modifier: Ctrl (keyboard) or LT/L2 (gamepad).
+local function _nav_sync_mod_held()
+    local lt_mask = (hk and hk.buttons and hk.buttons["LT (L2)"]) or 0
+    return (lt_mask ~= 0 and _nav_btn_held(lt_mask)) or _kb_held("Control")
+end
+
 local function _nav_axis()
     if not hk or not hk.pad then return 0, 0 end
     _nav_reading = true
@@ -2057,6 +2149,152 @@ local build = {
     option = {},
     backup = {},
 }
+
+-- ============================================================================
+-- Nav / Widget Style Constants
+-- Shared by build.toggle.column, build.toggle.sync_button, and any future
+-- widgets that need to match the controller-nav selection appearance.
+-- All colours are packed ABGR (same as imgui/draw APIs).
+-- ============================================================================
+
+-- ImGuiCol indices used for push_style_color
+local IC_FRAME_BG        = 7   -- drag_int / checkbox background
+local IC_FRAME_HOV       = 8   -- same, hovered
+local IC_CHECKMARK       = 18  -- checkbox tick
+local IC_SLIDER_GRAB     = 19  -- drag_int grab handle
+local IC_SLIDER_GRAB_ACT = 20  -- drag_int grab handle while dragging
+local IC_BUTTON          = 21  -- imgui.button face
+local IC_BUTTON_HOV      = 22  -- imgui.button face, hovered
+
+-- Cursor resting on a cell (selected, not yet activated)
+local C_NAV_FRAME  = 0x8000D0FF   -- gold, 50% opacity
+local C_NAV_HOV    = 0xA000D0FF   -- gold, 63% opacity
+local C_NAV_MARK   = 0xFF00E0FF   -- gold, fully opaque (checkmark / grab)
+
+-- Slider actively being dragged (more pronounced than just selected)
+local C_EDIT_FRAME    = 0xCC00D8FF   -- gold, 80% opacity
+local C_EDIT_HOV      = 0xE000E0FF   -- gold, 88% opacity
+local C_EDIT_GRAB     = 0xFF10F0FF   -- bright gold grab handle
+local C_EDIT_GRAB_ACT = 0xFFFFFFFF   -- white while the grab is held
+
+-- ============================================================================
+-- Unified hover helpers
+-- is_hov(section, key, col)  →  true when hov_prev matches all non-nil args
+-- set_hov(section, key, col) →  write into hov_cur (last write per frame wins)
+-- ============================================================================
+local function is_hov(section, key, col)
+    local h = state.hov_prev
+    if not h or h.section ~= section then return false end
+    if key ~= nil and h.key ~= key then return false end
+    if col ~= nil and h.col ~= col then return false end
+    return true
+end
+
+local function set_hov(section, key, col)
+    state.hov_cur = {section = section, key = key, col = col}
+end
+
+-- Maintains row background highlight when the mouse is inside the row's Y band.
+-- Fires whether or not a widget in the row has already claimed hov_cur this frame,
+-- EXCEPT when hov_cur already belongs to this exact row (element hover takes
+-- precedence so its col information is preserved for per-element styling).
+-- This ensures the row background is drawn whenever any part of the row is hovered,
+-- even if the mouse is directly over a widget inside it.
+local ROW_H = 23
+local function row_hover_check(row_y_local, section, key)
+    if not state.menu_window_focused or not state.menu_window_pos then return end
+    -- If hov_cur is already set for THIS row an element in it was hovered; preserve
+    -- that col-specific state so per-element highlighting continues to work.
+    local existing = state.hov_cur
+    if existing and existing.section == section and existing.key == key then return end
+    local wpos  = state.menu_window_pos
+    local wsize = imgui.get_window_size()
+    local mouse = imgui.get_mouse()
+    local sy = wpos.y + row_y_local - imgui.get_scroll_y()
+    if mouse.y >= sy and mouse.y < sy + ROW_H
+       and mouse.x >= wpos.x and mouse.x < wpos.x + wsize.x then
+        set_hov(section, key, nil)
+    end
+end
+
+-- Draws a filled background highlight rect behind a tree-node header row,
+-- using the previous frame's hover state so it renders beneath the row's widgets.
+-- Call BEFORE any widgets on the row.
+local function treerow_bg(label)
+    if not is_hov("treerow", label) then return end
+    local wpos  = imgui.get_window_pos()
+    local wsize = imgui.get_window_size()
+    local cy    = imgui.get_cursor_pos().y
+    local dl    = imgui.get_window_draw_list()
+    dl:add_rect_filled(wpos.x, wpos.y + cy, wpos.x + wsize.x, wpos.y + cy + ROW_H, C_NAV_FRAME)
+end
+
+-- Button with per-element highlight for tree-node inline buttons.
+-- col is an integer slot distinguishing sibling buttons on the same row.
+-- size is an optional {w, h} table passed through to imgui.button.
+local function treerow_hov_button(btn_label, row_key, col, size)
+    local highlighted = is_hov("treerow", row_key, col)
+    if highlighted then
+        imgui.push_style_color(IC_BUTTON,     C_NAV_FRAME)
+        imgui.push_style_color(IC_BUTTON_HOV, C_NAV_HOV)
+        imgui.begin_rect()
+    end
+    local clicked = imgui.button(btn_label, size)
+    if imgui.is_item_hovered() then set_hov("treerow", row_key, col) end
+    if highlighted then
+        imgui.end_rect(1)
+        imgui.pop_style_color(2)
+    end
+    return clicked
+end
+
+-- Checkbox with per-element highlight for tree-node inline checkboxes.
+local function treerow_hov_checkbox(cb_label, row_key, col, val)
+    local highlighted = is_hov("treerow", row_key, col)
+    if highlighted then
+        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+        imgui.push_style_color(IC_CHECKMARK, C_NAV_MARK)
+        imgui.begin_rect()
+        imgui.begin_rect()
+    end
+    local changed, new_val = imgui.checkbox(cb_label, val)
+    if changed then mark_for_save() end
+    if imgui.is_item_hovered() then set_hov("treerow", row_key, col) end
+    if highlighted then
+        imgui.end_rect(1)
+        imgui.end_rect(3)
+        imgui.pop_style_color(3)
+    end
+    return changed, new_val
+end
+
+
+
+
+-- Loaded from func/better_disp_hitboxes_debugger.lua.
+-- If the file is missing or contains a syntax/runtime error the debug panel
+-- is silently disabled: Ctrl+F1 and the options toggle do nothing, and all
+-- other functionality continues normally.
+-- ============================================================================
+local _debugger_module = nil
+local _debugger        = nil   -- fully initialised instance (set in init_debugger)
+
+do
+    local ok, result = pcall(require, "func/better_disp_hitboxes_debugger")
+    if ok and type(result) == "table" and type(result.init) == "function" then
+        _debugger_module = result
+    else
+        -- Log the failure without crashing; debug mode will stay disabled.
+        local err_msg = type(result) == "string" and result or "(unknown error)"
+        pcall(log.info, "[BetterHitboxViewer] debugger module failed to load: " .. err_msg)
+    end
+end
+
+-- Returns true only when the debugger is fully operational.
+local function debugger_available()
+    return _debugger ~= nil
+end
 
 function build.on_sync(to_sync, condition)
     if not condition or not state.sync_enabled then return end
@@ -2088,6 +2326,7 @@ end
 
 local function menu_nav_handler()
     menu_nav.just_moved = false
+    if menu_nav.nav_lock > 0 then menu_nav.nav_lock = menu_nav.nav_lock - 1 end
 
     if not state.config.options.display_menu or not state.menu_window_focused then
         menu_nav.active = false
@@ -2095,311 +2334,61 @@ local function menu_nav_handler()
         menu_nav.slider_active = false
         return
     end
+    -- Keep active so mouse-hover outlines continue to work.
     menu_nav.active = true
 
-    local n = #build.toggle.rows_list
-
-    local axis_dy, axis_dx = _nav_axis()
-    local axis_dy_trig = axis_dy ~= 0 and axis_dy ~= menu_nav.prev_dy
-    local axis_dx_trig = axis_dx ~= 0 and axis_dx ~= menu_nav.prev_dx
-    menu_nav.prev_dy, menu_nav.prev_dx = axis_dy, axis_dx
-
-    local a_mask = (hk and hk.buttons and hk.buttons["A (X)"])      or 131104
-    local b_mask = (hk and hk.buttons and hk.buttons["B (Circle)"]) or 262272
-
-    -- ── Sync toggle via configurable hotkey (Y by default) ───────────────────
-    if hk.check_hotkey("hotkeys_toggle_sync", nil, true) then
-        state.sync_enabled = not state.sync_enabled
-    end
-
-    -- ── Slider editing mode ──────────────────────────────────────────────────
-    -- In row columns: 2 = P1 opacity, 4 = P2 opacity
-    local on_opacity_col = (menu_nav.column == 2 or menu_nav.column == 4)
-    if menu_nav.slider_active and on_opacity_col then
-        local trig_dx2 = (_nav_btn_trig(NAV_LEFT) and -1 or _nav_btn_trig(NAV_RIGHT) and 1 or 0)
-        if trig_dx2 == 0 and axis_dx_trig then trig_dx2 = axis_dx end
-
-        local held_dx2 = (_nav_btn_held(NAV_LEFT) and -1 or _nav_btn_held(NAV_RIGHT) and 1 or 0)
-        if held_dx2 == 0 and axis_dx ~= 0 then held_dx2 = axis_dx end
-
-        local delta = 0
-        if trig_dx2 ~= 0 then
-            delta = trig_dx2
-            menu_nav.slider_rep = 0
-        elseif held_dx2 ~= 0 then
-            menu_nav.slider_rep = menu_nav.slider_rep + 1
-            if menu_nav.slider_rep >= menu_nav.SLIDER_DELAY then
-                menu_nav.slider_rep = menu_nav.SLIDER_DELAY - menu_nav.SLIDER_RATE
-                delta = held_dx2
-            end
-        else
-            menu_nav.slider_rep = 0
-        end
-
-        if delta ~= 0 then
-            -- column 2 = P1 opacity, column 4 = P2 opacity
-            local on_p1 = (menu_nav.column == 2)
-            local cfg = on_p1 and state.config.p1 or state.config.p2
-            local row = build.toggle.rows_list[menu_nav.selected]
-            if row and row[3] and cfg and cfg.opacity[row[3]] ~= nil then
-                local new_op = math.max(0, math.min(100, cfg.opacity[row[3]] + delta * menu_nav.SLIDER_STEP))
-                cfg.opacity[row[3]] = new_op
-                -- Live-sync to other player, matching mouse-drag behaviour
-                if state.sync_enabled then
-                    local other = on_p1 and state.config.p2 or state.config.p1
-                    if other.opacity[row[3]] ~= nil then
-                        other.opacity[row[3]] = new_op
-                    end
-                end
-            end
-        end
-
-        -- A: confirm & save (with sync)
-        if _nav_btn_trig(a_mask) then
-            local on_p1 = (menu_nav.column == 2)
-            local cfg   = on_p1 and state.config.p1 or state.config.p2
-            local row   = build.toggle.rows_list[menu_nav.selected]
-            if state.sync_enabled and row and row[3] and cfg then
-                local other = on_p1 and state.config.p2 or state.config.p1
-                if other.opacity[row[3]] ~= nil then
-                    other.opacity[row[3]] = cfg.opacity[row[3]]
-                end
-            end
-            mark_for_save()
-            menu_nav.slider_active = false
-            menu_nav.slider_orig   = nil
-        end
-        -- B: cancel & restore original value (and sync the restore)
-        if _nav_btn_trig(b_mask) then
-            local on_p1_b = (menu_nav.column == 2)
-            local cfg_b = on_p1_b and state.config.p1 or state.config.p2
-            local row_b = build.toggle.rows_list[menu_nav.selected]
-            if row_b and row_b[3] and cfg_b and menu_nav.slider_orig ~= nil then
-                cfg_b.opacity[row_b[3]] = menu_nav.slider_orig
-                if state.sync_enabled then
-                    local other_b = on_p1_b and state.config.p2 or state.config.p1
-                    if other_b.opacity[row_b[3]] ~= nil then
-                        other_b.opacity[row_b[3]] = menu_nav.slider_orig
-                    end
-                end
-            end
-            menu_nav.slider_active = false
-            menu_nav.slider_orig   = nil
-        end
-        return
-    end
-
-    -- ── Vertical movement ────────────────────────────────────────────────────
-    local trig_dy = (_nav_btn_trig(NAV_UP) and -1 or _nav_btn_trig(NAV_DOWN) and 1 or 0)
-    if trig_dy == 0 and axis_dy_trig then trig_dy = axis_dy end
-
-    local held_dy = (_nav_btn_held(NAV_UP) and -1 or _nav_btn_held(NAV_DOWN) and 1 or 0)
-    if held_dy == 0 and axis_dy ~= 0 then held_dy = axis_dy end
-
-    local prev_sel, prev_col = menu_nav.selected, menu_nav.column
-
-    local function opacity_available(row_idx, col)
-        -- col 2 = P1 opacity, col 4 = P2 opacity
-        local cfg = (col == 2) and state.config.p1 or state.config.p2
-        local row = build.toggle.rows_list[row_idx]
-        return row and row[3]
-            and cfg.toggle[row[2]]
-            and cfg.opacity[row[3]] ~= nil
-    end
-
-    local function move_vertical(dy)
-        local from_sel = menu_nav.selected
-        local from_col = menu_nav.column
-        menu_nav.selected = math.max(0, math.min(n, menu_nav.selected + dy))
-
-        local going_to_header = (menu_nav.selected == 0)
-        local coming_from_header = (from_sel == 0)
-
-        if going_to_header then
-            -- Map row col-space (1=P1tog, 2=P1op, 3=P2tog, 4=P2op) → header col-space (0=sync, 1=P1, 2=P2)
-            if from_col == 1 or from_col == 2 then
-                menu_nav.column = 1          -- P1 side → P1 header
-            elseif from_col == 3 or from_col == 4 then
-                menu_nav.column = 2          -- P2 side → P2 header
-            end
-            -- from_col==0 (sync) stays at 0 (only reachable if coming from the sync col in some edge case)
-
-        elseif coming_from_header then
-            -- Map header col-space → row col-space (always land on a toggle column)
-            if from_col == 0 or from_col == 1 then
-                menu_nav.column = 1          -- sync or P1 header → P1 toggle
-            elseif from_col == 2 then
-                menu_nav.column = 3          -- P2 header → P2 toggle
-            end
-
-        else
-            -- Row → row: preserve player side, but check opacity availability
-            if from_col == 2 or from_col == 4 then
-                if opacity_available(menu_nav.selected, from_col) then
-                    menu_nav.column = from_col
-                else
-                    menu_nav.column = (from_col == 2) and 1 or 3
-                end
-            end
-            -- from_col 1 or 3 (toggle columns) carry over unchanged
-        end
-    end
-
-    if trig_dy ~= 0 then
-        move_vertical(trig_dy)
-        menu_nav.rep_timer = 0
-    elseif held_dy ~= 0 then
-        menu_nav.rep_timer = menu_nav.rep_timer + 1
-        if menu_nav.rep_timer >= menu_nav.REP_DELAY then
-            menu_nav.rep_timer = menu_nav.REP_DELAY - menu_nav.REP_RATE
-            move_vertical(held_dy)
-        end
-    else
-        menu_nav.rep_timer = 0
-    end
-
-    -- ── Horizontal movement / slider activation ──────────────────────────────
-    -- Column layout:
-    --   Header row:  0=sync, 1=P1_header, 2=P2_header
-    --   Toggle rows: 1=P1_toggle, 2=P1_opacity, 3=P2_toggle, 4=P2_opacity
-    local trig_dx = (_nav_btn_trig(NAV_LEFT) and -1 or _nav_btn_trig(NAV_RIGHT) and 1 or 0)
-    if trig_dx == 0 and axis_dx_trig then trig_dx = axis_dx end
-    if trig_dx ~= 0 then
-        if menu_nav.selected == 0 then
-            -- Header row: cycle sync(0) → P1(1) → P2(2) → sync(0)
-            menu_nav.column = (menu_nav.column + trig_dx) % 3
-        else
-            local row = build.toggle.rows_list[menu_nav.selected]
-            local col = menu_nav.column
-
-            -- Navigate 4-column layout: P1_toggle(1) ↔ P1_opacity(2)  /  P2_toggle(3) ↔ P2_opacity(4)
-            -- Moving right from P1_opacity goes to P2_toggle, left from P2_toggle goes to P1_opacity
-            local col_order = {1, 2, 3, 4}
-            local col_pos = ({[1]=1,[2]=2,[3]=3,[4]=4})[col] or 1
-            local new_col_pos = math.max(1, math.min(4, col_pos + trig_dx))
-            local new_col = col_order[new_col_pos]
-
-            -- Check whether the target opacity column actually has a slider to navigate to
-            local function has_slider(player_col)
-                local cfg = (player_col == 1 or player_col == 2) and state.config.p1 or state.config.p2
-                return row and row[3] and cfg
-                    and cfg.toggle[row[2]]
-                    and cfg.opacity[row[3]] ~= nil
-            end
-
-            if (new_col == 2 or new_col == 4) and not has_slider(new_col) then
-                -- Skip opacity column if no slider exists
-                if trig_dx == 1 and new_col == 2 then new_col = 3       -- P1 opacity → P2 toggle
-                elseif trig_dx == -1 and new_col == 2 then new_col = 1  -- already leftmost
-                elseif trig_dx == 1 and new_col == 4 then new_col = 4   -- already rightmost
-                elseif trig_dx == -1 and new_col == 4 then new_col = 3  -- P2 opacity → P2 toggle
-                end
-            end
-
-            -- Just move the cursor; slider activation requires an explicit A press
-            menu_nav.column        = new_col
-            menu_nav.slider_active = false
-            menu_nav.slider_orig   = nil
-        end
-    end
-
-    if menu_nav.selected ~= prev_sel or menu_nav.column ~= prev_col then
-        menu_nav.just_moved = true
-    end
-
-    -- ── A: activate slider / toggle checkbox ─────────────────────────────────
-    if _nav_btn_trig(a_mask) then
-        if menu_nav.selected == 0 then
-            if menu_nav.column == 0 then
-                state.sync_enabled = not state.sync_enabled
-            elseif menu_nav.column == 1 then
-                local new_val = not state.config.p1.toggle.toggle_show
-                state.config.p1.toggle.toggle_show = new_val
-                if state.sync_enabled then
-                    state.config.p2.toggle.toggle_show = new_val
-                end
-                mark_for_save()
-            elseif menu_nav.column == 2 then
-                local new_val = not state.config.p2.toggle.toggle_show
-                state.config.p2.toggle.toggle_show = new_val
-                if state.sync_enabled then
-                    state.config.p1.toggle.toggle_show = new_val
-                end
-                mark_for_save()
-            end
-        else
-            local row = build.toggle.rows_list[menu_nav.selected]
-            if row then
-                local on_p1 = (menu_nav.column == 1 or menu_nav.column == 2)
-                local cfg = on_p1 and state.config.p1 or state.config.p2
-
-                if (menu_nav.column == 2 or menu_nav.column == 4) then
-                    -- On an opacity column: A activates slider-edit mode
-                    if cfg and row[3] and cfg.opacity[row[3]] ~= nil
-                       and cfg.toggle[row[2]] then
-                        menu_nav.slider_active = true
-                        menu_nav.slider_orig   = cfg.opacity[row[3]]
-                        menu_nav.slider_rep    = 0
-                    end
-                else
-                    -- On a toggle column: A toggles the checkbox and syncs
-                    local toggle_key = row[2]
-                    if cfg and cfg.toggle[toggle_key] ~= nil then
-                        local new_val = not cfg.toggle[toggle_key]
-                        cfg.toggle[toggle_key] = new_val
-                        if state.sync_enabled then
-                            local other = on_p1 and state.config.p2 or state.config.p1
-                            other.toggle[toggle_key] = new_val
-                        end
-                        mark_for_save()
-                    end
-                end
-            end
-        end
-    end
-
-    -- ── LB / RB: previous / next preset ─────────────────────────────────────
-    local lb = (hk and hk.buttons and hk.buttons["LB (L1)"]) or 0
-    local rb = (hk and hk.buttons and hk.buttons["RB (R1)"]) or 0
-    if lb ~= 0 and _nav_btn_trig(lb) then load_previous_preset() end
-    if rb ~= 0 and _nav_btn_trig(rb) then load_next_preset() end
-
-    -- ── B: exit nav ──────────────────────────────────────────────────────────
-    if _nav_btn_trig(b_mask) then
-        menu_nav.active = false
-        state.menu_window_focused = false
-    end
+    -- ── Slider editing mode (no gamepad/keyboard delta; mouse drag handles it) ─
+    if menu_nav.slider_active then return end
+    -- (No gamepad/keyboard movement — mouse hover drives selected/column.)
 end
 
 -- build.toggle functions
 
 function build.toggle.sync_button()
-    local is_nav_on_sync = menu_nav.active and menu_nav.selected == 0 and menu_nav.column == 0
-    local btn_label = state.sync_enabled and "Syncing Changes##sync_btn" or "Sync P1/P2 Changes##sync_btn"
+    -- Use a dedicated "sync" section so is_hov("header") on the P1/P2 header row
+    -- never fires when the sync row is the one that is nav-selected.
+    local is_nav_on_sync   = is_hov("sync")
+    local was_sync_enabled = state.sync_enabled
+    local sync_hk     = hk.hotkeys["hotkeys_toggle_sync"]
+    local sync_hk_str = (sync_hk and sync_hk ~= "[Not Bound]") and " (" .. hk.get_button_string("hotkeys_toggle_sync") .. ")" or ""
+    local btn_label   = was_sync_enabled and ("Syncing Changes" .. sync_hk_str .. "##sync_btn") or ("Sync P1/P2 Changes" .. sync_hk_str .. "##sync_btn")
 
-    if state.sync_enabled then imgui.begin_rect() end
-    if is_nav_on_sync     then imgui.begin_rect() end
+    -- Style colours are mutually exclusive per state so we track push count.
+    local n_colors = 0
+    if was_sync_enabled then
+        -- Active-sync state: gold button face + double-border active indicator.
+        imgui.push_style_color(IC_BUTTON,     C_NAV_FRAME)
+        imgui.push_style_color(IC_BUTTON_HOV, C_NAV_HOV)
+        n_colors = 2
+        imgui.begin_rect()  -- paired with end_rect(1)
+        imgui.begin_rect()  -- paired with end_rect(3)
+    elseif is_nav_on_sync then
+        -- Nav-selected (not yet enabled): gold button face, matching table row bg.
+        imgui.push_style_color(IC_BUTTON,     C_NAV_FRAME)
+        imgui.push_style_color(IC_BUTTON_HOV, C_NAV_HOV)
+        n_colors = 2
+    end
+    -- Single border for any nav-on-sync state (enabled or just selected).
+    if is_nav_on_sync then imgui.begin_rect() end  -- paired with end_rect(2)
 
-    if imgui.button(btn_label, {0, 0}) then
+    if imgui.button(btn_label, {-1, 0}) then
         state.sync_enabled = not state.sync_enabled
     end
 
-    -- Hover → update nav position (mouse and controller stay in sync)
-    if imgui.is_item_hovered() and not menu_nav.slider_active then
-        menu_nav.selected = 0
-        menu_nav.column   = 0
+    if imgui.is_item_hovered() then
+        set_hov("sync", nil, nil)
     end
 
-    if is_nav_on_sync     then imgui.end_rect(2) end
-    if state.sync_enabled then imgui.end_rect(1) end
+    if is_nav_on_sync   then imgui.end_rect(2) end
+    if was_sync_enabled then
+        imgui.end_rect(1)
+        imgui.end_rect(3)
+    end
+    if n_colors > 0 then imgui.pop_style_color(n_colors) end
 end
 
 function build.toggle.column_header_sync()
-    if not (state.config.p1.toggle.toggle_show or state.config.p2.toggle.toggle_show) then
-        imgui.text("Show Hidden Elements:")
-        return
-    end
-
+    -- Always show the Sync button regardless of toggle state.
     build.toggle.sync_button()
 end
 
@@ -2412,44 +2401,84 @@ end
 function build.toggle.opacity_slider(label, val, speed, min, max)
     val = math.max(0, math.min(100, val))
     local changed, new_val = imgui.drag_int(label, val, speed or 1.0, min or 0, max or 100)
-    if changed then mark_for_save() end
+    if changed then
+        new_val = math.max(0, math.min(100, new_val))
+        mark_for_save()
+    end
     return changed, new_val
 end
 
-local function handle_toggle_column_header_player_notify(changed, player_str)
+local function handle_toggle_column_header_player_notify(changed, player_str, new_val)
     if not changed then return end
-    action_notify(player_str .. " Hitboxes " .. (state.config.p1.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
+    action_notify(player_str .. " Hitboxes " .. (new_val and "Enabled" or "Disabled"), "alert_on_toggle")
 end
 
-function build.toggle.column_header_player(label, id, conf, nav_col)
-    local is_nav = menu_nav.active and menu_nav.selected == 0 and menu_nav.column == nav_col
-    if is_nav then imgui.begin_rect() end
-    imgui.text(label)
-    imgui.same_line()
-    local cursor = imgui.get_cursor_pos()
-    local changed
-    imgui.set_cursor_pos(Vector2f.new(cursor.x + 20, cursor.y))
-    changed, conf = build.checkbox(id, conf)
-    -- Hover → update nav position
-    if imgui.is_item_hovered() and not menu_nav.slider_active then
-        menu_nav.selected = 0
-        menu_nav.column   = nav_col
+function build.toggle.column_header_player(label, id, player_key, nav_col)
+    local conf = state.config[player_key].toggle.toggle_show
+
+    -- Real-time column X check: only show widget highlight when mouse is in this column.
+    local col_x = imgui.get_cursor_pos().x
+    local win_x = state.menu_window_pos and state.menu_window_pos.x or 0
+    local mx    = imgui.get_mouse().x - win_x
+    local is_mouse_in_col = mx >= col_x - 4 and mx < col_x + 170
+    local is_highlighted = is_hov("header", nil, nav_col) and is_mouse_in_col
+
+    if is_highlighted then
+        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+        imgui.push_style_color(IC_CHECKMARK, C_NAV_MARK)
+        imgui.begin_rect()
+        imgui.begin_rect()
     end
-    if is_nav then imgui.end_rect(2) end
-    handle_toggle_column_header_player_notify(changed, label)
+
+    -- Checkbox first, at the natural column position, so it aligns with the
+    -- checkboxes in the rows below.  Label text follows to the right.
+    local changed, new_val
+    changed, new_val = build.checkbox(id, conf)
+    if changed then
+        state.config[player_key].toggle.toggle_show = new_val
+        build.on_sync(function()
+            local other_key = (player_key == "p1") and "p2" or "p1"
+            state.config[other_key].toggle.toggle_show = new_val
+        end, true)
+    end
+    if imgui.is_item_hovered() then
+        set_hov("header", nil, nav_col)
+        local hk_action = "hotkeys_toggle_" .. player_key
+        local hk_key = hk.hotkeys[hk_action]
+        if hk_key and hk_key ~= "[Not Bound]" then
+            imgui.set_tooltip("Toggle " .. label .. " (" .. hk.get_button_string(hk_action) .. ")")
+        end
+    end
+
+    imgui.same_line()
+    imgui.text(label)
+    if imgui.is_item_hovered() then set_hov("header", nil, nav_col) end
+
+    if is_highlighted then
+        imgui.end_rect(1)
+        imgui.end_rect(3)
+        imgui.pop_style_color(3)
+    end
+
+    handle_toggle_column_header_player_notify(changed, label, new_val)
 end
 
 function build.toggle.column_headers()
     imgui.table_next_row()
+    local row_y = imgui.get_cursor_pos().y
 
-    imgui.table_set_column_index(0)
-    build.toggle.column_header_sync()
+    if is_hov("header") then
+        imgui.table_set_bg_color(2, C_NAV_FRAME)
+    end
+
+    -- column 0 intentionally blank; Sync button lives above the table
 
     imgui.table_set_column_index(1)
     build.toggle.column_header_player(
         "P1",
         "##p1_HideAllHeader",
-        state.config.p1.toggle.toggle_show,
+        "p1",
         1
     )
 
@@ -2457,46 +2486,73 @@ function build.toggle.column_headers()
     build.toggle.column_header_player(
         "P2",
         "##p2_HideAllHeader",
-        state.config.p2.toggle.toggle_show,
+        "p2",
         2
     )
+
+    row_hover_check(row_y, "header", nil)
 end
 
 function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, toggle_key, opacity_key, row_idx)
     if not visible then return end
     imgui.table_set_column_index(player_index)
 
+    -- Real-time mouse X check: suppress widget-level highlight when the mouse is
+    -- not actually in this player's column, eliminating the one-frame hov_prev lag.
+    -- get_cursor_pos() returns window-local coords; get_mouse() returns screen coords.
+    local col_x = imgui.get_cursor_pos().x
+    local win_x = state.menu_window_pos and state.menu_window_pos.x or 0
+    local mx    = imgui.get_mouse().x - win_x
+    -- Span covers checkbox (~20px) + spacing + optional 70px slider + cell padding.
+    local is_mouse_in_col = mx >= col_x - 4 and mx < col_x + 170
+
     -- 4-column nav scheme: P1 toggle=1, P1 opacity=2, P2 toggle=3, P2 opacity=4
     local toggle_col_nav  = player_index == 1 and 1 or 3
     local opacity_col_nav = player_index == 1 and 2 or 4
 
-    local is_toggle_nav = menu_nav.active
-                       and menu_nav.selected == (row_idx or -1)
-                       and menu_nav.column   == toggle_col_nav
+    -- The OTHER player's matching nav columns — used for sync-mirror highlight.
+    local other_toggle_col_nav  = player_index == 1 and 3 or 1
+    local other_opacity_col_nav = player_index == 1 and 4 or 2
 
-    local is_opacity_nav = menu_nav.active
-                        and menu_nav.selected == (row_idx or -1)
-                        and menu_nav.column   == opacity_col_nav
+    -- Direct hover: only active when mouse is in this column.
+    local is_toggle_nav  = is_hov("toggle", row_idx, toggle_col_nav)  and is_mouse_in_col
+    local is_opacity_nav = is_hov("toggle", row_idx, opacity_col_nav) and is_mouse_in_col
+
+    -- Sync-mirror: cursor is on the OTHER player's matching cell and sync is live.
+    -- No column check here — mirrors intentionally highlight across columns.
+    local is_sync_mirror_toggle  = state.sync_enabled and is_hov("toggle", row_idx, other_toggle_col_nav)
+    local is_sync_mirror_opacity = state.sync_enabled and is_hov("toggle", row_idx, other_opacity_col_nav)
 
     -- ── Checkbox ─────────────────────────────────────────────────────────────
     if is_toggle_nav then
+        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+        imgui.push_style_color(IC_CHECKMARK, C_NAV_MARK)
+        imgui.begin_rect()
+        imgui.begin_rect()
+    elseif is_sync_mirror_toggle then
         imgui.begin_rect()
         imgui.begin_rect()
     end
 
     local id = string.format("##p%.0f_", player_index) .. toggle_key
-    local changed
-    changed, toggle_tbl[toggle_key] = build.checkbox(id, toggle_tbl[toggle_key])
+    local _raw_chg, _raw_val = imgui.checkbox(id, toggle_tbl[toggle_key])
+    if _raw_chg then
+        toggle_tbl[toggle_key] = _raw_val
+        mark_for_save()
+    end
 
-    -- Hover → update nav position
-    if imgui.is_item_hovered() and not menu_nav.slider_active then
-        menu_nav.selected = row_idx or -1
-        menu_nav.column   = toggle_col_nav
+    if imgui.is_item_hovered() then
+        set_hov("toggle", row_idx, toggle_col_nav)
     end
 
     if is_toggle_nav then
         imgui.end_rect(1)
-        imgui.end_rect(2)
+        imgui.end_rect(3)
+        imgui.pop_style_color(3)
+    elseif is_sync_mirror_toggle then
+        imgui.end_rect(1)
+        imgui.end_rect(3)
     end
 
     -- ── Opacity slider ────────────────────────────────────────────────────────
@@ -2507,23 +2563,21 @@ function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, tog
 
     if has_slider then
         imgui.push_item_width(70); imgui.same_line()
-        local opacity_id     = string.format("##p%.0f_", player_index) .. opacity_key .. "Opacity"
-        local is_slider_edit = is_opacity_nav and menu_nav.slider_active
+        local opacity_id = string.format("##p%.0f_", player_index) .. opacity_key .. "Opacity"
 
-        if is_slider_edit then
-            -- Triple nested: very prominent "actively editing" state
+        if is_opacity_nav then
+            imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
+            imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
             imgui.begin_rect()
             imgui.begin_rect()
-            imgui.begin_rect()
-        elseif is_opacity_nav then
-            -- Double rect: slider is accessible
+        elseif is_sync_mirror_opacity then
             imgui.begin_rect()
             imgui.begin_rect()
         end
 
         local op_changed, new_val = imgui.drag_int(opacity_id, opacity_tbl[opacity_key], 0.5, 0, 100)
-        -- Only auto-save from mouse drag; nav-slider edits are saved explicitly via A
-        if op_changed and not is_slider_edit then
+        if op_changed then
+            new_val = math.max(0, math.min(100, new_val))
             opacity_tbl[opacity_key] = new_val
             mark_for_save()
             build.on_sync(function()
@@ -2532,19 +2586,20 @@ function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, tog
             end, op_changed)
         end
 
-        -- Hover → update nav position (but don't override active slider)
-        if imgui.is_item_hovered() and not menu_nav.slider_active then
-            menu_nav.selected = row_idx or -1
-            menu_nav.column   = opacity_col_nav
+        if imgui.is_item_active() then
+            state.slider_mouse_active_this_frame = true
+            set_hov("toggle", row_idx, opacity_col_nav)
+        elseif imgui.is_item_hovered() then
+            set_hov("toggle", row_idx, opacity_col_nav)
         end
 
         imgui.pop_item_width()
 
-        if is_slider_edit then
-            imgui.end_rect(1)
+        if is_opacity_nav then
             imgui.end_rect(2)
             imgui.end_rect(1)
-        elseif is_opacity_nav then
+            imgui.pop_style_color(2)
+        elseif is_sync_mirror_opacity then
             imgui.end_rect(2)
             imgui.end_rect(1)
         end
@@ -2556,17 +2611,17 @@ function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, tog
         if not opacity_key then return end
         local other_opacity = (player_index == 1) and state.config.p2.opacity or state.config.p1.opacity
         other_opacity[opacity_key] = opacity_tbl[opacity_key]
-    end, changed)
+    end, _raw_chg)
 end
 
 function build.toggle.columns(label, toggle_key, opacity_key, row_idx)
+    if is_hov("toggle", row_idx) then
+        imgui.table_set_bg_color(2, C_NAV_FRAME)
+    end
     imgui.table_set_column_index(0)
-    -- Highlight row label whenever any column on this row is active
-    if menu_nav.active and menu_nav.selected == (row_idx or 0)
-       and menu_nav.column >= 1 and menu_nav.column <= 4 then
-        imgui.text_colored("-> " .. label, 0xFFFFD040)
-    else
-        imgui.text(label)
+    imgui.text(label)
+    if imgui.is_item_hovered() then
+        set_hov("toggle", row_idx, nil)
     end
 
     build.toggle.column(1,
@@ -2584,7 +2639,9 @@ end
 
 function build.toggle.row(label, toggle_key, opacity_key, row_idx)
     imgui.table_next_row()
+    local row_y = imgui.get_cursor_pos().y
     build.toggle.columns(label, toggle_key, opacity_key, row_idx)
+    row_hover_check(row_y, "toggle", row_idx)
 end
 
 function build.toggle.handle_toggle_all(toggle_tbl, player_index, all_checked)
@@ -2597,22 +2654,51 @@ function build.toggle.handle_toggle_all(toggle_tbl, player_index, all_checked)
         for k, _ in pairs(other) do
             other[k] = k == "toggle_show" or all_checked
         end
-    end)
+    end, true)
 
     mark_for_save()
 end
 
-function build.toggle.all_click_toggle(toggle_tbl, player_index, checked)
+function build.toggle.all_click_toggle(toggle_tbl, player_index, checked, row_idx, is_mouse_in_col)
+    local toggle_col_nav = player_index == 1 and 1 or 3
+    local is_toggle_nav  = is_hov("toggle", row_idx, toggle_col_nav) and (is_mouse_in_col ~= false)
+
+    if is_toggle_nav then
+        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+        imgui.push_style_color(IC_CHECKMARK, C_NAV_MARK)
+        imgui.begin_rect()
+        imgui.begin_rect()
+    end
+
     local changed
     changed, checked = build.checkbox("##p"..player_index.."_ToggleAll", checked)
-    if not changed then return end
 
+    if imgui.is_item_hovered() then
+        set_hov("toggle", row_idx, toggle_col_nav)
+    end
+
+    if is_toggle_nav then
+        imgui.end_rect(1)
+        imgui.end_rect(3)
+        imgui.pop_style_color(3)
+    end
+
+    if not changed then return end
     build.toggle.handle_toggle_all(toggle_tbl, player_index, checked)
 end
 
-function build.toggle.player_toggle_all(player_index, toggle_tbl, opacity_tbl)
+function build.toggle.player_toggle_all(player_index, toggle_tbl, opacity_tbl, row_idx)
     if not toggle_tbl.toggle_show then return end
     imgui.table_set_column_index(player_index)
+
+    -- Real-time column X check shared by the checkbox and opacity slider below.
+    local col_x = imgui.get_cursor_pos().x
+    local win_x = state.menu_window_pos and state.menu_window_pos.x or 0
+    local mx    = imgui.get_mouse().x - win_x
+    local is_mouse_in_col = mx >= col_x - 4 and mx < col_x + 170
+
+    local opacity_col_nav = player_index == 1 and 2 or 4
 
     local checked
     for k, v in pairs(toggle_tbl) do
@@ -2620,7 +2706,7 @@ function build.toggle.player_toggle_all(player_index, toggle_tbl, opacity_tbl)
         if checked then break end
     end
 
-    build.toggle.all_click_toggle(toggle_tbl, player_index, checked)
+    build.toggle.all_click_toggle(toggle_tbl, player_index, checked, row_idx, is_mouse_in_col)
     if not checked then return end
 
     imgui.push_item_width(70); imgui.same_line()
@@ -2631,9 +2717,32 @@ function build.toggle.player_toggle_all(player_index, toggle_tbl, opacity_tbl)
         if all_same then break end
     end
 
+    local is_opacity_nav = is_hov("toggle", row_idx, opacity_col_nav) and is_mouse_in_col
+
+    if is_opacity_nav then
+        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+        imgui.begin_rect()
+        imgui.begin_rect()
+    end
+
     local changed
     local current = (all_same and first) or 50
     changed, current = build.toggle.opacity_slider("##p"..player_index.."_GlobalOpacity", current, 0.5, 0, 100)
+
+    if imgui.is_item_active() then
+        state.slider_mouse_active_this_frame = true
+        set_hov("toggle", row_idx, opacity_col_nav)
+    elseif imgui.is_item_hovered() then
+        set_hov("toggle", row_idx, opacity_col_nav)
+    end
+
+    if is_opacity_nav then
+        imgui.end_rect(2)
+        imgui.end_rect(1)
+        imgui.pop_style_color(2)
+    end
+
     imgui.pop_item_width()
 
     if not changed then return end
@@ -2645,18 +2754,32 @@ function build.toggle.player_toggle_all(player_index, toggle_tbl, opacity_tbl)
     build.on_sync(function()
         local other = (player_index == 1) and state.config.p2.opacity or state.config.p1.opacity
         for k, _ in pairs(other) do other[k] = current end
-    end)
+    end, changed)
 
     mark_for_save()
 end
 
 function build.toggle.all_row()
+    local row_idx = #build.toggle.rows_list + 1
+
     imgui.table_next_row()
+    local row_y = imgui.get_cursor_pos().y
+
+    if is_hov("toggle", row_idx) then
+        imgui.table_set_bg_color(2, C_NAV_FRAME)
+    end
+
     imgui.table_set_column_index(0)
     imgui.text("All")
-    build.toggle.player_toggle_all(1, state.config.p1.toggle, state.config.p1.opacity)
+    if imgui.is_item_hovered() then
+        set_hov("toggle", row_idx, nil)
+    end
+
+    build.toggle.player_toggle_all(1, state.config.p1.toggle, state.config.p1.opacity, row_idx)
     imgui.table_set_column_index(2)
-    build.toggle.player_toggle_all(3, state.config.p2.toggle, state.config.p2.opacity)
+    build.toggle.player_toggle_all(3, state.config.p2.toggle, state.config.p2.opacity, row_idx)
+
+    row_hover_check(row_y, "toggle", row_idx)
 end
 
 build.toggle.rows_list = {
@@ -2692,6 +2815,9 @@ function build.toggle.rows()
 end
 
 function build.toggle.table()
+    -- Full-width Sync button row rendered above the table (always visible).
+    build.toggle.sync_button()
+
     imgui.set_next_item_open(true, 1 << 3)
     if not imgui.begin_table("ToggleTable", 4) then return end
     build.setup_columns({160, 100, 30, 125}, nil, {"", "P1", "", "P2"})
@@ -2703,8 +2829,15 @@ end
 -- build.preset functions
 
 function build.preset.rename_input(preset_name)
+    local highlighted = is_hov("preset", preset_name, 5)
+    if highlighted then
+        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+    end
     local changed
     changed, state.rename_temp_name = imgui.input_text("##rename_" .. preset_name, state.rename_temp_name, 32)
+    if imgui.is_item_hovered() then set_hov("preset", preset_name, 5) end
+    if highlighted then imgui.pop_style_color(2) end
 	if changed then mark_for_save() end
 end
 
@@ -2721,68 +2854,97 @@ function build.preset.name_with_color(preset_name)
 	imgui.text_colored(preset_name, color)
 end
 
+-- Renders a button with C_NAV_FRAME highlight when it was hovered last frame,
+-- records hover into hov_cur, and returns click state.
+local function preset_hov_button(label, preset_name, col)
+    local is_highlighted = is_hov("preset", preset_name, col)
+    if is_highlighted then
+        imgui.push_style_color(IC_BUTTON,     C_NAV_FRAME)
+        imgui.push_style_color(IC_BUTTON_HOV, C_NAV_HOV)
+    end
+
+    local clicked = imgui.button(label, {0, 0})
+
+    if imgui.is_item_hovered() then
+        set_hov("preset", preset_name, col)
+    end
+
+    if is_highlighted then imgui.pop_style_color(2) end
+    return clicked
+end
+
 function build.preset.name_column(preset_name)
     imgui.table_set_column_index(0)
 
     if state.rename_mode == preset_name then
         build.preset.rename_input(preset_name)
-		return
-	end
-	
-	build.preset.name_with_color(preset_name)
+        return
+    end
+
+    build.preset.name_with_color(preset_name)
+    if imgui.is_item_hovered() then
+        set_hov("preset", preset_name, 0)
+    end
 end
 
 function build.preset.action_column(preset_name)
     imgui.table_set_column_index(1)
 
     if state.rename_mode == preset_name then
-        if imgui.button("Rename##conf_" .. preset_name, {0, 0}) then save_rename(preset_name) end
+        if preset_hov_button("Rename##conf_" .. preset_name, preset_name, 1) then save_rename(preset_name) end
     elseif is_disabled_state() or preset_name ~= state.current_preset_name then
-        if imgui.button("Load##load_" .. preset_name, {0, 0}) then switch_preset(preset_name) end
+        if preset_hov_button("Load##load_" .. preset_name, preset_name, 1) then switch_preset(preset_name) end
     end
 end
 
 function build.preset.rename_column(preset_name)
-	imgui.table_set_column_index(2)
+    imgui.table_set_column_index(2)
 
     if state.rename_mode == preset_name then
-        if imgui.button("Cancel##canc_" .. preset_name, {0, 0}) then cancel_rename_mode() end
-		return
-	end
-	if imgui.button("Rename##ren_" .. preset_name, {0, 0}) then start_rename_mode(preset_name) end
+        if preset_hov_button("Cancel##canc_" .. preset_name, preset_name, 2) then cancel_rename_mode() end
+        return
+    end
+    if preset_hov_button("Rename##ren_" .. preset_name, preset_name, 2) then start_rename_mode(preset_name) end
 end
 
 function build.preset.duplicate_column(preset_name)
     imgui.table_set_column_index(3)
 
     if state.rename_mode == preset_name then return end
-	if imgui.button("Duplicate##dup_" .. preset_name, {0, 0}) then duplicate_preset(preset_name) end
+    if preset_hov_button("Duplicate##dup_" .. preset_name, preset_name, 3) then duplicate_preset(preset_name) end
 end
 
 function build.preset.delete_column(preset_name)
     imgui.table_set_column_index(4)
 
     if state.rename_mode == preset_name then return end
-	if state.delete_confirm_name ~= preset_name then
-		if imgui.button("Delete##del_" .. preset_name, {0, 0}) then start_delete_confirm(preset_name) end
-		return
-	end
-	
-	if imgui.button("Delete?##del_" .. preset_name, {0, 0}) then
-		delete_preset(preset_name)
-		state.delete_confirm_name = false
-	elseif imgui.is_mouse_clicked(0) and not imgui.is_item_hovered() then
-		state.delete_confirm_name = false
-	end
+    if state.delete_confirm_name ~= preset_name then
+        if preset_hov_button("Delete##del_" .. preset_name, preset_name, 4) then start_delete_confirm(preset_name) end
+        return
+    end
+
+    if preset_hov_button("Delete?##del_" .. preset_name, preset_name, 4) then
+        delete_preset(preset_name)
+        state.delete_confirm_name = false
+    elseif imgui.is_mouse_clicked(0) and not imgui.is_item_hovered() then
+        state.delete_confirm_name = false
+    end
 end
 
 function build.preset.row(preset_name)
     imgui.table_next_row()
+    local row_y = imgui.get_cursor_pos().y
+
+    if is_hov("preset", preset_name) then
+        imgui.table_set_bg_color(2, C_NAV_FRAME)
+    end
+
     build.preset.name_column(preset_name)
     build.preset.action_column(preset_name)
     build.preset.rename_column(preset_name)
     build.preset.duplicate_column(preset_name)
     build.preset.delete_column(preset_name)
+    row_hover_check(row_y, "preset", preset_name)
 end
 
 function build.preset.rows()
@@ -2801,14 +2963,14 @@ end
 
 function build.preset.nav_switcher()
     imgui.same_line()
-    if imgui.button("<", {20, 0}) then load_previous_preset() end
+    if treerow_hov_button("<", "Presets", 1, {20, 0}) then load_previous_preset() end
     if imgui.is_item_hovered() then
-        imgui.set_tooltip("Previous (Ctrl + Left Arrow)")
+        imgui.set_tooltip("Previous (" .. hk.get_button_string("hotkeys_prev_preset") .. ")")
     end
     imgui.same_line()
-    if imgui.button(">", {20, 0}) then load_next_preset() end
+    if treerow_hov_button(">", "Presets", 2, {20, 0}) then load_next_preset() end
     if imgui.is_item_hovered() then
-        imgui.set_tooltip("Next (Ctrl + Right Arrow)")
+        imgui.set_tooltip("Next (" .. hk.get_button_string("hotkeys_next_preset") .. ")")
     end
 end
 
@@ -2816,14 +2978,16 @@ function build.preset.nav_status()
     if state.current_preset_name == "" then return end
     imgui.same_line()
     imgui.text("Current: ")
+    if imgui.is_item_hovered() then set_hov("treerow", "Presets", nil) end
     imgui.same_line()
     build.preset.name_with_color(state.current_preset_name)
+    if imgui.is_item_hovered() then set_hov("treerow", "Presets", nil) end
 end
 
 function build.preset.nav_reload_button()
     if not is_disabled_state() or state.current_preset_name == "" or not state.presets[state.current_preset_name] then return end
     imgui.same_line()
-    if imgui.button("Reload##reload_nav") then
+    if treerow_hov_button("Reload##reload_nav", "Presets", 5) then
         load_preset(state.current_preset_name)
         action_notify("Reloaded Preset " .. state.current_preset_name, "alert_on_presets")
     end
@@ -2834,20 +2998,21 @@ function build.preset.nav_save_buttons()
     if is_disabled_state() then return end
     if preset_has_unsaved_changes() then
         imgui.same_line()
-        if imgui.button("Save##save_nav") then save_current_preset(state.current_preset_name) end
+        if treerow_hov_button("Save##save_nav", "Presets", 3) then save_current_preset(state.current_preset_name) end
         if imgui.is_item_hovered() then imgui.set_tooltip("Save Changes (Ctrl + Space)") end
         imgui.same_line()
-        if imgui.button("x##disc_nav") then
+        if treerow_hov_button("x##disc_nav", "Presets", 4) then
             load_preset(state.current_preset_name)
             action_notify("Changes Discarded", "alert_on_presets")
         end
+        if imgui.is_item_hovered() then imgui.set_tooltip("Discard Changes (" .. hk.get_button_string("hotkeys_discard_preset") .. ")") end
     end
 end
 
 function build.preset.nav_new_button()
     if is_disabled_state() or not preset_has_unsaved_changes() then
         imgui.same_line()
-        if imgui.button("New##create_new") then start_create_new_mode() end
+        if treerow_hov_button("New##create_new", "Presets", 6) then start_create_new_mode() end
     end
 end
 
@@ -2861,19 +3026,26 @@ function build.preset.nav()
 end
 
 function build.preset.create_name_input()
+    local highlighted = is_hov("treerow", "Presets", 7)
+    if highlighted then
+        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+    end
     local changed
     changed, state.new_preset_name = imgui.input_text("##preset_name", state.new_preset_name)
+    if imgui.is_item_hovered() then set_hov("treerow", "Presets", 7) end
+    if highlighted then imgui.pop_style_color(2) end
 end
 
 function build.preset.create_buttons()
     if state.new_preset_name == "" then
-        if imgui.button("New##new_blank") then create_new_blank_preset() end
+        if treerow_hov_button("New##new_blank", "Presets", 3) then create_new_blank_preset() end
         imgui.same_line()
-        if imgui.button("Cancel##cancel_blank") then cancel_blank_preset() end
+        if treerow_hov_button("Cancel##cancel_blank", "Presets", 4) then cancel_blank_preset() end
     else
-        if imgui.button("Create##save_new") then save_new_preset() end
+        if treerow_hov_button("Create##save_new", "Presets", 3) then save_new_preset() end
         imgui.same_line()
-        if imgui.button("x##cancel_new") then cancel_new_preset() end
+        if treerow_hov_button("x##cancel_new", "Presets", 4) then cancel_new_preset() end
     end
 end
 
@@ -2881,6 +3053,7 @@ function build.preset.creator()
     if not state.create_new_mode then return end
     imgui.same_line()
     imgui.text("New:")
+    if imgui.is_item_hovered() then set_hov("treerow", "Presets", nil) end
     imgui.push_item_width(100); imgui.same_line()
     build.preset.create_name_input()
     imgui.pop_item_width(); imgui.same_line()
@@ -2893,11 +3066,19 @@ end
 
 function build.preset.menu()
     imgui.unindent(10)
-    if not build.tree_node_stateful("Presets", true) then
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Presets")
+    local preset_open = build.tree_node_stateful("Presets", true)
+    -- Register hover on the tree-node label itself so the row highlights even
+    -- when the mouse is over the "Presets" text rather than a button or widget.
+    if imgui.is_item_hovered() then set_hov("treerow", "Presets", nil) end
+    if not preset_open then
         build.preset.display()
+        row_hover_check(row_y, "treerow", "Presets")
         return
     end
     build.preset.display()
+    row_hover_check(row_y, "treerow", "Presets")
     build.preset.table()
     imgui.tree_pop()
 end
@@ -2905,7 +3086,13 @@ end
 -- build.backup functions (merged Backup/Reset)
 
 function build.backup.menu()
-    if not build.tree_node_stateful("Backup/Reset") then return end
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Backup/Reset")
+    if not build.tree_node_stateful("Backup/Reset") then
+        row_hover_check(row_y, "treerow", "Backup/Reset")
+        return
+    end
+    row_hover_check(row_y, "treerow", "Backup/Reset")
     build.option.reset()
     build.option.backup()
     imgui.tree_pop()
@@ -2915,40 +3102,47 @@ end
 
 function build.option.copy_rows()
     imgui.same_line(); imgui.spacing(); imgui.same_line()
-    if imgui.button("P1 to P2##p1_to_p2", {nil, 16}) then
+    if treerow_hov_button("P1 to P2##p1_to_p2", "Copy", 1, {0, 0}) then
         state.config.p2 = deep_copy(state.config.p1)
     end
     imgui.same_line(); imgui.spacing(); imgui.same_line()
-    if imgui.button("P2 to P1##p2_to_p1", {nil, 16}) then
+    if treerow_hov_button("P2 to P1##p2_to_p1", "Copy", 2, {0, 0}) then
         state.config.p1 = deep_copy(state.config.p2)
     end
 end
 
 function build.option.copy()
-    if not build.tree_node_stateful("Copy") then return end
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Copy")
+    if not build.tree_node_stateful("Copy") then
+        row_hover_check(row_y, "treerow", "Copy")
+        return
+    end
     build.option.copy_rows()
+    row_hover_check(row_y, "treerow", "Copy")
     imgui.tree_pop()
 end
 
-function build.option.reset_row(col_name, func)
+function build.option.reset_row(col_name, category)
     local handler_str = "P%.0f##%s_p%.0f"
     local handler_p1, handler_p2 = string.format(handler_str, 1, string.lower(col_name), 1), string.format(handler_str, 2, string.lower(col_name), 2)
     local handler_all = string.format("All##%s_all", string.lower(col_name))
+    
     imgui.table_next_row()
     imgui.table_set_column_index(0)
     imgui.text(col_name)
     imgui.table_set_column_index(1)
-    if imgui.button(handler_p1, {nil, 16}) then func('p1') end
+    if imgui.button(handler_p1, {nil, 16}) then reset_defaults(category, 'p1') end
     imgui.table_set_column_index(2)
-    if imgui.button(handler_p2, {nil, 16}) then func('p2') end
+    if imgui.button(handler_p2, {nil, 16}) then reset_defaults(category, 'p2') end
     imgui.table_set_column_index(3)
-    if imgui.button(handler_all, {nil, 16}) then func() end
+    if imgui.button(handler_all, {nil, 16}) then reset_defaults(category) end
 end
 
 function build.option.reset_rows()
-    build.option.reset_row("Toggles", reset_toggle_default)
-    build.option.reset_row("Opacity", reset_opacity_default)
-    build.option.reset_row("All", reset_all_default)
+    build.option.reset_row("Toggles", "toggle")
+    build.option.reset_row("Opacity", "opacity")
+    build.option.reset_row("All", "all")
 end
 
 function build.option.reset_table()
@@ -2959,7 +3153,13 @@ function build.option.reset_table()
 end
 
 function build.option.reset()
-    if not build.tree_node_stateful("Reset") then return end
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Reset")
+    if not build.tree_node_stateful("Reset") then
+        row_hover_check(row_y, "treerow", "Reset")
+        return
+    end
+    row_hover_check(row_y, "treerow", "Reset")
 
     build.option.reset_table()
 
@@ -2989,7 +3189,7 @@ end
 function build.option.alerts_hide_checkbox()
 	local changed
     imgui.same_line()
-    changed, state.config.options.hide_all_alerts =  build.checkbox("Hide##hide_all_alerts", state.config.options.hide_all_alerts)
+    changed, state.config.options.hide_all_alerts = treerow_hov_checkbox("Hide##hide_all_alerts", "Alerts", 1, state.config.options.hide_all_alerts)
 end
 
 function build.option.alerts_duration_slider()
@@ -3012,8 +3212,14 @@ function build.option.alerts_rows()
 end
 
 function build.option.alerts()
-    if not build.tree_node_stateful("Alerts") then return end
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Alerts")
+    if not build.tree_node_stateful("Alerts") then
+        row_hover_check(row_y, "treerow", "Alerts")
+        return
+    end
     build.option.alerts_hide_checkbox()
+    row_hover_check(row_y, "treerow", "Alerts")
     build.option.alerts_duration_slider()
     if not state.config.options.hide_all_alerts then
         build.option.alerts_rows()
@@ -3021,19 +3227,26 @@ function build.option.alerts()
     imgui.tree_pop()
 end
 
+-- FIXED: was `return false` outside the `if` (due to misleading indentation),
+-- so the function always returned false on the first loop iteration regardless
+-- of whether the current hotkey matched its default.
 local function are_hotkeys_default()
     for key, default_val in pairs(hk.default_hotkeys) do
         local current = hk.hotkeys[key]
-        if current == "[Press Input]" and current == default_val then end
-		return false
+        if current ~= default_val then
+            return false
+        end
     end
     return true
 end
 
+-- FIXED: `return true` was outside the `if value == "[Press Input]"` block,
+-- causing the function to unconditionally return true on the first iteration.
 local function is_any_hotkey_rebinding()
     for _, value in pairs(hk.hotkeys) do
-        if value ~= "[Press Input]" then end
-		return true
+        if value == "[Press Input]" then
+            return true
+        end
     end
     return false
 end
@@ -3045,7 +3258,7 @@ function build.option.hotkeys_reset_button()
     if state.confirm_restore_hotkeys == nil then state.confirm_restore_hotkeys = false end
 
     if is_any_hotkey_rebinding() then
-        if imgui.button("Restore Defaults") then
+        if treerow_hov_button("Restore Defaults", "Hotkeys", 1) then
             for name, value in pairs(hk.hotkeys) do
                 if value == "[Press Input]" then
                     hk.hotkeys[name] = hk.default_hotkeys[name] or "[Not Bound]"
@@ -3056,7 +3269,7 @@ function build.option.hotkeys_reset_button()
         end
     else
         if state.confirm_restore_hotkeys then
-            if imgui.button("Restore Defaults?") then
+            if treerow_hov_button("Restore Defaults?", "Hotkeys", 1) then
                 hk.reset_from_defaults_tbl(hk.default_hotkeys)
                 state.confirm_restore_hotkeys = false
             end
@@ -3064,7 +3277,7 @@ function build.option.hotkeys_reset_button()
                 state.confirm_restore_hotkeys = false
             end
         else
-            if imgui.button("Restore Defaults") then
+            if treerow_hov_button("Restore Defaults", "Hotkeys", 1) then
                 state.confirm_restore_hotkeys = true
             end
         end
@@ -3079,76 +3292,143 @@ function build.option.hotkey_button(text, hotkey_str)
 	mark_for_save()
 end
 
+local C_GROUP_LABEL = 0xFF888888  -- muted grey for hotkey group headers
+
 function build.option.hotkey_buttons()
 	build.option.hotkeys_reset_button()
-    build.option.hotkey_button("Toggle Menu:", "hotkeys_toggle_menu")
-    build.option.hotkey_button("Toggle P1:", "hotkeys_toggle_p1")
-    build.option.hotkey_button("Toggle P2:", "hotkeys_toggle_p2")
-    build.option.hotkey_button("Toggle All:", "hotkeys_toggle_all")
-    build.option.hotkey_button("Toggle Sync:", "hotkeys_toggle_sync")
-    build.option.hotkey_button("Last Preset:", "hotkeys_prev_preset")
-    build.option.hotkey_button("Next Preset:", "hotkeys_next_preset")
-    build.option.hotkey_button("Save Preset:", "hotkeys_save_preset")
+
+    imgui.text_colored("Toggles", C_GROUP_LABEL)
+    -- Toggle Menu has a user-bindable hotkey; F1 always works as a failsafe
+    -- regardless of what is bound here (or whether anything is bound at all).
+    build.option.hotkey_button("Toggle Menu: F1 or", "hotkeys_toggle_menu")
+    build.option.hotkey_button("P1:", "hotkeys_toggle_p1")
+    build.option.hotkey_button("P2:", "hotkeys_toggle_p2")
+    build.option.hotkey_button("All:", "hotkeys_toggle_all")
+    build.option.hotkey_button("Sync:", "hotkeys_toggle_sync")
+
+    imgui.spacing()
+    imgui.text_colored("Presets", C_GROUP_LABEL)
+    build.option.hotkey_button("Last:", "hotkeys_prev_preset")
+    build.option.hotkey_button("Next:", "hotkeys_next_preset")
+
+    imgui.spacing()
+    imgui.text_colored("Changes", C_GROUP_LABEL)
+    build.option.hotkey_button("Save:", "hotkeys_save_preset")
+    build.option.hotkey_button("Discard:", "hotkeys_discard_preset")
 end
 
 
 function build.option.hotkeys()
-    if not build.tree_node_stateful("Hotkeys") then return end
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Hotkeys")
+    if not build.tree_node_stateful("Hotkeys") then
+        row_hover_check(row_y, "treerow", "Hotkeys")
+        return
+    end
     imgui.same_line()
     imgui.spacing()
     build.option.hotkey_buttons()
+    row_hover_check(row_y, "treerow", "Hotkeys")
     imgui.tree_pop()
 end
 
 function build.option.modes()
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Modes")
     local open = build.tree_node_stateful("Modes")
-    if open then
-        imgui.same_line()
-        if imgui.button("Defaults##modes") then
-            local default = create_default_config()
-            state.config.options.mode_training      = default.options.mode_training
-            state.config.options.mode_replay        = default.options.mode_replay
-            state.config.options.mode_local_versus  = default.options.mode_local_versus
-            state.config.options.mode_single_player = default.options.mode_single_player
-            mark_for_save()
-        end
-        local changed
-        changed, state.config.options.mode_training      = build.checkbox("Training",            state.config.options.mode_training)
-        changed, state.config.options.mode_replay        = build.checkbox("Replays",              state.config.options.mode_replay)
-        changed, state.config.options.mode_local_versus  = build.checkbox("Local Versus",         state.config.options.mode_local_versus)
-        changed, state.config.options.mode_single_player = build.checkbox("Single Player Modes",  state.config.options.mode_single_player)
-        imgui.tree_pop()
+    if not open then
+        row_hover_check(row_y, "treerow", "Modes")
+        return
     end
+    imgui.same_line()
+    if treerow_hov_button("Defaults##modes", "Modes", 1) then
+        local default = create_default_config()
+        state.config.options.mode_training      = default.options.mode_training
+        state.config.options.mode_replay        = default.options.mode_replay
+        state.config.options.mode_spectate      = default.options.mode_spectate
+        state.config.options.mode_single_player = default.options.mode_single_player
+        state.config.options.mode_other         = default.options.mode_other
+        mark_for_save()
+    end
+    row_hover_check(row_y, "treerow", "Modes")
+    local changed
+    changed, state.config.options.mode_training      = build.checkbox("Training",      state.config.options.mode_training)
+    changed, state.config.options.mode_replay        = build.checkbox("Replay",        state.config.options.mode_replay)
+    changed, state.config.options.mode_spectate      = build.checkbox("Spectate",      state.config.options.mode_spectate)
+    changed, state.config.options.mode_single_player = build.checkbox("Single Player", state.config.options.mode_single_player)
+    changed, state.config.options.mode_other         = build.checkbox("Other",         state.config.options.mode_other)
+    imgui.tree_pop()
 end
 
 function build.option.misc()
-    if not build.tree_node_stateful("Misc") then return end
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Misc")
+    if not build.tree_node_stateful("Misc") then
+        row_hover_check(row_y, "treerow", "Misc")
+        return
+    end
+    row_hover_check(row_y, "treerow", "Misc")
     local changed
-    changed, state.config.options.color_wall_splat = build.checkbox("Adjust Position color in wall splat range", state.config.options.color_wall_splat)
+    changed, state.config.options.remember_window_pos = build.checkbox("Remember window position", state.config.options.remember_window_pos)
+    changed, state.config.options.color_wall_splat = build.checkbox("Adjust Position marker color in wall splat range", state.config.options.color_wall_splat)
+
+    -- The debug panel option is disabled (greyed out) when the debugger module
+    -- could not be loaded.  The enable_debug_menu flag is also forced off so
+    -- that a previously-saved true value from a working install doesn't open
+    -- a non-functional window.
+    if not debugger_available() then
+        state.config.options.enable_debug_menu = false
+        imgui.begin_disabled()
+        imgui.checkbox("Show Debug panel  (Ctrl+F1)  [debugger unavailable]", false)
+        imgui.end_disabled()
+    else
+        changed, state.config.options.enable_debug_menu = build.checkbox("Show Debug Panel  (Ctrl+F1)", state.config.options.enable_debug_menu)
+        if changed then mark_for_save() end
+    end
+
     imgui.tree_pop()
 end
 
 function build.option.backup_row()
     imgui.text("File:")
     imgui.push_item_width(200); imgui.same_line()
+    local highlighted = is_hov("treerow", "Backup", 2)
+    if highlighted then
+        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+    end
     local changed, new_name = imgui.input_text("##backup_filename", state.backup_filename, 256)
+    if imgui.is_item_hovered() then set_hov("treerow", "Backup", 2) end
+    if highlighted then imgui.pop_style_color(2) end
     if changed then state.backup_filename = new_name end
     imgui.pop_item_width(); imgui.same_line()
-    if imgui.button("Export") then perform_backup(state.backup_filename) end
+    if treerow_hov_button("Export", "Backup", 1) then perform_backup(state.backup_filename) end
 end
 
 function build.option.backup()
-    if not build.tree_node_stateful("Backup") then return end
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Backup")
+    if not build.tree_node_stateful("Backup") then
+        row_hover_check(row_y, "treerow", "Backup")
+        return
+    end
     if state.backup_filename == "" then
         state.backup_filename = generate_default_backup_filename()
     end
     imgui.same_line()
 	build.option.backup_row()
+    row_hover_check(row_y, "treerow", "Backup")
     imgui.tree_pop()
 end
 
 function build.option.menu()
-    if not build.tree_node_stateful("Options") then return end
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Options")
+    if not build.tree_node_stateful("Options") then
+        row_hover_check(row_y, "treerow", "Options")
+        return
+    end
+    row_hover_check(row_y, "treerow", "Options")
     imgui.unindent(15)
     build.option.copy()
     build.backup.menu()   -- merged Backup/Reset group
@@ -3161,58 +3441,145 @@ function build.option.menu()
 end
 
 local function get_toggle_hotkey_display()
-    local hotkey = hk.hotkeys["hotkeys_toggle_menu"]
-    if not hotkey or hotkey == "[Not Bound]" then
-        state.last_menu_hotkey_display = ""
-        return ""
+    -- F1 is an always-active failsafe.  If the user has also bound a hotkey,
+    -- show that in the title bar instead so the most-visible label is useful.
+    local bound = state.config.hotkeys and state.config.hotkeys.hotkeys_toggle_menu
+    if bound and bound ~= "[Not Bound]" then
+        return " (" .. bound .. " / F1)"
     end
-    local full_str = hk.get_button_string("hotkeys_toggle_menu")
-    if full_str:find("%[Press Input%]") then
-        return state.last_menu_hotkey_display
+    return " (F1)"
+end
+
+-- ============================================================================
+-- Debug Interface
+-- All implementation lives in func/better_disp_hitboxes_debugger.lua.
+-- This section initialises the module (once all required locals exist) and
+-- provides thin stubs so callers are never left with nil references.
+-- ============================================================================
+
+-- table_count is still used elsewhere in this file (option menus, etc.)
+local function table_count(t)
+    local c = 0
+    if type(t) == "table" then
+        for _ in pairs(t) do c = c + 1 end
     end
-    local display = " (" .. full_str .. ")"
-    state.last_menu_hotkey_display = display
-    return display
+    return c
+end
+
+-- Shared debug sub-table on `build`.  Always exists; functions are overwritten
+-- by the debugger module when available, and are no-ops otherwise.
+build.debug = {}
+function build.debug.inspector()  end
+function build.debug.entities()   end
+function build.debug.globals()    end
+function build.debug.evaluator()  end
+function build.debug.custom_debug() end
+function build.debug.menu()       end   -- legacy stub
+
+state.debug = state.debug or { eval_input = "", eval_output = "Ready." }
+
+-- Initialise the debugger module now that all locals it references exist.
+-- This is deferred to here (rather than the top of the file) so that closures
+-- in the context table correctly capture the final upvalue references.
+local function init_debugger()
+    if not _debugger_module then return end
+
+    local ctx = {
+        -- Data accessors (lambda-wrapped so they always read the live value).
+        get_state            = function() return state     end,
+        get_build            = function() return build     end,
+        get_game_mode_id     = get_game_mode_id,
+        GAME_MODES           = GAME_MODES,
+        get_gBattle          = function() return gBattle          end,
+        get_PauseManager     = function() return PauseManager     end,
+        get_bFlowManager     = function() return bFlowManager     end,
+        is_facing_right      = is_facing_right,
+        is_in_battle         = is_in_battle,
+        get_menu_nav         = function() return menu_nav         end,
+        get_timestop         = function() return timestop_frame, timestop_total_frames end,
+        get_frozen_draw_calls = function() return frozen_draw_calls end,
+        table_count          = table_count,
+        mark_for_save        = mark_for_save,
+    }
+
+    local ok, result = pcall(_debugger_module.init, ctx)
+    if ok and type(result) == "table" then
+        _debugger = result
+    else
+        local err = type(result) == "string" and result or "(unknown)"
+        pcall(log.info, "[BetterHitboxViewer] debugger init failed: " .. err)
+    end
+end
+
+-- build_debug_window: delegates to the module when loaded, silently skips
+-- otherwise (state.config.options.enable_debug_menu will also be locked out).
+local function build_debug_window()
+    if not debugger_available() then return end
+    _debugger.build_debug_window()
+end
+
+-- ---------------------------------------------------------------------------
+-- run_custom_debug(fn)
+-- Register a custom per-frame capture function from anywhere in this file.
+-- fn(state) should return a string, table, or nil.  The debugger stores each
+-- non-nil return value in an in-memory log that can be copied or exported as
+-- JSON from the Custom Debug panel inside the developer window.
+--
+-- Pass nil to unregister.  If the debugger module is not loaded this is a
+-- safe no-op.
+-- ---------------------------------------------------------------------------
+local function run_custom_debug(fn)
+    if not debugger_available() then return end
+    _debugger.run_custom_debug(fn)
 end
 
 local function build_menu()
+    -- Swap unified hover state so this frame's widgets see last frame's hover.
+    state.hov_prev = state.hov_cur
+    state.hov_cur  = nil
+
     local title = "Hitboxes" .. get_toggle_hotkey_display()
     state.force_tree_restore = (title ~= state.last_menu_title)
     state.last_menu_title = title
-    if state.menu_window_pos and state.force_tree_restore then
-        imgui.set_next_window_pos(state.menu_window_pos, 1)
+
+    -- Pin the menu's top-right corner to the top-right corner of the game window
+    -- whenever the menu appears, unless the user has opted to remember its position.
+    if not state.config.options.remember_window_pos then
+        local display = imgui.get_display_size()
+        imgui.set_next_window_pos(Vector2f.new(display.x, 0), 1 << 3, Vector2f.new(1, 0))
     end
-    imgui.begin_window(title, true, 64)
+
+    -- While a drag_int slider is being mouse-dragged, add ImGuiWindowFlags_NoMove (4)
+    -- so the window body drag doesn't fight with slider dragging.
+    -- We use the value captured at the END of the previous frame; the accumulator
+    -- for this frame is reset here and re-filled during widget rendering below.
+    local window_flags = state.slider_mouse_active and 64 + 16384 + 4 or 64 + 16384
+    state.slider_mouse_active_this_frame = false   -- reset accumulator for this frame
+
+    imgui.begin_window(title, true, window_flags)
     state.menu_window_pos = imgui.get_window_pos()
     local wpos  = imgui.get_window_pos()
     local wsize = imgui.get_window_size()
     local mouse = imgui.get_mouse()
+
+    if state.last_mouse_x ~= mouse.x or state.last_mouse_y ~= mouse.y then
+        state.mouse_moved_this_frame = true
+        state.last_mouse_x = mouse.x
+        state.last_mouse_y = mouse.y
+    else
+        state.mouse_moved_this_frame = false
+    end
+
     state.menu_window_focused = mouse.x >= wpos.x and mouse.x <= wpos.x + wsize.x
                              and mouse.y >= wpos.y and mouse.y <= wpos.y + wsize.y
     build.toggle.table()
     build.preset.menu()
     build.option.menu()
 
-    -- Draw controller-nav active outline (sampled after layout so size is final).
-    -- Uses the imgui foreground draw list so coordinates match the window exactly.
-    -- Multiple lines are drawn 5px outward and 5px inward to simulate thickness.
-    if menu_nav.active then
-        local p  = imgui.get_window_pos()
-        local sz = imgui.get_window_size()
-        local dl = imgui.get_foreground_draw_list()
-        local x1, y1 = p.x, p.y
-        local x2, y2 = p.x + sz.x, p.y + sz.y
-        for i = -5, 5 do
-            -- Outermost/innermost lines are faint; lines near the border edge are bright.
-            local t   = 1.0 - math.abs(i) / 6.0   -- 1.0 at centre, ~0.17 at ±5
-            local a   = math.floor(0xFF * t + 0.5)
-            local col = (a << 24) | 0x40D0FF        -- packed 0xAABBGGRR gold (R=0xFF,G=0xD0,B=0x40)
-            dl:add_rect(x1 + i, y1 + i, x2 - i, y2 - i, col)
-        end
-    end
-
     imgui.end_window()
     state.force_tree_restore = false
+    -- Persist slider-active state for next frame's begin_window flags.
+    state.slider_mouse_active = state.slider_mouse_active_this_frame
 end
 
 local function all_toggles_hidden()
@@ -3221,6 +3588,7 @@ end
 
 local function gui_handler()
     if state.config.options.display_menu then build_menu() end
+    build_debug_window()
     if not is_in_battle() then return end
     if not is_pause_menu_closed() then return end
     if not all_toggles_hidden() then return end
@@ -3238,6 +3606,30 @@ end
 -- Hotkey Handling
 
 local function hotkey_handler()
+    -- F1 / Ctrl+F1 are always-active failsafe hotkeys that cannot be rebound
+    -- and fire regardless of what is set in hotkeys_toggle_menu.
+    -- Plain F1       → toggle main menu (failsafe)
+    -- Ctrl + F1      → toggle debug panel (when debugger module is loaded)
+    if hk.check_kb_key("F1", nil, true) then
+        local ctrl = hk.check_kb_key("LControl", true)
+                  or hk.check_kb_key("RControl", true)
+                  or hk.check_kb_key("Control",  true)
+        if ctrl then
+            -- Ctrl+F1 toggles the debug panel only when the debugger module
+            -- loaded successfully; otherwise the keypress is silently ignored.
+            if debugger_available() then
+                state.config.options.enable_debug_menu = not state.config.options.enable_debug_menu
+                mark_for_save()
+            end
+        else
+            state.config.options.display_menu = not state.config.options.display_menu
+            mark_for_save()
+        end
+    end
+
+    -- hotkeys_toggle_menu is the user-bindable primary hotkey for the same
+    -- action.  F1 cannot be assigned here (the hotkey setter blocks it), so
+    -- the two paths never double-fire.
     if hk.check_hotkey("hotkeys_toggle_menu") then
         state.config.options.display_menu = not state.config.options.display_menu
         mark_for_save()
@@ -3259,6 +3651,9 @@ local function hotkey_handler()
         action_notify("All Hitboxes " .. (not any_active and "Enabled" or "Disabled"), "alert_on_toggle")
         mark_for_save()
     end
+    if hk.check_hotkey("hotkeys_toggle_sync") then
+        state.sync_enabled = not state.sync_enabled
+    end
     if hk.check_hotkey("hotkeys_prev_preset") then
         load_previous_preset()
     end
@@ -3267,6 +3662,12 @@ local function hotkey_handler()
     end
     if hk.check_hotkey("hotkeys_save_preset") then
         save_current_preset(state.current_preset_name)
+    end
+    if hk.check_hotkey("hotkeys_discard_preset") then
+        if preset_has_unsaved_changes() then
+            load_preset(state.current_preset_name)
+            action_notify("Changes Discarded", "alert_on_presets")
+        end
     end
 end
 
@@ -3279,45 +3680,11 @@ local function initialize()
     if state.current_preset_name == "" then 
         state.current_preset_name = get_preset_name()
     end
+    -- Initialise the external debugger module now that all locals it needs
+    -- (menu_nav, frozen_draw_calls, timestop_*, etc.) are fully defined.
+    init_debugger()
     state.initialized = true
 end
-
-
--- Block game pad input while nav is active.
--- _nav_reading guard ensures our own reads in menu_nav_handler pass through.
-
--- setup_hook("via.hid.GamePadDevice", "get_Button", function(args)
--- 	thread.get_hook_storage()["this"] = sdk.to_managed_object(args[2])
--- end, function(retval)
--- 	local obj = thread.get_hook_storage()["this"]
--- 	if obj and obj.get_method_Button ~= "None" then
--- 		imgui.set_tooltip("ggj")
--- 	-- if menu_nav.active then
--- 	-- 	-- imgui.set_tooltip('yo')
--- 	-- end
--- 	end
--- end)
-
-
--- pcall(function()
---     local function apply_hooks(type_name)
---         local gp_type = sdk.find_type_definition(type_name)
---         if not gp_type then return end
-        
---         -- Include analog sticks alongside the buttons
---         local method = gp_type:get_method("get_Button")
--- 		if not method then return end
--- 		sdk.hook(method, nil, function(retval)
--- 			if menu_nav.active then
--- 				imgui.set_tooltip('hi')
--- 				return 0
--- 			end
--- 			return retval
--- 		end)
---     end
---     -- Hook the actual device instances the game loops over
---     apply_hooks("via.hid.GamePadDevice")
--- end)
 
 re.on_draw_ui(draw_ui_handler)
 

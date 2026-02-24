@@ -39,7 +39,13 @@ function Config.save() json.dump_file(CONFIG_PATH, Config.settings) end
 
 function Config.init()
     if not Config.initialized then
-        Utils.setup_hook("app.training.TrainingManager", "BattleStart", nil, function() ComboData.default_state() end)
+        -- Hook BattleStart on TrainingManager (covers training, story training,
+        -- and online training modes) and on the general BattleManager (covers
+        -- arcade, versus CPU, story match, and other non-training modes).
+        Utils.setup_hook("app.training.TrainingManager", "BattleStart", nil,
+            function() ComboData.default_state() end)
+        Utils.setup_hook("app.BattleManager", "BattleStart", nil,
+            function() ComboData.default_state() end)
         ComboData.default_state()
         Config.load()
         Config.initialized = true
@@ -78,17 +84,72 @@ end
 -- GameObjects
 -------------------------
 
-GameObjects.TrainingManager = sdk.get_managed_singleton("app.training.TrainingManager")
-GameObjects.PauseManager = sdk.get_managed_singleton("app.PauseManager")
-GameObjects.gBattle = sdk.find_type_definition("gBattle")
-GameObjects.PlayerField = GameObjects.gBattle:get_field("Player")
-GameObjects.TeamField = GameObjects.gBattle:get_field("Team")
+-- Singletons that may not exist at script load time are lazy-loaded each frame.
+GameObjects.TrainingManager = nil
+GameObjects.PauseManager    = nil
+GameObjects.bFlowManager    = nil
+GameObjects.sSetting        = nil
+
+local _gBattle           = sdk.find_type_definition("gBattle")
+GameObjects.PlayerField  = _gBattle:get_field("Player")
+GameObjects.TeamField    = _gBattle:get_field("Team")
+GameObjects.SettingField = _gBattle:get_field("Setting")
+
+-- Game modes where pause_type_bit == 0 means "unpaused" rather than
+-- the usual set of non-zero sentinel values used in normal modes.
+local ZERO_UNPAUSED_MODES = { [10] = true, [13] = true }
+
+-- pause_type_bit values that mean "not paused" in normal modes.
+local UNPAUSED_BITS = { [2] = true, [64] = true, [256] = true, [2112] = true }
+
+function GameObjects.refresh_singletons()
+    if not GameObjects.TrainingManager then
+        GameObjects.TrainingManager = sdk.get_managed_singleton("app.training.TrainingManager")
+    end
+    if not GameObjects.PauseManager then
+        GameObjects.PauseManager = sdk.get_managed_singleton("app.PauseManager")
+    end
+    if not GameObjects.bFlowManager then
+        GameObjects.bFlowManager = sdk.get_managed_singleton("app.bFlowManager")
+    end
+end
 
 function GameObjects.get_objects()
+    GameObjects.refresh_singletons()
     local sPlayer = GameObjects.PlayerField:get_data()
     if not sPlayer then return nil, nil, nil end
-    local sTeam = GameObjects.TeamField:get_data()
+    local sTeam    = GameObjects.TeamField:get_data()
+    local sSetting = GameObjects.SettingField:get_data()
+    GameObjects.sSetting = sSetting
     return sPlayer, sPlayer.mcPlayer, sTeam and sTeam.mcTeam or nil
+end
+
+-- Returns the current battle game-mode integer, or 0 when unknown.
+function GameObjects.get_game_mode_id()
+    if GameObjects.TrainingManager then
+        local ok, mode = pcall(function() return GameObjects.TrainingManager:get_field("GameMode") end)
+        if ok and mode and mode ~= 0 then return mode end
+    end
+    if GameObjects.sSetting then
+        local ok, mode = pcall(function() return GameObjects.sSetting:get_field("GameMode") end)
+        if ok and mode and mode ~= 0 then return mode end
+    end
+    if GameObjects.bFlowManager then
+        local ok, mode = pcall(function() return GameObjects.bFlowManager:get_GameMode() end)
+        if ok and mode and mode ~= 0 then return mode end
+    end
+    return 0
+end
+
+-- Returns true when at least one player has an active action param,
+-- i.e. a real battle is in progress (mirrors hitbox viewer's is_in_battle).
+function GameObjects.is_in_battle(cPlayer)
+    if not cPlayer then return false end
+    for i = 0, 1 do
+        local p = cPlayer[i]
+        if p and p.mpActParam then return true end
+    end
+    return false
 end
 
 function GameObjects.map_player_data(cPlayer, cTeam)
@@ -123,8 +184,8 @@ function GameObjects.map_player_data(cPlayer, cTeam)
                     data.advantage = tonumber(stun_str) or 0
                 end
             end
-        data_vals[player_index] = data
         end
+        data_vals[player_index] = data
     end
     return data_vals[0], data_vals[1]
 end
@@ -132,7 +193,14 @@ end
 function GameObjects.is_paused()
     if not GameObjects.PauseManager then return false end
     local pause_type_bit = GameObjects.PauseManager:get_field("_CurrentPauseTypeBit")
-    return not (pause_type_bit == 64 or pause_type_bit == 2112)
+    local mode = GameObjects.get_game_mode_id()
+    -- Modes 10 (STORY_TRAINING) and 13 (STORY_SPECTATE) use bit=0 as their
+    -- "not paused" sentinel; any non-zero value means the pause menu is open.
+    if ZERO_UNPAUSED_MODES[mode] then
+        return pause_type_bit ~= 0
+    end
+    -- All other modes: a known set of non-zero bits signals "not paused".
+    return not UNPAUSED_BITS[pause_type_bit]
 end
 
 -------------------------
@@ -153,7 +221,7 @@ function ComboData.update_state(p1, p2)
         local atk, def = (i == 0 and p1 or p2), (i == 0 and p2 or p1)
         local def_prev = (i == 0 and ComboData.p2_prev or ComboData.p1_prev)
 
-        if not state.started and atk and atk.combo_count > 0 and ComboData.p1_prev.hp_current then
+        if not state.started and atk and atk.combo_count > 0 and def_prev.hp_current then
             state.started, state.finished = true, false
             state.start = { p1 = Utils.deep_copy(ComboData.p1_prev), p2 = Utils.deep_copy(ComboData.p2_prev) }
         end
@@ -385,7 +453,7 @@ function UI.render_player_combo_window(player_index, title, x, y, toggle_setting
     end
 
     imgui.set_next_window_pos(Vector2f.new(x, y), 1 << 3)
-    imgui.set_next_window_size(Vector2f.new(UI.combo_window_fixed_width, 0), 0, 1 << 1)
+    imgui.set_next_window_size(Vector2f.new(UI.combo_window_fixed_width, 0), 1)
 
     if imgui.begin_window(title, true, 1 | 8 | 32) then
         if UI.is_toggle_view_clicked() then
@@ -547,7 +615,9 @@ re.on_frame(function()
     UI.save_handler()
     UI.draw_action_notify()
     
-    if sPlayer and sPlayer.prev_no_push_bit ~= 0 then
+    -- Use is_in_battle (checks mpActParam) instead of prev_no_push_bit,
+    -- which is 0 in story-training and other modes even during active gameplay.
+    if GameObjects.is_in_battle(cPlayer) then
         UI.render_windows()
         local p1, p2 = GameObjects.map_player_data(cPlayer, cTeam)
         ComboData.update_state(p1, p2)

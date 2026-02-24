@@ -1258,7 +1258,7 @@ local function build_unknowns_section()
 end
 
 local function build_data_window()
-	imgui.set_next_window_size({200, 0})
+	imgui.set_next_window_size({175, 0})
 	imgui.begin_window("Battle Data", true, 8|64)
 	build_vitals_section()
 	build_player_section(0, p1, p1_hit_dt)

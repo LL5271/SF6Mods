@@ -2,9 +2,9 @@
 
 ## Better Hitbox Display
 
-More customizable version of WistfulHopes' original [hitbox display script](https://github.com/WistfulHopes/SF6Mods). Adds memory improvements, preset and hotkey support, and individual toggles/opacity sliders for each element.
+More customizable version of WistfulHopes' original [hitbox display script](https://github.com/WistfulHopes/SF6Mods). Adds memory improvements, preset and hotkey support, and individual toggles/opacity sliders for each element. Uses modified Hotkeys.lua from [_ScriptCore](https://github.com/alphazolam/_ScriptCore/tree/main).
 
-Usage:
+Usage (default):
 * **F1**: Toggle options menu
 * **Ctrl + 1**: Toggle P1 hitboxes
 * **Ctrl + 2**: Toggle P2 hitboxes

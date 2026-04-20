@@ -1,5 +1,5 @@
 local MOD_NAME = "Better Hitbox Viewer"
-local state = {}
+local state = {initialized = false}
 
 -- Utilities
 
@@ -133,6 +133,37 @@ local function get_game_mode_id()
     return 0
 end
 
+local function read_training_display_super_freeze_state()
+    if not TrainingManager or not TrainingManager._tCommon then
+        return false, 0, 0, nil, 0, 0
+    end
+
+    local snap = TrainingManager._tCommon.SnapShotDatas
+    if not snap or not snap[0] or not snap[0]._DisplayData then
+        return false, 0, 0, nil, 0, 0
+    end
+
+    local display = snap[0]._DisplayData
+    local fm_stop_frame = tonumber(display.FMStopFrame) or 0
+    local stop_attack_frame = tonumber(display.StopAttackFrame) or 0
+    local special_state = display.SpecialState
+    local special_state_value = type(special_state) == "number" and special_state or nil
+    local player_datas = display.PlayerDatas or {}
+    local p1_data = player_datas[0] or player_datas["0"]
+    local p2_data = player_datas[1] or player_datas["1"]
+    local p1_hitstop_own = tonumber(p1_data and p1_data.hitStopOwnFrame) or 0
+    local p2_hitstop_own = tonumber(p2_data and p2_data.hitStopOwnFrame) or 0
+
+    if special_state_value == nil and special_state ~= nil then
+        local ok_enum, enum_value = pcall(function() return special_state.value__ end)
+        if ok_enum then
+            special_state_value = tonumber(enum_value)
+        end
+    end
+
+    return fm_stop_frame > 0, fm_stop_frame, stop_attack_frame, special_state_value, p1_hitstop_own, p2_hitstop_own
+end
+
 local function is_mode_allowed()
     local mode = get_game_mode_id()
     if TRAINING_MODES[mode] then
@@ -152,7 +183,7 @@ end
 
 local PAUSE_TYPE_BITS = {
     [2]=true, [320]=true, [256]=true,
-    [324]=true, [2112]=true, [4294967616]=true
+    [324]=true, [2112]=false, [2368]=true, [4294967616]=true
 }
 
 -- Modes where pause_type_bit=0 means unpaused and any non-zero value means paused.
@@ -248,6 +279,9 @@ if not hk then
 	local hold_times = {}
 	local dt_rel_times = {}
 	local dt_times = {}
+
+	local registered_actions     = {}  -- {name=action_name, fn=callback}
+	local registered_raw_actions = {}  -- fn() called unconditionally each frame
 
 	local keys = generate_statics("via.hid.KeyboardKey")
 	local buttons = generate_statics("via.hid.GamePadButton")
@@ -360,23 +394,26 @@ if not hk then
 	-- Converts internal key names to user-friendly display strings.
 	-- "Alpha1" → "1", "Alpha2" → "2", etc.  All other names pass through unchanged.
 	local function fmt_key_display(key_name)
+		if not key_name or key_name == "[Not Bound]" then
+			return ""
+		end
 		return (key_name:gsub("^Alpha(%d+)$", "%1"))
 	end
 
 	local function get_button_string(action_name)
-		local b1 = hotkeys[action_name.."_$_$"]; b1 = b1 and fmt_key_display(b1).." + " or ""
-		local b2 = hotkeys[action_name.."_$"]; b2 = b2 and fmt_key_display(b2).." + " or ""
-		return b1 .. b2 .. fmt_key_display(hotkeys[action_name])
+		local modifier = hotkeys[action_name.."_$"]
+		modifier = modifier and modifier ~= "[Not Bound]" and fmt_key_display(modifier).." + " or ""
+		local main = fmt_key_display(hotkeys[action_name])
+		local result = modifier .. main
+		return result ~= "" and result or nil
 	end
 
 	local function reset_from_defaults_tbl(default_hotkey_table)
 		for key, value in pairs(default_hotkey_table) do
 			hotkeys[key] = value
-			if not default_hotkey_table[key.."_$_$"] then
-				hk_data.modifier_actions[key.."_$"], hk_data.modifier_actions[key.."_$_$"] = nil
-			end
 			if not default_hotkey_table[key.."_$"] then
-				hotkeys[key.."_$"], hotkeys[key.."_$_$"] = nil
+				hotkeys[key.."_$"] = "[Not Bound]"
+				hk_data.modifier_actions[key.."_$"] = "[Not Bound]"
 			end
 		end
 		json.dump_file("Hotkeys_data.json", hk_data)
@@ -462,16 +499,19 @@ if not hk then
 		if key_name == "[Not Bound]" then return false end
 		if check_down == true then
 			if hotkeys_down[action_name] == nil then
-				hotkeys_down[action_name] = (kb_state.down[keys[key_name ] ]  or gp_state.down[buttons[key_name ] ] or mb_state.down[mbuttons[key_name ] ]) and (not hotkeys[action_name.."_$"] or check_hotkey(action_name.."_$", true))
+				local modifier_active = hotkeys[action_name.."_$"] and hotkeys[action_name.."_$"] ~= "[Not Bound]"
+				hotkeys_down[action_name] = (kb_state.down[keys[key_name ] ]  or gp_state.down[buttons[key_name ] ] or mb_state.down[mbuttons[key_name ] ]) and (not modifier_active or check_hotkey(action_name.."_$", true))
 			end
 			return hotkeys_down[action_name]
 		elseif check_triggered or type(check_down) ~= "nil" then
+			local modifier_active = hotkeys[action_name.."_$"] and hotkeys[action_name.."_$"] ~= "[Not Bound]"
 			if hotkeys_trig[action_name] == nil then
-				hotkeys_trig[action_name] = (kb_state.triggered[keys[key_name ] ]  or gp_state.triggered[buttons[key_name ] ] or mb_state.triggered[mbuttons[key_name ] ]) and (not hotkeys[action_name.."_$"] or check_hotkey(action_name.."_$", true))
+				hotkeys_trig[action_name] = (kb_state.triggered[keys[key_name ] ]  or gp_state.triggered[buttons[key_name ] ] or mb_state.triggered[mbuttons[key_name ] ]) and (not modifier_active or check_hotkey(action_name.."_$", true))
 			end
 			return hotkeys_trig[action_name]
 		elseif hotkeys_up[action_name] == nil then
-			hotkeys_up[action_name] = (kb_state.released[keys[key_name ] ]  or gp_state.released[buttons[key_name ] ] or mb_state.released[mbuttons[key_name ] ]) and (not hotkeys[action_name.."_$"] or check_hotkey(action_name.."_$", true))
+			local modifier_active = hotkeys[action_name.."_$"] and hotkeys[action_name.."_$"] ~= "[Not Bound]"
+			hotkeys_up[action_name] = (kb_state.released[keys[key_name ] ]  or gp_state.released[buttons[key_name ] ] or mb_state.released[mbuttons[key_name ] ]) and (not modifier_active or check_hotkey(action_name.."_$", true))
 		end
 		return hotkeys_up[action_name]
 	end
@@ -535,9 +575,8 @@ if not hk then
 	local function is_key_bound_elsewhere(key_name, current_action)
 		local family = get_key_family(key_name)
 		local base = current_action
-		if base:sub(-4) == "_$_$" then base = base:sub(1, -5)
-		elseif base:sub(-2) == "_$" then base = base:sub(1, -3) end
-		local own = { [base]=true, [base.."_$"]=true, [base.."_$_$"]=true }
+		if base:sub(-2) == "_$" then base = base:sub(1, -3) end
+		local own = { [base]=true, [base.."_$"]=true }
 		local current_is_mod = (current_action:sub(-2) == "_$")
 		for name, bound_key in pairs(hotkeys) do
 			if not own[name] and family[bound_key] then
@@ -597,7 +636,6 @@ if not hk then
 		local is_down = check_hotkey(action_name, true) and (not hold_action_name or check_hotkey(hold_action_name, true))
 		local disp_name = (fake_name and ((type(fake_name)~="string") and "" or fake_name)) or action_name
 		local is_mod_1 = (action_name:sub(-2, -1) == "_$")
-		local is_mod_2 = (action_name:sub(-4, -1) == "_$_$")
 		local default = default_hotkeys[action_name]
 
 		local had_hold = not not hold_action_name
@@ -608,6 +646,7 @@ if not hk then
 		if is_down then imgui.begin_rect(); imgui.begin_rect() end
 		imgui.push_id(action_name)
 			hotkeys[action_name] = hotkeys[action_name] or default
+			if not hotkeys[action_name] then hotkeys[action_name] = "[Not Bound]" end
 			if hotkeys[action_name] == "[Press Input]" then
 				local up = pad and pad:call("get_ButtonUp")
 				if up and up ~= 0 then
@@ -623,7 +662,7 @@ if not hk then
 						end
 					end
 				end
-				if not (is_mod_1 or is_mod_2) and mouse and m_up and m_up ~= 0 then
+				if not is_mod_1 and mouse and m_up and m_up ~= 0 then
 					for button_name, id in pairs(mbuttons) do
 						if (m_up | id) == m_up then
 							-- L Mouse and R Mouse are reserved for UI interaction
@@ -641,7 +680,7 @@ if not hk then
 				for key_name, id in pairs(keys) do
 					-- F1 is a fixed system hotkey and cannot be rebound to any action
 					if key_name ~= "F1" and kb and kb:call("isRelease", id) then
-						if (not (is_mod_1 or is_mod_2)) or valid_modifier_keys[key_name] then
+						if (not is_mod_1) or valid_modifier_keys[key_name] then
 							if not is_key_bound_elsewhere(key_name, action_name)
 							   and not is_key_own_modifier_family(key_name, action_name)
 							   and not is_combo_bound_elsewhere(key_name, action_name) then
@@ -673,12 +712,12 @@ if not hk then
 				trigger_hotkey_change_callbacks()
 			end
 
-			if not is_mod_2 and hotkeys[action_name.."_$"] then
-				if hotkey_setter(action_name.."_$", nil, true) then key_updated = true end
-				imgui.same_line()
-				imgui.text("+")
-				imgui.same_line()
-			end
+		if not is_mod_1 and (hotkeys[action_name.."_$"] ~= nil or default_hotkeys[action_name.."_$"] ~= nil) then
+			if hotkey_setter(action_name.."_$", nil, true) then key_updated = true end
+			imgui.same_line()
+			imgui.text("+")
+			imgui.same_line()
+		end
 
 			if imgui.button( ((modifier_hotkey and (modifier_hotkey .. " + ")) or "") .. fmt_key_display(hotkeys[action_name])) then
 				if hotkeys[action_name] == "[Press Input]" then
@@ -700,6 +739,8 @@ if not hk then
 				if hotkeys[action_name] ~= "[Not Bound]" and imgui.menu_item("Clear") then
 					if is_mod_1 then
 						hotkeys[action_name], hk_data.modifier_actions[action_name], hotkeys[action_name.."_$"], hk_data.modifier_actions[action_name.."_$"]  = hotkeys[action_name.."_$"], hk_data.modifier_actions[action_name.."_$"]
+						if not hotkeys[action_name] then hotkeys[action_name] = "[Not Bound]" end
+						if not hotkeys[action_name.."_$"] then hotkeys[action_name.."_$"] = "[Not Bound]" end
 						json.dump_file("Hotkeys_data.json", hk_data)
 					else
 						hotkeys[action_name] = "[Not Bound]"
@@ -708,14 +749,14 @@ if not hk then
 					setup_active_keys_tbl()
 					trigger_hotkey_change_callbacks()
 				end
-				if not is_mod_2 and default_hotkeys[action_name] and imgui.menu_item("Reset to Default") then
+				if default_hotkeys[action_name] and imgui.menu_item("Reset to Default") then
 					hotkeys[action_name] = default_hotkeys[action_name]
 					key_updated = true
 					setup_active_keys_tbl()
 					trigger_hotkey_change_callbacks()
 				end
-				if not is_mod_1 and not is_mod_2 and hotkeys[action_name] ~= "[Not Bound]" and imgui.menu_item((hotkeys[action_name.."_$"] and "Disable " or "Enable ") .. "Modifier") then
-					hotkeys[action_name.."_$"] = not hotkeys[action_name.."_$"] and ((pad and pad:get_Connecting() and "LT (L2)") or "LAlt") or nil
+				if not is_mod_1 and hotkeys[action_name] ~= "[Not Bound]" and imgui.menu_item((hotkeys[action_name.."_$"] and hotkeys[action_name.."_$"] ~= "[Not Bound]" and "Disable " or "Enable ") .. "Modifier") then
+					hotkeys[action_name.."_$"] = not hotkeys[action_name.."_$"] and ((pad and pad:get_Connecting() and "LT (L2)") or "LAlt") or "[Not Bound]"
 					hk_data.modifier_actions[action_name.."_$"] = hotkeys[action_name.."_$"]
 					json.dump_file("Hotkeys_data.json", hk_data)
 					setup_active_keys_tbl()
@@ -806,6 +847,57 @@ if not hk then
 		check_kb_key = check_kb_key,
 		check_mouse_button = check_mouse_button,
 		check_pad_button = check_pad_button,
+
+		-- Register a callback to fire each frame when action_name's hotkey triggers.
+		-- Must be called after hk is fully initialised (e.g. from initialize()).
+		register_action = function(action_name, callback)
+			table.insert(registered_actions, {name = action_name, fn = callback})
+		end,
+
+		-- Register a raw per-frame callback that runs unconditionally (e.g. F1 failsafe).
+		register_raw_action = function(fn)
+			table.insert(registered_raw_actions, fn)
+		end,
+
+		-- Call once per frame (replaces the standalone hotkey_handler).
+		-- Fires all raw actions first, then all registered hotkey actions.
+		run_actions = function()
+			for _, fn in ipairs(registered_raw_actions) do
+				pcall(fn)
+			end
+			for _, entry in ipairs(registered_actions) do
+				if check_hotkey(entry.name) then
+					pcall(entry.fn)
+				end
+			end
+		end,
+
+		-- Returns the title-bar hotkey hint string for the main menu toggle.
+		-- Reads from the live hotkeys table so it always reflects the current binding.
+		get_toggle_hotkey_display = function()
+			local bound = hotkeys["hotkeys_toggle_menu"]
+			if bound and bound ~= "[Not Bound]" then
+				return " (" .. bound .. " / F1)"
+			end
+			return " (F1)"
+		end,
+
+		-- Returns true when every hotkey matches its default value.
+		are_hotkeys_default = function()
+			for key, default_val in pairs(default_hotkeys) do
+				if hotkeys[key] ~= default_val then return false end
+			end
+			return true
+		end,
+
+		-- Returns true when any hotkey slot is currently awaiting input.
+		is_any_hotkey_rebinding = function()
+			for _, value in pairs(hotkeys) do
+				if value == "[Press Input]" then return true end
+			end
+			return false
+		end,
+
 		register_hotkey_change_callback = function(cb)
 			table.insert(hotkey_change_callbacks, cb)
 		end,
@@ -866,6 +958,10 @@ local function create_default_config()
 	return {
 		options = {
 			display_menu = true,
+			hitbox_tick_duration = 60,
+			hitbox_tick_fade_speed = 1.0,
+			property_text_duration = 20,
+			property_text_fade_speed = 1.0,
 			hide_all_alerts = false,
 			alert_on_toggle = true,
 			alert_on_presets = true,
@@ -1182,6 +1278,10 @@ local function get_preset_name()
 	end
 end
 
+local function init_preset_name()
+    state.current_preset_name = get_preset_name()
+end
+
 local function save_current_preset(name)
 	if not name or name == "" then return false, "Invalid preset name" end
 	if is_preset_loaded(name) then return true, "Data identical, skipping save" end
@@ -1436,7 +1536,10 @@ local LEFT_SPLAT_POS = -1 * RIGHT_SPLAT_POS
 -- prop_persist: { [key] = {text,x,y,base_opacity,player_key,timer,last_live_frame} }
 -- prop_persist_frame: monotonic counter; incremented once per live hitbox pass
 
-state.range_ticks = { p1 = nil, p2 = nil }
+state.range_ticks = {
+    p1 = { active = nil, ghosts = {} },
+    p2 = { active = nil, ghosts = {} },
+}
 state.prop_persist = {}
 state.prop_persist_frame = 0
 
@@ -1545,9 +1648,34 @@ local function build_hurt_properties(typeFlag, immune)
     return nil
 end
 
+local function get_rect_field(rect, field_name)
+    if not rect or not field_name then return nil end
+    local ok, value = pcall(rect.get_field, rect, field_name)
+    if ok then return value end
+    return nil
+end
+
+local function get_rect_attr_value(rect)
+    local value = get_rect_field(rect, "Attribute")
+    if value == nil then
+        value = get_rect_field(rect, "Attr")
+    end
+    return value
+end
+
+local function is_projectile_owner_entity(entity)
+    if not entity then return false end
+    local owner_add = entity.owner_add
+    if owner_add == nil then return false end
+    return tostring(owner_add) ~= tostring(entity)
+end
+
+local is_super_freeze_active
+local is_strict_super_freeze_active
+
 -- Classifies a hitbox rect and returns all draw data without touching the GPU.
 -- Returns nil if the rect has no valid screen projection or is unknown.
-local function classify_hitbox(rect, player_config)
+local function classify_hitbox(rect, player_config, entity_context)
     if not rect then return nil end
     local vTL, vTR, vBL, vBR = get_vectors(rect)
     local x, y, w, h = get_dimensions(vTL, vTR, vBL, vBR)
@@ -1559,34 +1687,50 @@ local function classify_hitbox(rect, player_config)
     if h < 0 then y, h = y + h, -h end
 
     local tog, opa = player_config.toggle, player_config.opacity
-    local base_color, fill_key, outline_key, toggle_key, prop_text
+    local base_color, fill_key, outline_key, toggle_key, prop_text, box_kind
+    local attr_value = get_rect_attr_value(rect)
+    local is_projectile_owner = entity_context and entity_context.is_projectile_owner or false
 
     if rect:get_field("HitPos") ~= nil then
         if rect.TypeFlag > 0 then
             base_color, fill_key, outline_key, toggle_key = 0x0040C0, "hitbox", "hitbox_outline", "hitboxes"
+            box_kind = "hitbox"
             if tog.properties then prop_text = build_hit_properties(rect.CondFlag, rect) end
         elseif (rect.TypeFlag == 0 and rect.PoseBit > 0) or rect.CondFlag == 0x2C0 then
             base_color, fill_key, outline_key, toggle_key = 0xD080FF, "throwbox", "throwbox_outline", "throwboxes"
+            box_kind = "throwbox"
             if tog.properties then prop_text = build_hit_properties(rect.CondFlag, rect) end
         elseif rect.GuardBit == 0 then
             base_color, fill_key, outline_key, toggle_key = 0x3891E6, "clashbox", "clashbox_outline", "clashboxes"
+            box_kind = "clashbox"
         else
             base_color, fill_key, outline_key, toggle_key = 0x5b5b5b, "proximitybox", "proximitybox_outline", "proximityboxes"
+            box_kind = "proximitybox"
         end
-    elseif rect:get_field("Attr") ~= nil then
-        base_color, fill_key, outline_key, toggle_key = 0x00FFFF, "pushbox", "pushbox_outline", "pushboxes"
+    elseif get_rect_field(rect, "Attr") ~= nil or get_rect_field(rect, "Attribute") ~= nil then
+        if is_projectile_owner then
+            base_color, fill_key, outline_key, toggle_key = 0x3891E6, "clashbox", "clashbox_outline", "clashboxes"
+            box_kind = "clashbox"
+        else
+            base_color, fill_key, outline_key, toggle_key = 0x00FFFF, "pushbox", "pushbox_outline", "pushboxes"
+            box_kind = "pushbox"
+        end
     elseif rect:get_field("HitNo") ~= nil then
         if rect.TypeFlag > 0 then
             base_color = (rect.Type == 2 or rect.Type == 1) and 0xFF0080 or 0x00FF00
             fill_key, outline_key, toggle_key = "hurtbox", "hurtbox_outline", "hurtboxes"
+            box_kind = "hurtbox"
             if tog.properties then prop_text = build_hurt_properties(rect.TypeFlag, rect.Immune) end
         else
             base_color, fill_key, outline_key, toggle_key = 0xFF0000, "throwhurtbox", "throwhurtbox_outline", "throwhurtboxes"
+            box_kind = "throwhurtbox"
         end
     elseif rect:get_field("KeyData") ~= nil then
         base_color, fill_key, outline_key, toggle_key = 0xEEFF00, "uniquebox", "uniquebox_outline", "uniqueboxes"
+        box_kind = "uniquebox"
     else
         base_color, fill_key, outline_key, toggle_key = 0xFF0000, "throwhurtbox", "throwhurtbox_outline", "throwhurtboxes"
+        box_kind = "throwhurtbox"
     end
 
     if not base_color then return nil end
@@ -1597,8 +1741,9 @@ local function classify_hitbox(rect, player_config)
         w               = w,
         h               = h,
         base_color      = base_color,
-        show_fill       = tog[toggle_key]                  or false,
-        show_outline    = tog[toggle_key .. "_outline"]    or false,
+        box_kind        = box_kind,
+        show_fill       = ((box_kind ~= "pushbox" and box_kind ~= "proximitybox") or not is_strict_super_freeze_active()) and (tog[toggle_key] or false),
+        show_outline    = ((box_kind ~= "pushbox" and box_kind ~= "proximitybox") or not is_strict_super_freeze_active()) and (tog[toggle_key .. "_outline"] or false),
         fill_opacity    = opa[fill_key]                    or 25,
         outline_opacity = opa[outline_key]                 or 25,
         prop_text       = prop_text,
@@ -1614,17 +1759,32 @@ end
 
 local timestop_frame = 0
 local timestop_total_frames = 0
+local super_freeze_linger_frames = 0
 local frozen_draw_calls = {}   -- last pre-timestop frame's draw calls
 local draw_call_buffer = nil   -- non-nil while recording a normal frame
 
-local function draw_union_fills(boxes, full_color)
+is_super_freeze_active = function()
+    return super_freeze_linger_frames > 0
+end
+
+is_strict_super_freeze_active = function()
+    return timestop_total_frames ~= nil
+       and timestop_total_frames == 11
+       and timestop_frame ~= nil
+       and timestop_frame > 0
+       and timestop_frame < timestop_total_frames
+end
+
+
+
+local function draw_union_fills(boxes, full_color, box_kind)
     if #boxes == 0 then return end
 
     -- Fast path: single box, no overlap possible.
     if #boxes == 1 then
         local b = boxes[1]
         if draw_call_buffer then
-            draw_call_buffer[#draw_call_buffer+1] = {"filled_rect", b.x, b.y, b.w, b.h, full_color}
+            draw_call_buffer[#draw_call_buffer+1] = {"filled_rect", b.x, b.y, b.w, b.h, full_color, box_kind}
         end
         draw.filled_rect(b.x, b.y, b.w, b.h, full_color)
         return
@@ -1653,7 +1813,7 @@ local function draw_union_fills(boxes, full_color)
                     local cw = uxs[i+1] - uxs[i]
                     local ch = uys[j+1] - uys[j]
                     if draw_call_buffer then
-                        draw_call_buffer[#draw_call_buffer+1] = {"filled_rect", uxs[i], uys[j], cw, ch, full_color}
+                        draw_call_buffer[#draw_call_buffer+1] = {"filled_rect", uxs[i], uys[j], cw, ch, full_color, box_kind}
                     end
                     draw.filled_rect(uxs[i], uys[j], cw, ch, full_color)
                     break
@@ -1670,31 +1830,52 @@ local function draw_text_buffered(text, x, y, color)
     draw.text(text, x, y, color)
 end
 
+local DEFAULT_PROP_PERSIST_TOTAL = 20
+local DEFAULT_PROP_PERSIST_SLOW_RATIO = 5 / 20
+local DEFAULT_PROP_PERSIST_SHARP_RATIO = 10 / 20
+
+local DEFAULT_RANGE_TICK_TOTAL = 60
+local DEFAULT_RANGE_TICK_DIM_WINDOW_RATIO = 19 / 60
+local DEFAULT_RANGE_TICK_MOVE_HOLD_RATIO = 35 / 60
+local DEFAULT_RANGE_TICK_MOVE_WINDOW_RATIO = 20 / 60
+
+local function get_display_duration_frames(option_key, fallback)
+    local value = tonumber(state.config and state.config.options and state.config.options[option_key]) or fallback
+    return math.max(1, math.floor(value + 0.5))
+end
+
+local function get_display_fade_speed(option_key)
+    local value = tonumber(state.config and state.config.options and state.config.options[option_key]) or 1.0
+    return math.max(0.1, value)
+end
+
+local function apply_fade_speed_to_progress(progress, fade_speed)
+    progress = math.min(math.max(progress or 0, 0), 1)
+    fade_speed = math.max(fade_speed or 1.0, 0.1)
+    return 1.0 - ((1.0 - progress) ^ fade_speed)
+end
+
 -- Property Text Persistence
 
--- Total lifetime of a ghost label after its hitbox disappears.
-local PROP_PERSIST_TOTAL  = 20
--- Frame thresholds that control the two-stage fade curve.
--- Stage 1 (frames 1-5):   full opacity — no fade.
--- Stage 2 (frames 6-10):  slow fade starts, alpha eases from 1.0 → ~0.7.
--- Stage 3 (frames 11-20): sharp fade, alpha drops quickly from ~0.7 → 0.
-local PROP_PERSIST_SLOW   = 5
-local PROP_PERSIST_SHARP  = 10
-
 -- Returns an alpha multiplier in [0, 1] given the remaining lifetime timer.
--- timer == PROP_PERSIST_TOTAL  →  start of decay, age 0  →  multiplier 1.0
--- timer == 0                   →  end of decay, age 20   →  multiplier 0.0
+-- The default configuration matches the original 20-frame decay and fade curve.
 local function prop_persist_fade(timer)
-    local age = PROP_PERSIST_TOTAL - timer  -- how many frames since decay began (0-based)
-    if age <= PROP_PERSIST_SLOW then
+    local total = get_display_duration_frames("property_text_duration", DEFAULT_PROP_PERSIST_TOTAL)
+    local slow = total * DEFAULT_PROP_PERSIST_SLOW_RATIO
+    local sharp = total * DEFAULT_PROP_PERSIST_SHARP_RATIO
+    local age = total - timer
+    local progress = age / total
+    local scaled_age = apply_fade_speed_to_progress(progress, get_display_fade_speed("property_text_fade_speed")) * total
+
+    if scaled_age <= slow then
         return 1.0
-    elseif age <= PROP_PERSIST_SHARP then
-        -- Slow stage: ease from 1.0 down to 0.7 over PROP_PERSIST_SLOW frames
-        local t = (age - PROP_PERSIST_SLOW) / (PROP_PERSIST_SHARP - PROP_PERSIST_SLOW)
+    elseif scaled_age <= sharp then
+        -- Slow stage: ease from 1.0 down to 0.7 through the middle portion.
+        local t = (scaled_age - slow) / math.max(sharp - slow, 0.001)
         return 1.0 - 0.3 * t
     else
-        -- Sharp stage: drop from 0.7 to 0 over the remaining frames
-        local t = (age - PROP_PERSIST_SHARP) / (PROP_PERSIST_TOTAL - PROP_PERSIST_SHARP)
+        -- Sharp stage: drop from 0.7 to 0 over the remaining frames.
+        local t = (scaled_age - sharp) / math.max(total - sharp, 0.001)
         return 0.7 * (1.0 - t)
     end
 end
@@ -1702,7 +1883,7 @@ end
 -- Called instead of draw_text_buffered for every property label.
 -- Draws the text immediately (including into the timestop buffer) and
 -- registers/refreshes the entry in the persist table so it can ghost
--- for PROP_PERSIST_TOTAL frames after the hitbox is gone.
+-- for the configured property text duration after the hitbox is gone.
 -- player_key must be "p1" or "p2".
 local function record_prop_persist(text, x, y, base_opacity, player_key)
     -- Immediate draw path (unchanged behaviour, also fills draw_call_buffer).
@@ -1717,7 +1898,7 @@ local function record_prop_persist(text, x, y, base_opacity, player_key)
         entry.x              = x
         entry.y              = y
         entry.base_opacity   = base_opacity
-        entry.timer          = PROP_PERSIST_TOTAL
+        entry.timer          = get_display_duration_frames("property_text_duration", DEFAULT_PROP_PERSIST_TOTAL)
         entry.last_live_frame = state.prop_persist_frame
     else
         state.prop_persist[key] = {
@@ -1726,7 +1907,7 @@ local function record_prop_persist(text, x, y, base_opacity, player_key)
             y               = y,
             base_opacity    = base_opacity,
             player_key      = player_key,
-            timer           = PROP_PERSIST_TOTAL,
+            timer           = get_display_duration_frames("property_text_duration", DEFAULT_PROP_PERSIST_TOTAL),
             last_live_frame = state.prop_persist_frame,
         }
     end
@@ -1759,13 +1940,13 @@ local function draw_prop_persist()
     end
 end
 
-local function draw_hitboxes(work, actParam, player_config, player_key)
+local function draw_hitboxes(work, actParam, player_config, player_key, entity_context)
     local col = actParam.Collision
 
     -- Pass 1: classify every rect into pure data — no GPU calls yet.
     local classified = {}
     for _, rect in reverse_pairs(col.Infos._items) do
-        local info = classify_hitbox(rect, player_config)
+        local info = classify_hitbox(rect, player_config, entity_context)
         if info then classified[#classified+1] = info end
     end
 
@@ -1775,10 +1956,11 @@ local function draw_hitboxes(work, actParam, player_config, player_key)
     local fill_groups = {}
     for _, info in ipairs(classified) do
         if info.show_fill then
-            local gkey = tostring(info.base_color) .. "_" .. tostring(info.fill_opacity)
+            local gkey = tostring(info.box_kind) .. "_" .. tostring(info.base_color) .. "_" .. tostring(info.fill_opacity)
             if not fill_groups[gkey] then
                 fill_groups[gkey] = {
                     full_color = apply_opacity(info.fill_opacity, info.base_color),
+                    box_kind   = info.box_kind,
                     boxes      = {},
                 }
             end
@@ -1787,7 +1969,7 @@ local function draw_hitboxes(work, actParam, player_config, player_key)
         end
     end
     for _, group in pairs(fill_groups) do
-        draw_union_fills(group.boxes, group.full_color)
+        draw_union_fills(group.boxes, group.full_color, group.box_kind)
     end
 
     -- Pass 3: draw each rect's outline individually — unaffected by the union.
@@ -1795,7 +1977,7 @@ local function draw_hitboxes(work, actParam, player_config, player_key)
         if info.show_outline then
             local outline_color = apply_opacity(info.outline_opacity, info.base_color)
             if draw_call_buffer then
-                draw_call_buffer[#draw_call_buffer+1] = {"outline_rect", info.x, info.y, info.w, info.h, outline_color}
+                draw_call_buffer[#draw_call_buffer+1] = {"outline_rect", info.x, info.y, info.w, info.h, outline_color, info.box_kind}
             end
             draw.outline_rect(info.x, info.y, info.w, info.h, outline_color)
         end
@@ -1877,6 +2059,26 @@ local function get_farthest_hitbox_reach(entity)
 	return farthest_edge, average_y
 end
 
+local RANGE_TICK_MOVE_EPSILON = 0.5
+
+local function clone_range_tick(tick)
+    if not tick then return nil end
+    return {
+        ox = tick.ox,
+        fy = tick.fy,
+        fx = tick.fx,
+        timer = tick.timer,
+        age = tick.age,
+    }
+end
+
+local function range_tick_changed(prev_tick, ox, fy, fx)
+    if not prev_tick then return false end
+    return math.abs((prev_tick.ox or 0) - ox) > RANGE_TICK_MOVE_EPSILON
+        or math.abs((prev_tick.fy or 0) - fy) > RANGE_TICK_MOVE_EPSILON
+        or math.abs((prev_tick.fx or 0) - fx) > RANGE_TICK_MOVE_EPSILON
+end
+
 local function update_range_tick(entity, player_key)
 	local player_config = state.config[player_key]
 	if not player_config or not player_config.toggle.hitbox_ticks then return end
@@ -1891,17 +2093,26 @@ local function update_range_tick(entity, player_key)
 
 	local far_sx, far_sy = get_farthest_hitbox_reach(entity)
 	if far_sx and far_sy then
+        local tick_state = state.range_ticks[player_key]
+        if not tick_state then
+            tick_state = { active = nil, ghosts = {} }
+            state.range_ticks[player_key] = tick_state
+        end
+
 		local current_age = 0
-		local prev_tick = state.range_ticks[player_key]
+		local prev_tick = tick_state.active
 		if prev_tick and prev_tick.timer > 0 then
 			current_age = prev_tick.age or 0
+            if range_tick_changed(prev_tick, origin.x, far_sy, far_sx) then
+                tick_state.ghosts[#tick_state.ghosts + 1] = clone_range_tick(prev_tick)
+            end
 		end
 
-		state.range_ticks[player_key] = {
+		tick_state.active = {
 			ox = origin.x,
 			fy = far_sy,
 			fx = far_sx,
-			timer = 60,
+			timer = get_display_duration_frames("hitbox_tick_duration", DEFAULT_RANGE_TICK_TOTAL),
 			age = current_age + 1
 		}
 	end
@@ -1910,6 +2121,9 @@ end
 local function process_entity(entity, draw_pos)
     local config = nil
     local player_key = nil
+    local entity_context = {
+        is_projectile_owner = is_projectile_owner_entity(entity)
+    }
     if entity:get_IsTeam1P() then
         config = state.config.p1
         player_key = "p1"
@@ -1918,7 +2132,7 @@ local function process_entity(entity, draw_pos)
         player_key = "p2"
     end
     if not config or not config.toggle.toggle_show then return end
-    draw_hitboxes(entity, entity.mpActParam, config, player_key)
+    draw_hitboxes(entity, entity.mpActParam, config, player_key, entity_context)
     if draw_pos then
         draw_position_marker(entity, config)
         update_range_tick(entity, player_key)
@@ -1941,47 +2155,69 @@ local function draw_range_ticks()
         end
     end
 
-	for player_key, tick in pairs(state.range_ticks) do
+    local function draw_single_tick(tick, player_config)
+        if not tick or tick.timer <= 0 then return false end
+
+        local ox, fy, fx = tick.ox, tick.fy, tick.fx
+        local opacity = player_config.opacity.hitbox_tick or 25
+        local total = get_display_duration_frames("hitbox_tick_duration", DEFAULT_RANGE_TICK_TOTAL)
+        local progress = (total - tick.timer) / total
+        local scaled_progress = apply_fade_speed_to_progress(progress, get_display_fade_speed("hitbox_tick_fade_speed"))
+
+        -- Default values reproduce the original timing curve.
+        local dim_fade = math.min(math.max(1.0 - (scaled_progress / DEFAULT_RANGE_TICK_DIM_WINDOW_RATIO), 0), 1)
+
+        -- Movement begins near the end of the tick lifetime, then retracts inward.
+        local move_fade = math.min(math.max(
+            (DEFAULT_RANGE_TICK_MOVE_HOLD_RATIO - scaled_progress) / DEFAULT_RANGE_TICK_MOVE_WINDOW_RATIO,
+            0), 1)
+
+        -- Line and tick mark grow/shrink spatially from origin outward
+        local cur_ox = fx - move_fade * (fx - ox)
+
+        local line_max = opacity * 0.625
+        local LINE_COLOR = apply_opacity(math.floor(line_max * dim_fade), 0xFF0000FF)
+        local TICK_COLOR = apply_opacity(math.floor(opacity * dim_fade), 0xFF0000FF)
+        local BORDER_COLOR = apply_opacity(math.floor(opacity * dim_fade), 0x000000)
+
+        -- Shift tick inward to sit on the inside face of the far edge
+        local inward = ox < fx and -2 or 2
+        local tick_x = fx + inward
+
+        for offset = -BORDER_THICKNESS, BORDER_THICKNESS do
+            draw.line(cur_ox, fy + offset, tick_x, fy + offset, BORDER_COLOR)
+        end
+
+        for x_off = -BORDER_THICKNESS, BORDER_THICKNESS do
+            thick_vline(tick_x + x_off,
+                fy - TICK_HALF_HEIGHT - BORDER_THICKNESS,
+                fy + TICK_HALF_HEIGHT + BORDER_THICKNESS,
+                BORDER_COLOR)
+        end
+
+        thick_hline(cur_ox, fy, tick_x, LINE_COLOR)
+        thick_vline(tick_x, fy - TICK_HALF_HEIGHT, fy + TICK_HALF_HEIGHT, TICK_COLOR)
+
+        tick.timer = tick.timer - 1
+        return tick.timer > 0
+    end
+
+	for player_key, tick_state in pairs(state.range_ticks) do
 		local player_config = state.config[player_key]
-		if tick and tick.timer > 0 and player_config and player_config.toggle.hitbox_ticks then
-			local ox, fy, fx = tick.ox, tick.fy, tick.fx
-			local opacity = player_config.opacity.hitbox_tick or 25
+		if not player_config or not player_config.toggle.hitbox_ticks then
+            state.range_ticks[player_key] = { active = nil, ghosts = {} }
+        else
+            if tick_state.active and not draw_single_tick(tick_state.active, player_config) then
+                tick_state.active = nil
+            end
 
-			-- Full opacity on frame 1, fades out completely by frame 20
-			local dim_fade = math.min(math.max(tick.timer - 41, 0) / 19, 1)
-
-			-- Movement: only begins retracting in the last 20 frames
-			local move_fade = math.min(math.max(tick.timer - 5, 0) / 20.0, 1)
-
-			-- Line and tick mark grow/shrink spatially from origin outward
-			local cur_ox = fx - move_fade * (fx - ox)
-
-			local line_max = opacity * 0.625
-			local LINE_COLOR = apply_opacity(math.floor(line_max * dim_fade), 0xFF0000FF)
-			local TICK_COLOR = apply_opacity(math.floor(opacity * dim_fade), 0xFF0000FF)
-			local BORDER_COLOR = apply_opacity(math.floor(opacity * dim_fade), 0x000000)
-
-			-- Shift tick inward to sit on the inside face of the far edge
-			local inward = ox < fx and -2 or 2
-			local tick_x = fx + inward
-
-			for offset = -BORDER_THICKNESS, BORDER_THICKNESS do
-				draw.line(cur_ox, fy + offset, tick_x, fy + offset, BORDER_COLOR)
-			end
-
-			for x_off = -BORDER_THICKNESS, BORDER_THICKNESS do
-				thick_vline(tick_x + x_off,
-					fy - TICK_HALF_HEIGHT - BORDER_THICKNESS,
-					fy + TICK_HALF_HEIGHT + BORDER_THICKNESS,
-					BORDER_COLOR)
-			end
-
-			thick_hline(cur_ox, fy, tick_x, LINE_COLOR)
-			thick_vline(tick_x, fy - TICK_HALF_HEIGHT, fy + TICK_HALF_HEIGHT, TICK_COLOR)
-
-			tick.timer = tick.timer - 1
-		else
-			state.range_ticks[player_key] = nil
+            local next_ghosts = {}
+            for _, ghost_tick in ipairs(tick_state.ghosts or {}) do
+                if draw_single_tick(ghost_tick, player_config) then
+                    next_ghosts[#next_ghosts + 1] = ghost_tick
+                end
+            end
+            tick_state.ghosts = next_ghosts
 		end
 	end
 end
@@ -1994,6 +2230,37 @@ local function update_timestop_state()
     end)
     if not ok or not BattleChronos then return end
     local frame, frames = BattleChronos.WorldElapsed, BattleChronos.WorldNotch
+    local training_super_freeze_active = false
+    local ok_training, active, fm_stop_frame = pcall(function()
+        return read_training_display_super_freeze_state()
+    end)
+    if ok_training then
+        training_super_freeze_active = active and true or false
+    end
+    local chronos_active = frames ~= nil
+        and frame ~= nil
+        and frames > 0
+        and frame > 0
+        and frame < frames
+    local chronos_finished = frames ~= nil
+        and frame ~= nil
+        and frames > 0
+        and frame == frames
+    local is_super_freeze_step = frames ~= nil
+        and frames == 11
+        and frame ~= nil
+        and frame > 0
+        and frame < frames
+    if not is_super_freeze_step and chronos_active and training_super_freeze_active then
+        is_super_freeze_step = true
+    end
+    if is_super_freeze_step then
+        super_freeze_linger_frames = (frames == 11) and 2 or 1
+    elseif chronos_finished or not chronos_active then
+        super_freeze_linger_frames = 0
+    else
+        super_freeze_linger_frames = math.max(0, super_freeze_linger_frames - 1)
+    end
     local current_frame, total_frames = frame, frames
     if frame > 0 and frames > 0 and frame == frames then
         current_frame, total_frames = 0, 0
@@ -2003,6 +2270,10 @@ end
 
 local function replay_frozen_draw_calls()
     for _, call in ipairs(frozen_draw_calls) do
+        local box_kind = call[7]
+        if is_super_freeze_active() and (box_kind == "pushbox" or box_kind == "proximitybox") then
+            goto continue
+        end
         if call[1] == "filled_rect" then
             draw.filled_rect(call[2], call[3], call[4], call[5], call[6])
         elseif call[1] == "outline_rect" then
@@ -2012,14 +2283,39 @@ local function replay_frozen_draw_calls()
         elseif call[1] == "circle" then
             draw.filled_circle(call[2], call[3], call[4], call[5], call[6])
         end
+        ::continue::
     end
+end
+
+local function should_replay_frozen_draw_calls()
+    -- Two distinct Chronos states need the previous stable draw buffer:
+    -- 1. The original 11F super-freeze case this script already supported.
+    -- 2. Training mode at 50% speed, which appears to present as a 2-step
+    --    repeated render of the same gameplay frame.
+    --
+    -- Broader replay causes stale screen-space hitboxes to drift away from
+    -- characters during cinematic freezes, so keep this narrowly targeted.
+    if timestop_total_frames == nil then
+        return false
+    end
+    if timestop_frame == nil or timestop_frame <= 0 then
+        return false
+    end
+    if timestop_frame >= timestop_total_frames then
+        return false
+    end
+    if timestop_total_frames ~= 2 and timestop_total_frames ~= 11 then
+        return false
+    end
+    return #frozen_draw_calls > 0
 end
 
 local function process_hitboxes()
     update_timestop_state()
 
-	-- DR 11F timestop: Keep drawing
-    if timestop_total_frames == 11 and not (timestop_frame == timestop_total_frames) then
+	-- Hold the previous stable frame across Chronos subframes so hitboxes stay
+	-- visible during slow-motion and other repeated-render states.
+    if should_replay_frozen_draw_calls() then
         replay_frozen_draw_calls()
         draw_range_ticks()
         return
@@ -2177,6 +2473,13 @@ local C_EDIT_HOV      = 0xE000E0FF   -- gold, 88% opacity
 local C_EDIT_GRAB     = 0xFF10F0FF   -- bright gold grab handle
 local C_EDIT_GRAB_ACT = 0xFFFFFFFF   -- white while the grab is held
 
+-- Sync-active state: dark green at opacities matching the gold nav palette.
+-- Used for the Sync button face, toggle-table row backgrounds, and per-cell
+-- highlights whenever sync is enabled.  All colours are packed ABGR.
+local C_SYNC_FRAME = 0x8000A000   -- dark green, 50% opacity
+local C_SYNC_HOV   = 0xA000B800   -- dark green, 63% opacity
+local C_SYNC_MARK  = 0xFF00C800   -- dark green, fully opaque
+
 -- ============================================================================
 -- Unified hover helpers
 -- is_hov(section, key, col)  →  true when hov_prev matches all non-nil args
@@ -2225,7 +2528,9 @@ local function treerow_bg(label)
     local wpos  = imgui.get_window_pos()
     local wsize = imgui.get_window_size()
     local cy    = imgui.get_cursor_pos().y
+    if not imgui.get_window_draw_list then return end
     local dl    = imgui.get_window_draw_list()
+    if not dl then return end
     dl:add_rect_filled(wpos.x, wpos.y + cy, wpos.x + wsize.x, wpos.y + cy + ROW_H, C_NAV_FRAME)
 end
 
@@ -2356,9 +2661,9 @@ function build.toggle.sync_button()
     -- Style colours are mutually exclusive per state so we track push count.
     local n_colors = 0
     if was_sync_enabled then
-        -- Active-sync state: gold button face + double-border active indicator.
-        imgui.push_style_color(IC_BUTTON,     C_NAV_FRAME)
-        imgui.push_style_color(IC_BUTTON_HOV, C_NAV_HOV)
+        -- Active-sync state: green button face + double-border active indicator.
+        imgui.push_style_color(IC_BUTTON,     C_SYNC_FRAME)
+        imgui.push_style_color(IC_BUTTON_HOV, C_SYNC_HOV)
         n_colors = 2
         imgui.begin_rect()  -- paired with end_rect(1)
         imgui.begin_rect()  -- paired with end_rect(3)
@@ -2388,7 +2693,6 @@ function build.toggle.sync_button()
 end
 
 function build.toggle.column_header_sync()
-    -- Always show the Sync button regardless of toggle state.
     build.toggle.sync_button()
 end
 
@@ -2396,6 +2700,13 @@ function build.checkbox(label, val)
     local changed, new_val = imgui.checkbox(label, val)
     if changed then mark_for_save() end
     return changed, new_val
+end
+
+function build.display_menu_checkbox()
+	local changed
+    changed, state.config.options.display_menu = build.checkbox(
+        "Better Hitbox Display: Show Menu", state.config.options.display_menu
+    )
 end
 
 function build.toggle.opacity_slider(label, val, speed, min, max)
@@ -2423,10 +2734,21 @@ function build.toggle.column_header_player(label, id, player_key, nav_col)
     local is_mouse_in_col = mx >= col_x - 4 and mx < col_x + 170
     local is_highlighted = is_hov("header", nil, nav_col) and is_mouse_in_col
 
+    -- Sync-mirror: the OTHER player's header is hovered and sync is live.
+    -- No column-X check here — mirrors intentionally highlight across columns.
+    local other_nav_col  = (nav_col == 1) and 2 or 1
+    local is_sync_mirror = state.sync_enabled and is_hov("header", nil, other_nav_col)
+
     if is_highlighted then
-        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
-        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
-        imgui.push_style_color(IC_CHECKMARK, C_NAV_MARK)
+        imgui.push_style_color(IC_FRAME_BG,  state.sync_enabled and C_SYNC_FRAME or C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, state.sync_enabled and C_SYNC_HOV   or C_NAV_HOV)
+        imgui.push_style_color(IC_CHECKMARK, state.sync_enabled and C_SYNC_MARK  or C_NAV_MARK)
+        imgui.begin_rect()
+        imgui.begin_rect()
+    elseif is_sync_mirror then
+        imgui.push_style_color(IC_FRAME_BG,  C_SYNC_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_SYNC_HOV)
+        imgui.push_style_color(IC_CHECKMARK, C_SYNC_MARK)
         imgui.begin_rect()
         imgui.begin_rect()
     end
@@ -2455,7 +2777,7 @@ function build.toggle.column_header_player(label, id, player_key, nav_col)
     imgui.text(label)
     if imgui.is_item_hovered() then set_hov("header", nil, nav_col) end
 
-    if is_highlighted then
+    if is_highlighted or is_sync_mirror then
         imgui.end_rect(1)
         imgui.end_rect(3)
         imgui.pop_style_color(3)
@@ -2469,7 +2791,7 @@ function build.toggle.column_headers()
     local row_y = imgui.get_cursor_pos().y
 
     if is_hov("header") then
-        imgui.table_set_bg_color(2, C_NAV_FRAME)
+        imgui.table_set_bg_color(2, state.sync_enabled and C_SYNC_FRAME or C_NAV_FRAME)
     end
 
     -- column 0 intentionally blank; Sync button lives above the table
@@ -2525,12 +2847,15 @@ function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, tog
 
     -- ── Checkbox ─────────────────────────────────────────────────────────────
     if is_toggle_nav then
-        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
-        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
-        imgui.push_style_color(IC_CHECKMARK, C_NAV_MARK)
+        imgui.push_style_color(IC_FRAME_BG,  state.sync_enabled and C_SYNC_FRAME or C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, state.sync_enabled and C_SYNC_HOV   or C_NAV_HOV)
+        imgui.push_style_color(IC_CHECKMARK, state.sync_enabled and C_SYNC_MARK  or C_NAV_MARK)
         imgui.begin_rect()
         imgui.begin_rect()
     elseif is_sync_mirror_toggle then
+        imgui.push_style_color(IC_FRAME_BG,  C_SYNC_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, C_SYNC_HOV)
+        imgui.push_style_color(IC_CHECKMARK, C_SYNC_MARK)
         imgui.begin_rect()
         imgui.begin_rect()
     end
@@ -2553,6 +2878,7 @@ function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, tog
     elseif is_sync_mirror_toggle then
         imgui.end_rect(1)
         imgui.end_rect(3)
+        imgui.pop_style_color(3)
     end
 
     -- ── Opacity slider ────────────────────────────────────────────────────────
@@ -2566,11 +2892,13 @@ function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, tog
         local opacity_id = string.format("##p%.0f_", player_index) .. opacity_key .. "Opacity"
 
         if is_opacity_nav then
-            imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
-            imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+            imgui.push_style_color(IC_FRAME_BG,  state.sync_enabled and C_SYNC_FRAME or C_NAV_FRAME)
+            imgui.push_style_color(IC_FRAME_HOV, state.sync_enabled and C_SYNC_HOV   or C_NAV_HOV)
             imgui.begin_rect()
             imgui.begin_rect()
         elseif is_sync_mirror_opacity then
+            imgui.push_style_color(IC_FRAME_BG,  C_SYNC_FRAME)
+            imgui.push_style_color(IC_FRAME_HOV, C_SYNC_HOV)
             imgui.begin_rect()
             imgui.begin_rect()
         end
@@ -2602,6 +2930,7 @@ function build.toggle.column(player_index, visible, toggle_tbl, opacity_tbl, tog
         elseif is_sync_mirror_opacity then
             imgui.end_rect(2)
             imgui.end_rect(1)
+            imgui.pop_style_color(2)
         end
     end
 
@@ -2616,7 +2945,7 @@ end
 
 function build.toggle.columns(label, toggle_key, opacity_key, row_idx)
     if is_hov("toggle", row_idx) then
-        imgui.table_set_bg_color(2, C_NAV_FRAME)
+        imgui.table_set_bg_color(2, state.sync_enabled and C_SYNC_FRAME or C_NAV_FRAME)
     end
     imgui.table_set_column_index(0)
     imgui.text(label)
@@ -2664,9 +2993,9 @@ function build.toggle.all_click_toggle(toggle_tbl, player_index, checked, row_id
     local is_toggle_nav  = is_hov("toggle", row_idx, toggle_col_nav) and (is_mouse_in_col ~= false)
 
     if is_toggle_nav then
-        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
-        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
-        imgui.push_style_color(IC_CHECKMARK, C_NAV_MARK)
+        imgui.push_style_color(IC_FRAME_BG,  state.sync_enabled and C_SYNC_FRAME or C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, state.sync_enabled and C_SYNC_HOV   or C_NAV_HOV)
+        imgui.push_style_color(IC_CHECKMARK, state.sync_enabled and C_SYNC_MARK  or C_NAV_MARK)
         imgui.begin_rect()
         imgui.begin_rect()
     end
@@ -2720,8 +3049,8 @@ function build.toggle.player_toggle_all(player_index, toggle_tbl, opacity_tbl, r
     local is_opacity_nav = is_hov("toggle", row_idx, opacity_col_nav) and is_mouse_in_col
 
     if is_opacity_nav then
-        imgui.push_style_color(IC_FRAME_BG,  C_NAV_FRAME)
-        imgui.push_style_color(IC_FRAME_HOV, C_NAV_HOV)
+        imgui.push_style_color(IC_FRAME_BG,  state.sync_enabled and C_SYNC_FRAME or C_NAV_FRAME)
+        imgui.push_style_color(IC_FRAME_HOV, state.sync_enabled and C_SYNC_HOV   or C_NAV_HOV)
         imgui.begin_rect()
         imgui.begin_rect()
     end
@@ -2766,7 +3095,7 @@ function build.toggle.all_row()
     local row_y = imgui.get_cursor_pos().y
 
     if is_hov("toggle", row_idx) then
-        imgui.table_set_bg_color(2, C_NAV_FRAME)
+        imgui.table_set_bg_color(2, state.sync_enabled and C_SYNC_FRAME or C_NAV_FRAME)
     end
 
     imgui.table_set_column_index(0)
@@ -3227,37 +3556,62 @@ function build.option.alerts()
     imgui.tree_pop()
 end
 
--- FIXED: was `return false` outside the `if` (due to misleading indentation),
--- so the function always returned false on the first loop iteration regardless
--- of whether the current hotkey matched its default.
-local function are_hotkeys_default()
-    for key, default_val in pairs(hk.default_hotkeys) do
-        local current = hk.hotkeys[key]
-        if current ~= default_val then
-            return false
-        end
-    end
-    return true
+local function reset_display_options_to_defaults()
+    local default = create_default_config()
+    state.config.options.hitbox_tick_duration = default.options.hitbox_tick_duration
+    state.config.options.hitbox_tick_fade_speed = default.options.hitbox_tick_fade_speed
+    state.config.options.property_text_duration = default.options.property_text_duration
+    state.config.options.property_text_fade_speed = default.options.property_text_fade_speed
+    mark_for_save()
 end
 
--- FIXED: `return true` was outside the `if value == "[Press Input]"` block,
--- causing the function to unconditionally return true on the first iteration.
-local function is_any_hotkey_rebinding()
-    for _, value in pairs(hk.hotkeys) do
-        if value == "[Press Input]" then
-            return true
-        end
+local function display_option_int_slider(label, option_key, min_val, max_val, format)
+    imgui.text(label)
+    imgui.same_line()
+    imgui.push_item_width(100)
+    local changed
+    changed, state.config.options[option_key] = imgui.slider_int("##" .. option_key, state.config.options[option_key], min_val, max_val, format or "%d")
+    if changed then mark_for_save() end
+    imgui.pop_item_width()
+end
+
+local function display_option_float_slider(label, option_key, min_val, max_val, format)
+    imgui.text(label)
+    imgui.same_line()
+    imgui.push_item_width(100)
+    local changed
+    changed, state.config.options[option_key] = imgui.slider_float("##" .. option_key, state.config.options[option_key], min_val, max_val, format or "%.1f")
+    if changed then mark_for_save() end
+    imgui.pop_item_width()
+end
+
+function build.option.display()
+    local row_y = imgui.get_cursor_pos().y
+    treerow_bg("Display")
+    if not build.tree_node_stateful("Display") then
+        row_hover_check(row_y, "treerow", "Display")
+        return
     end
-    return false
+    imgui.same_line()
+    if treerow_hov_button("Defaults##display", "Display", 1) then
+        reset_display_options_to_defaults()
+    end
+    row_hover_check(row_y, "treerow", "Display")
+
+    display_option_int_slider("Tick Mark Duration:", "hitbox_tick_duration", 1, 180, "%d f")
+    display_option_float_slider("Tick Mark Fade Speed:", "hitbox_tick_fade_speed", 0.1, 3.0, "%.1fx")
+    display_option_int_slider("Property Text Duration:", "property_text_duration", 1, 120, "%d f")
+    display_option_float_slider("Property Text Fade Speed:", "property_text_fade_speed", 0.1, 3.0, "%.1fx")
+
+    imgui.tree_pop()
 end
 
 function build.option.hotkeys_reset_button()
-    if are_hotkeys_default() then return end
     imgui.same_line()
 
     if state.confirm_restore_hotkeys == nil then state.confirm_restore_hotkeys = false end
 
-    if is_any_hotkey_rebinding() then
+    if hk.is_any_hotkey_rebinding() then
         if treerow_hov_button("Restore Defaults", "Hotkeys", 1) then
             for name, value in pairs(hk.hotkeys) do
                 if value == "[Press Input]" then
@@ -3430,6 +3784,7 @@ function build.option.menu()
     end
     row_hover_check(row_y, "treerow", "Options")
     imgui.unindent(15)
+    build.option.display()
     build.option.copy()
     build.backup.menu()   -- merged Backup/Reset group
     build.option.alerts()
@@ -3438,16 +3793,6 @@ function build.option.menu()
     build.option.misc()
     imgui.tree_pop()
     imgui.indent(15)
-end
-
-local function get_toggle_hotkey_display()
-    -- F1 is an always-active failsafe.  If the user has also bound a hotkey,
-    -- show that in the title bar instead so the most-visible label is useful.
-    local bound = state.config.hotkeys and state.config.hotkeys.hotkeys_toggle_menu
-    if bound and bound ~= "[Not Bound]" then
-        return " (" .. bound .. " / F1)"
-    end
-    return " (F1)"
 end
 
 -- ============================================================================
@@ -3497,6 +3842,7 @@ local function init_debugger()
         is_in_battle         = is_in_battle,
         get_menu_nav         = function() return menu_nav         end,
         get_timestop         = function() return timestop_frame, timestop_total_frames end,
+        get_super_freeze_debug = read_training_display_super_freeze_state,
         get_frozen_draw_calls = function() return frozen_draw_calls end,
         table_count          = table_count,
         mark_for_save        = mark_for_save,
@@ -3538,7 +3884,7 @@ local function build_menu()
     state.hov_prev = state.hov_cur
     state.hov_cur  = nil
 
-    local title = "Hitboxes" .. get_toggle_hotkey_display()
+    local title = "Hitboxes" .. hk.get_toggle_hotkey_display()
     state.force_tree_restore = (title ~= state.last_menu_title)
     state.last_menu_title = title
 
@@ -3596,99 +3942,101 @@ local function gui_handler()
     process_hitboxes()
 end
 
-local function draw_ui_handler()
-    if not imgui.tree_node("Hitbox Viewer") then return end
-	local changed
-    changed, state.config.options.display_menu = build.checkbox("Display Options Menu", state.config.options.display_menu)
-    imgui.tree_pop()
-end
+-- Hotkey Action Registration
+--
+-- All per-frame hotkey responses are registered here and dispatched by
+-- hk.run_actions() in the frame loop.  This keeps action dispatch logic
+-- consolidated inside the hk module rather than spread across the file.
 
--- Hotkey Handling
-
-local function hotkey_handler()
+local function register_hotkey_actions()
     -- F1 / Ctrl+F1 are always-active failsafe hotkeys that cannot be rebound
     -- and fire regardless of what is set in hotkeys_toggle_menu.
     -- Plain F1       → toggle main menu (failsafe)
     -- Ctrl + F1      → toggle debug panel (when debugger module is loaded)
-    if hk.check_kb_key("F1", nil, true) then
-        local ctrl = hk.check_kb_key("LControl", true)
-                  or hk.check_kb_key("RControl", true)
-                  or hk.check_kb_key("Control",  true)
-        if ctrl then
-            -- Ctrl+F1 toggles the debug panel only when the debugger module
-            -- loaded successfully; otherwise the keypress is silently ignored.
-            if debugger_available() then
-                state.config.options.enable_debug_menu = not state.config.options.enable_debug_menu
+    hk.register_raw_action(function()
+        if hk.check_kb_key("F1", nil, true) then
+            local ctrl = hk.check_kb_key("LControl", true)
+                      or hk.check_kb_key("RControl", true)
+                      or hk.check_kb_key("Control",  true)
+            if ctrl then
+                -- Ctrl+F1 toggles the debug panel only when the debugger module
+                -- loaded successfully; otherwise the keypress is silently ignored.
+                if debugger_available() then
+                    state.config.options.enable_debug_menu = not state.config.options.enable_debug_menu
+                    mark_for_save()
+                end
+            else
+                state.config.options.display_menu = not state.config.options.display_menu
                 mark_for_save()
             end
-        else
-            state.config.options.display_menu = not state.config.options.display_menu
-            mark_for_save()
         end
-    end
+    end)
 
-    -- hotkeys_toggle_menu is the user-bindable primary hotkey for the same
-    -- action.  F1 cannot be assigned here (the hotkey setter blocks it), so
-    -- the two paths never double-fire.
-    if hk.check_hotkey("hotkeys_toggle_menu") then
+    -- hotkeys_toggle_menu is the user-bindable counterpart to the F1 failsafe.
+    -- F1 cannot be assigned here (the hotkey setter blocks it), so the two
+    -- paths never double-fire.
+    hk.register_action("hotkeys_toggle_menu", function()
         state.config.options.display_menu = not state.config.options.display_menu
         mark_for_save()
-    end
-    if hk.check_hotkey("hotkeys_toggle_p1") then
+    end)
+    hk.register_action("hotkeys_toggle_p1", function()
         state.config.p1.toggle.toggle_show = not state.config.p1.toggle.toggle_show
         action_notify("P1 Hitboxes " .. (state.config.p1.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
         mark_for_save()
-    end
-    if hk.check_hotkey("hotkeys_toggle_p2") then
+    end)
+    hk.register_action("hotkeys_toggle_p2", function()
         state.config.p2.toggle.toggle_show = not state.config.p2.toggle.toggle_show
         action_notify("P2 Hitboxes " .. (state.config.p2.toggle.toggle_show and "Enabled" or "Disabled"), "alert_on_toggle")
         mark_for_save()
-    end
-    if hk.check_hotkey("hotkeys_toggle_all") then
+    end)
+    hk.register_action("hotkeys_toggle_all", function()
         local any_active = state.config.p1.toggle.toggle_show or state.config.p2.toggle.toggle_show
         state.config.p1.toggle.toggle_show = not any_active
         state.config.p2.toggle.toggle_show = not any_active
         action_notify("All Hitboxes " .. (not any_active and "Enabled" or "Disabled"), "alert_on_toggle")
         mark_for_save()
-    end
-    if hk.check_hotkey("hotkeys_toggle_sync") then
+    end)
+    hk.register_action("hotkeys_toggle_sync", function()
         state.sync_enabled = not state.sync_enabled
-    end
-    if hk.check_hotkey("hotkeys_prev_preset") then
+    end)
+    hk.register_action("hotkeys_prev_preset", function()
         load_previous_preset()
-    end
-    if hk.check_hotkey("hotkeys_next_preset") then
+    end)
+    hk.register_action("hotkeys_next_preset", function()
         load_next_preset()
-    end
-    if hk.check_hotkey("hotkeys_save_preset") then
+    end)
+    hk.register_action("hotkeys_save_preset", function()
         save_current_preset(state.current_preset_name)
-    end
-    if hk.check_hotkey("hotkeys_discard_preset") then
+    end)
+    hk.register_action("hotkeys_discard_preset", function()
         if preset_has_unsaved_changes() then
             load_preset(state.current_preset_name)
             action_notify("Changes Discarded", "alert_on_presets")
         end
-    end
+    end)
+end
+
+local function hotkey_handler()
+    hk.run_actions()
 end
 
 -- Main Initialization and Frame Loop
 
-state.initialized = false
-
 local function initialize()
     load_config()
-    if state.current_preset_name == "" then 
-        state.current_preset_name = get_preset_name()
+    if state.current_preset_name == "" then
+        init_preset_name()
     end
-    -- Initialise the external debugger module now that all locals it needs
-    -- (menu_nav, frozen_draw_calls, timestop_*, etc.) are fully defined.
+    register_hotkey_actions()
     init_debugger()
     state.initialized = true
 end
 
-re.on_draw_ui(draw_ui_handler)
+local function on_draw_ui_handler()
+    build.display_menu_checkbox()
+end
 
-re.on_frame(function()
+local function on_frame_handler()
 	object_handler()
 	save_handler()
 	hotkey_handler()
@@ -3696,6 +4044,10 @@ re.on_frame(function()
 	gui_handler()
 	tooltip_handler()
 	action_notify_handler()
-end)
+end
+
+re.on_draw_ui(on_draw_ui_handler)
+
+re.on_frame(on_frame_handler)
 
 if not state.initialized then initialize() end

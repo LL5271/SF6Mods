@@ -13,6 +13,11 @@ Usage (default):
 * **Ctrl + Right Arrow**: Load next preset
 * **Ctrl + Space**: Save current preset
 
+### New (4/20/26)
+* **Hitbox Tick Marks**: Lingering displays to better evaluate the position and distance of a hitbox (can be toggled, customizable via Options -> Display)
+* **Fading Properties**: Fades out move property text (customizable via Options -> Display)
+* Bug Fixes
+
 ## Attack Info
 
 Detailed info for current combo, including total damage, net Drive gain, Super gain, and corner carry for both players.

@@ -2104,7 +2104,7 @@ local function update_range_tick(entity, player_key)
 		if prev_tick and prev_tick.timer > 0 then
 			current_age = prev_tick.age or 0
             if range_tick_changed(prev_tick, origin.x, far_sy, far_sx) then
-                tick_state.ghosts[#tick_state.ghosts + 1] = clone_range_tick(prev_tick)
+                tick_state.ghosts = { clone_range_tick(prev_tick) }
             end
 		end
 

@@ -1,7 +1,5 @@
 # Street Fighter 6 Mods
 
-All of these files are works in progress and may be buggy.
-
 ## Better Hitbox Display
 
 More customizable version of WistfulHopes' original [hitbox display script](https://github.com/WistfulHopes/SF6Mods). Adds memory improvements, preset and hotkey support, and individual toggles/opacity sliders for each element. Uses modified Hotkeys.lua from [_ScriptCore](https://github.com/alphazolam/_ScriptCore/tree/main).
@@ -14,11 +12,6 @@ Usage (default):
 * **Ctrl + Left Arrow**: Load previous preset
 * **Ctrl + Right Arrow**: Load next preset
 * **Ctrl + Space**: Save current preset
-
-### New (4/20/26)
-* **Hitbox Tick Marks**: Lingering displays to better evaluate the position and distance of a hitbox (can be toggled, customizable via Options -> Display)
-* **Fading Properties**: Fades out move property text (customizable via Options -> Display)
-* Bug Fixes
 
 ## Attack Info
 

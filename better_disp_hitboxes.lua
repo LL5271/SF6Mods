@@ -1,4 +1,4 @@
-local MOD_NAME = "Better Hitbox Viewer"
+local MOD_NAME = "SF6 Hitboxes"
 local state = {initialized = false}
 
 -- Utilities
@@ -915,7 +915,7 @@ end
 
 -- Config Management
 
-local CONFIG_PATH = "better_disp_hitboxes.json"
+local CONFIG_PATH = "sf6-hitboxes.json"
 local SAVE_DELAY = 0.5
 
 state.save_pending = nil
@@ -2104,7 +2104,7 @@ local function update_range_tick(entity, player_key)
 		if prev_tick and prev_tick.timer > 0 then
 			current_age = prev_tick.age or 0
             if range_tick_changed(prev_tick, origin.x, far_sy, far_sx) then
-                tick_state.ghosts = { clone_range_tick(prev_tick) }
+                tick_state.ghosts[#tick_state.ghosts + 1] = clone_range_tick(prev_tick)
             end
 		end
 

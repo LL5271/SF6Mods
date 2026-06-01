@@ -23,7 +23,7 @@ local POST_MATCH_CLEAR_FRAMES = 120
 local CARRY_POSITION_MAX = 765
 local DEFAULT_STRING_GAP = 2
 local DEFAULT_IGNORE_FRAMEKILLS = true
-local BLOCKSTRING_TOOLTIP = "Maximum number of non-blocking frames before a blockstring is considered complete."
+local BLOCKSTRING_TOOLTIP = "Non-blocking frames before a blockstring is considered complete."
 local DEFAULT_BACKGROUND_OPACITY = 20
 local DEFAULT_TEXT_OPACITY = 100
 local DEFAULT_DISPLAY_SCALE = 100
@@ -33,7 +33,7 @@ local DEFAULT_CLEAR_ON_BLOCK = false
 local DEFAULT_UPDATE_ON_DAMAGE = true
 local DEFAULT_UPDATE_ON_BLOCK = true
 local DEFAULT_POSITION_OFFSET = 73
-local DEFAULT_POSITION_Y = 0
+local DEFAULT_POSITION_Y = 210
 local DEFAULT_UNIT_MODE = "raw"
 local DEFAULT_UNIT_MODES = {
     damage = "raw",
@@ -65,8 +65,8 @@ local COLUMN_DEFS = {
     { id = "adv",      label = "Adv",      width = 42, color_max = 80 },
 }
 local POSITION_DEFS = {
-    { id = "self", label = "Coords (Self)" },
-    { id = "opponent", label = "Coords (Opponent)" },
+    { id = "self", label = "P1" },
+    { id = "opponent", label = "P2" },
 }
 
 -------------------------
@@ -94,6 +94,8 @@ Config.settings = {
     hide_all_alerts = false,
     alert_on_toggle = true,
     alert_on_minimal = true,
+    reduce_drive = false,
+    reduce_super = false,
     display_background_opacity = DEFAULT_BACKGROUND_OPACITY,
     display_text_opacity = DEFAULT_TEXT_OPACITY,
     display_scale = DEFAULT_DISPLAY_SCALE,
@@ -122,6 +124,13 @@ Config.settings = {
     position_match_vertical = true,
     combo_end_mode = "defender_recovery",
     toggle_enable_debug_logging = false,
+    log_attacker_display = true,
+    log_defender_display = true,
+    log_start_finish_values = true,
+    log_settings_changed = true,
+    log_display_update = true,
+    log_display_clear = true,
+    position_mode = "percent",
 }
 
 function Config.loaded_settings_missing_defaults(loaded_settings)
@@ -259,7 +268,8 @@ function Config.ensure_position_settings()
     end
 
     if Config.settings.position_match_vertical == nil then
-        Config.settings.position_match_vertical = true
+    Config.settings.position_match_vertical = true
+    Config.settings.position_mode = "percent"
         changed = true
     end
 
@@ -268,6 +278,11 @@ function Config.ensure_position_settings()
             Config.settings.position_coords[def.id] = { x = nil, y = nil }
             changed = true
         end
+    end
+
+    if Config.settings.position_mode == nil then
+        Config.settings.position_mode = "percent"
+        changed = true
     end
 
     return changed
@@ -325,18 +340,24 @@ function Config.reset_unit_defaults()
     for _, unit in ipairs(UNIT_DEFS) do
         Config.settings.unit_display[unit.id] = DEFAULT_UNIT_MODES[unit.id] or DEFAULT_UNIT_MODE
     end
+    Config.settings.reduce_drive = false
+    Config.settings.reduce_super = false
 end
 
 function Config.reset_attack_info_defaults()
-    Config.settings.toggle_all = true
-    Config.settings.toggle_p1 = true
-    Config.settings.toggle_p2 = true
-    Config.settings.toggle_show_blocked_attacks = true
-    Config.settings.toggle_ignore_framekills = DEFAULT_IGNORE_FRAMEKILLS
-    Config.settings.string_gap = DEFAULT_STRING_GAP
-    Config.settings.toggle_minimal_view_p1 = true
-    Config.settings.toggle_minimal_view_p2 = true
-    Config.settings.combo_end_mode = "defender_recovery"
+    Config.reset_updating_defaults()
+    Config.reset_display_defaults()
+    Config.reset_unit_defaults()
+    Config.reset_column_visibility_defaults()
+    local _, defaults = UI.ensure_position_coords()
+    Config.reset_position_defaults(defaults)
+    Config.settings.toggle_enable_debug_logging = false
+    Config.settings.log_attacker_display = true
+    Config.settings.log_defender_display = true
+    Config.settings.log_start_finish_values = true
+    Config.settings.log_settings_changed = true
+    Config.settings.log_display_update = true
+    Config.settings.log_display_clear = true
 end
 function Config.reset_column_visibility_defaults()
     for _, key in ipairs({ "column_visibility_p1", "column_visibility_p2" }) do
@@ -353,6 +374,9 @@ end
 function Config.reset_position_defaults(defaults)
     Config.ensure_position_settings()
     Config.settings.toggle_mirror_column_order = true
+    Config.settings.position_mirror_y_axis = true
+    Config.settings.position_match_vertical = true
+    Config.settings.position_mode = "percent"
     for _, def in ipairs(POSITION_DEFS) do
         local default_coords = defaults and defaults[def.id] or nil
         Config.settings.position_coords[def.id].x = default_coords and default_coords.x or nil
@@ -370,29 +394,59 @@ function Config.unit_defaults_selected()
         end
     end
 
+    if Config.settings.reduce_drive ~= false then return false end
+    if Config.settings.reduce_super ~= false then return false end
+
     return true
 end
 
 function Config.attack_info_defaults_selected()
-    return Config.settings.toggle_all == true
-        and Config.settings.toggle_p1 == true
-        and Config.settings.toggle_p2 == true
-        and Config.settings.toggle_show_blocked_attacks == true
-        and Config.settings.toggle_ignore_framekills == DEFAULT_IGNORE_FRAMEKILLS
+    if not Config.updating_defaults_selected() then return false end
+    if not Config.display_defaults_selected() then return false end
+    if not Config.unit_defaults_selected() then return false end
+    if not Config.column_visibility_defaults_selected() then return false end
+    local _, defaults = UI.ensure_position_coords()
+    if not Config.position_defaults_selected(defaults) then return false end
+    if Config.settings.toggle_enable_debug_logging ~= false then return false end
+    if Config.settings.log_attacker_display ~= true then return false end
+    if Config.settings.log_defender_display ~= true then return false end
+    if Config.settings.log_start_finish_values ~= true then return false end
+    if Config.settings.log_settings_changed ~= true then return false end
+    if Config.settings.log_display_update ~= true then return false end
+    if Config.settings.log_display_clear ~= true then return false end
+    return true
+end
+
+function Config.updating_defaults_selected()
+    return Config.settings.toggle_show_blocked_attacks == true
         and (tonumber(Config.settings.string_gap) or DEFAULT_STRING_GAP) == DEFAULT_STRING_GAP
-        and Config.settings.toggle_minimal_view_p1 == true
-        and Config.settings.toggle_minimal_view_p2 == true
         and (Config.settings.combo_end_mode or "defender_recovery") == "defender_recovery"
+        and Config.settings.toggle_clear_on_damage == DEFAULT_CLEAR_ON_DAMAGE
+        and Config.settings.toggle_clear_on_block == DEFAULT_CLEAR_ON_BLOCK
+        and Config.settings.toggle_update_on_damage == DEFAULT_UPDATE_ON_DAMAGE
+        and Config.settings.toggle_update_on_block == DEFAULT_UPDATE_ON_BLOCK
+end
+
+function Config.reset_updating_defaults()
+    Config.settings.toggle_show_blocked_attacks = true
+    Config.settings.string_gap = DEFAULT_STRING_GAP
+    Config.settings.combo_end_mode = "defender_recovery"
+    Config.settings.toggle_clear_on_damage = DEFAULT_CLEAR_ON_DAMAGE
+    Config.settings.toggle_clear_on_block = DEFAULT_CLEAR_ON_BLOCK
+    Config.settings.toggle_update_on_damage = DEFAULT_UPDATE_ON_DAMAGE
+    Config.settings.toggle_update_on_block = DEFAULT_UPDATE_ON_BLOCK
 end
 function Config.display_defaults_selected()
     return (tonumber(Config.settings.display_background_opacity) or DEFAULT_BACKGROUND_OPACITY) == DEFAULT_BACKGROUND_OPACITY
         and (tonumber(Config.settings.display_text_opacity) or DEFAULT_TEXT_OPACITY) == DEFAULT_TEXT_OPACITY
         and (tonumber(Config.settings.display_scale) or DEFAULT_DISPLAY_SCALE) == DEFAULT_DISPLAY_SCALE
         and (tonumber(Config.settings.combo_timer_duration) or DEFAULT_COMBO_TIMER_DURATION) == DEFAULT_COMBO_TIMER_DURATION
-        and Config.settings.toggle_clear_on_damage == DEFAULT_CLEAR_ON_DAMAGE
-        and Config.settings.toggle_clear_on_block == DEFAULT_CLEAR_ON_BLOCK
-        and Config.settings.toggle_update_on_damage == DEFAULT_UPDATE_ON_DAMAGE
-        and Config.settings.toggle_update_on_block == DEFAULT_UPDATE_ON_BLOCK
+end
+function Config.reset_display_defaults()
+    Config.settings.display_background_opacity = DEFAULT_BACKGROUND_OPACITY
+    Config.settings.display_text_opacity = DEFAULT_TEXT_OPACITY
+    Config.settings.display_scale = DEFAULT_DISPLAY_SCALE
+    Config.settings.combo_timer_duration = DEFAULT_COMBO_TIMER_DURATION
 end
 function Config.column_visibility_defaults_selected()
     for _, key in ipairs({ "column_visibility_p1", "column_visibility_p2" }) do
@@ -429,16 +483,20 @@ function Config.position_defaults_selected(defaults)
         return false
     end
 
+    if Config.settings.position_mode ~= "percent" then
+        return false
+    end
+
     for _, def in ipairs(POSITION_DEFS) do
         local coords = Config.settings.position_coords[def.id]
         local default_coords = defaults[def.id]
         if type(coords) ~= "table" or type(default_coords) ~= "table" then
             return false
         end
-        if math.floor((tonumber(coords.x) or 0) + 0.5) ~= default_coords.x then
+        if math.floor((tonumber(coords.x) or 0) * 100 + 0.5) / 100 ~= math.floor((default_coords.x or 0) * 100 + 0.5) / 100 then
             return false
         end
-        if math.floor((tonumber(coords.y) or 0) + 0.5) ~= default_coords.y then
+        if math.floor((tonumber(coords.y) or 0) * 100 + 0.5) / 100 ~= math.floor((default_coords.y or 0) * 100 + 0.5) / 100 then
             return false
         end
     end
@@ -910,8 +968,14 @@ ComboData.runtime_state = {
     display_values_logged_hashes = {},
 }
 
-function ComboData.debug_log(message)
+function ComboData.debug_log(message, cat)
     if Config.settings.toggle_enable_debug_logging ~= true then return false end
+    if cat and Config.settings[cat] == false then
+        local linger = ComboData.runtime_state.log_linger_until or 0
+        if cat ~= "log_attacker_display" and cat ~= "log_defender_display" or os.time() >= linger then
+            return false
+        end
+    end
     local ok = pcall(function()
         local file = io.open("attack_info_debug.log", "a")
         if file then
@@ -924,9 +988,10 @@ function ComboData.debug_log(message)
     return ok
 end
 
-function ComboData.debug_log_state(prefix, state)
+function ComboData.debug_log_state(prefix, state, cat)
+    cat = cat or "log_start_finish_values"
     if not state then
-        ComboData.debug_log(prefix .. " state=nil")
+        ComboData.debug_log(prefix .. " state=nil", cat)
         return
     end
     ComboData.debug_log(prefix
@@ -945,7 +1010,7 @@ function ComboData.debug_log_state(prefix, state)
         .. " advantage_settle_remaining=" .. tostring(state.advantage_settle_remaining)
         .. " timer_remaining=" .. tostring(state.timer_remaining)
         .. " poison_was_active=" .. tostring(state.poison_was_active)
-        .. " knockdown_drive_settle=" .. tostring(state.knockdown_drive_settle)
+        .. " knockdown_drive_settle=" .. tostring(state.knockdown_drive_settle), cat
     )
     if state.hit_damage_lock then
         ComboData.debug_log(prefix .. " hit_damage_lock"
@@ -953,20 +1018,20 @@ function ComboData.debug_log_state(prefix, state)
             .. " scaling=" .. tostring(state.hit_damage_lock.scaling)
             .. " scaled_damage=" .. tostring(state.hit_damage_lock.scaled_damage)
             .. " combo_damage_total=" .. tostring(state.hit_damage_lock.combo_damage_total)
-            .. " first_hit_ko=" .. tostring(state.hit_damage_lock.first_hit_ko_damage_derived_from_combo_damage)
+            .. " first_hit_ko=" .. tostring(state.hit_damage_lock.first_hit_ko_damage_derived_from_combo_damage), cat
         )
     end
     if state.start and state.start.p1 then
-        ComboData.debug_log(prefix .. " start.p1 character_id=" .. tostring(state.start.p1.character_id) .. " hp=" .. tostring(state.start.p1.hp_current) .. " drive=" .. tostring(state.start.p1.drive_adjusted) .. " super=" .. tostring(state.start.p1.super) .. " pos_x=" .. tostring(state.start.p1.pos_x) .. " gap=" .. tostring(state.start.p1.gap) .. " sp_armor=" .. tostring(state.start.p1.sp_armor) .. " armor_now=" .. tostring(state.start.p1.armor_now) .. " attack_name=" .. tostring(state.start.p1.attack_name))
+        ComboData.debug_log(prefix .. " start.p1 character_id=" .. tostring(state.start.p1.character_id) .. " hp=" .. tostring(state.start.p1.hp_current) .. " drive=" .. tostring(state.start.p1.drive_adjusted) .. " super=" .. tostring(state.start.p1.super) .. " pos_x=" .. tostring(state.start.p1.pos_x) .. " gap=" .. tostring(state.start.p1.gap) .. " sp_armor=" .. tostring(state.start.p1.sp_armor) .. " armor_now=" .. tostring(state.start.p1.armor_now) .. " attack_name=" .. tostring(state.start.p1.attack_name), cat)
     end
     if state.start and state.start.p2 then
-        ComboData.debug_log(prefix .. " start.p2 character_id=" .. tostring(state.start.p2.character_id) .. " hp=" .. tostring(state.start.p2.hp_current) .. " drive=" .. tostring(state.start.p2.drive_adjusted) .. " super=" .. tostring(state.start.p2.super) .. " pos_x=" .. tostring(state.start.p2.pos_x) .. " gap=" .. tostring(state.start.p2.gap) .. " sp_armor=" .. tostring(state.start.p2.sp_armor) .. " armor_now=" .. tostring(state.start.p2.armor_now) .. " attack_name=" .. tostring(state.start.p2.attack_name))
+        ComboData.debug_log(prefix .. " start.p2 character_id=" .. tostring(state.start.p2.character_id) .. " hp=" .. tostring(state.start.p2.hp_current) .. " drive=" .. tostring(state.start.p2.drive_adjusted) .. " super=" .. tostring(state.start.p2.super) .. " pos_x=" .. tostring(state.start.p2.pos_x) .. " gap=" .. tostring(state.start.p2.gap) .. " sp_armor=" .. tostring(state.start.p2.sp_armor) .. " armor_now=" .. tostring(state.start.p2.armor_now) .. " attack_name=" .. tostring(state.start.p2.attack_name), cat)
     end
     if state.finish and state.finish.p1 then
-        ComboData.debug_log(prefix .. " finish.p1 character_id=" .. tostring(state.finish.p1.character_id) .. " hp=" .. tostring(state.finish.p1.hp_current) .. " drive=" .. tostring(state.finish.p1.drive_adjusted) .. " super=" .. tostring(state.finish.p1.super) .. " pos_x=" .. tostring(state.finish.p1.pos_x) .. " gap=" .. tostring(state.finish.p1.gap) .. " combo_damage=" .. tostring(state.finish.p1.combo_damage) .. " current_hit_damage=" .. tostring(state.finish.p1.current_hit_damage) .. " sp_armor=" .. tostring(state.finish.p1.sp_armor) .. " armor_now=" .. tostring(state.finish.p1.armor_now) .. " attack_name=" .. tostring(state.finish.p1.attack_name))
+        ComboData.debug_log(prefix .. " finish.p1 character_id=" .. tostring(state.finish.p1.character_id) .. " hp=" .. tostring(state.finish.p1.hp_current) .. " drive=" .. tostring(state.finish.p1.drive_adjusted) .. " super=" .. tostring(state.finish.p1.super) .. " pos_x=" .. tostring(state.finish.p1.pos_x) .. " gap=" .. tostring(state.finish.p1.gap) .. " combo_damage=" .. tostring(state.finish.p1.combo_damage) .. " current_hit_damage=" .. tostring(state.finish.p1.current_hit_damage) .. " sp_armor=" .. tostring(state.finish.p1.sp_armor) .. " armor_now=" .. tostring(state.finish.p1.armor_now) .. " attack_name=" .. tostring(state.finish.p1.attack_name), cat)
     end
     if state.finish and state.finish.p2 then
-        ComboData.debug_log(prefix .. " finish.p2 character_id=" .. tostring(state.finish.p2.character_id) .. " hp=" .. tostring(state.finish.p2.hp_current) .. " drive=" .. tostring(state.finish.p2.drive_adjusted) .. " super=" .. tostring(state.finish.p2.super) .. " pos_x=" .. tostring(state.finish.p2.pos_x) .. " gap=" .. tostring(state.finish.p2.gap) .. " combo_damage=" .. tostring(state.finish.p2.combo_damage) .. " current_hit_damage=" .. tostring(state.finish.p2.current_hit_damage) .. " sp_armor=" .. tostring(state.finish.p2.sp_armor) .. " armor_now=" .. tostring(state.finish.p2.armor_now) .. " attack_name=" .. tostring(state.finish.p2.attack_name))
+        ComboData.debug_log(prefix .. " finish.p2 character_id=" .. tostring(state.finish.p2.character_id) .. " hp=" .. tostring(state.finish.p2.hp_current) .. " drive=" .. tostring(state.finish.p2.drive_adjusted) .. " super=" .. tostring(state.finish.p2.super) .. " pos_x=" .. tostring(state.finish.p2.pos_x) .. " gap=" .. tostring(state.finish.p2.gap) .. " combo_damage=" .. tostring(state.finish.p2.combo_damage) .. " current_hit_damage=" .. tostring(state.finish.p2.current_hit_damage) .. " sp_armor=" .. tostring(state.finish.p2.sp_armor) .. " armor_now=" .. tostring(state.finish.p2.armor_now) .. " attack_name=" .. tostring(state.finish.p2.attack_name), cat)
     end
 end
 
@@ -974,10 +1039,10 @@ function ComboData.sync_gameplay_state(in_battle, round_no)
     local runtime_state = ComboData.runtime_state
 
     if runtime_state.was_in_battle ~= in_battle then
-        ComboData.debug_log("ROUND_START in_battle=" .. tostring(in_battle) .. " round_no=" .. tostring(round_no))
+        ComboData.debug_log("ROUND_START in_battle=" .. tostring(in_battle) .. " round_no=" .. tostring(round_no), "log_start_finish_values")
         ComboData.default_state()
     elseif in_battle and runtime_state.last_round_no ~= nil and round_no ~= nil and round_no ~= runtime_state.last_round_no then
-        ComboData.debug_log("ROUND_START round_no=" .. tostring(round_no) .. " (was " .. tostring(runtime_state.last_round_no) .. ")")
+        ComboData.debug_log("ROUND_START round_no=" .. tostring(round_no) .. " (was " .. tostring(runtime_state.last_round_no) .. ")", "log_start_finish_values")
         ComboData.default_state()
     end
 
@@ -1725,7 +1790,7 @@ function ComboData.update_block_end_grace(state, def, def_prev)
                 .. " guard_time=" .. tostring(def and def.guard_time)
                 .. " guard_combo_count=" .. tostring(def and def.guard_combo_count)
                 .. " guard_combo_advance=" .. tostring(ComboData.did_guard_count_advance(def, def_prev))
-                .. " string_gap=" .. tostring(string_gap))
+                .. " string_gap=" .. tostring(string_gap), "log_display_update")
         end
         return false
     end
@@ -1734,7 +1799,7 @@ function ComboData.update_block_end_grace(state, def, def_prev)
         .. " guard_time=" .. tostring(def and def.guard_time)
         .. " guard_combo_count=" .. tostring(def and def.guard_combo_count)
         .. " guard_combo_advance=" .. tostring(ComboData.did_guard_count_advance(def, def_prev))
-        .. " string_gap=" .. tostring(string_gap))
+        .. " string_gap=" .. tostring(string_gap), "log_display_update")
 
     return true
 end
@@ -1771,7 +1836,7 @@ function ComboData.get_strongest_advantage_candidate(latest)
 end
 
 function ComboData.update_hit_advantage_lock(state, attacker_key, current_finish)
-    if not state or state.is_blocked or not Config.settings.toggle_ignore_framekills then
+    if not state or state.is_blocked then
         return
     end
 
@@ -2696,7 +2761,7 @@ function ComboData.update_state(p1, p2)
                 .. " def.attack_name=" .. tostring(def and def.attack_name)
                 .. " def.down_count=" .. tostring(def and def.down_count)
                 .. " def.sp_armor=" .. tostring(def and def.sp_armor)
-                .. " def.armor_now=" .. tostring(def and def.armor_now)
+                .. " def.armor_now=" .. tostring(def and def.armor_now), "log_display_update"
             )
         end
         ComboData.clear_defender_display_box_for_incoming_attack(i, attack_kind)
@@ -2805,7 +2870,7 @@ function ComboData.update_state(p1, p2)
                 .. " atk.drive_cooldown=" .. tostring(atk and atk.drive_cooldown)
                 .. " atk.super=" .. tostring(atk and atk.super)
                 .. " atk.action_id=" .. tostring(atk and atk.action_id)
-                .. " atk.act_st=" .. tostring(atk and atk.act_st)
+                .. " atk.act_st=" .. tostring(atk and atk.act_st), "log_display_update"
                 .. " def.hp=" .. tostring(def and def.hp_current)
                 .. " def.drive=" .. tostring(def and def.drive_adjusted)
                 .. " def.drive_cooldown=" .. tostring(def and def.drive_cooldown)
@@ -2833,6 +2898,7 @@ function ComboData.update_state(p1, p2)
             local saved_pending_ko_hit_damage_delta = preserve_ko_start_snapshot and Utils.deep_copy(state.pending_ko_hit_damage_delta) or nil
             local saved_combo_damage_lock = preserve_ko_start_snapshot and state.combo_damage_lock or nil
             state.started, state.finished = true, false
+            state.timer_remaining = nil  -- clear stale timer from previous finished combo
             state.is_blocked = attack_kind == "block"
             state.is_trade_sequence = attack_kind == "hit" and ComboData.is_trade_start(atk, def)
             state.is_throw = attack_kind == "throw"
@@ -2985,7 +3051,7 @@ function ComboData.update_state(p1, p2)
                         .. " atk.attack_name=" .. tostring(atk and atk.attack_name)
                         .. " atk.drive=" .. tostring(atk and atk.drive_adjusted)
                         .. " atk.super=" .. tostring(atk and atk.super)
-                        .. " def.hp=" .. tostring(def and def.hp_current)
+                        .. " def.hp=" .. tostring(def and def.hp_current), "log_display_update"
                         .. " def.combo_scale_now=" .. tostring(def and def.combo_scale_now)
                         .. " def.act_st=" .. tostring(def and def.act_st)
                         .. " def.attack_name=" .. tostring(def and def.attack_name)
@@ -3154,17 +3220,17 @@ function ComboData.update_state(p1, p2)
                         state.throw_end_wait_for_exit = state.is_throw == true and not round_ended and not ko_pending
                         state.advantage_settle_remaining = round_ended and 0 or ADVANTAGE_SETTLE_FRAMES
                         if Config.settings.combo_timer_duration > 0 then
-                            state.timer_remaining = Config.settings.combo_timer_duration
+                            state.timer_remaining = Config.settings.combo_timer_duration * 60
                         end
                         ComboData.clear_all_resource_baselines()
                         if state.is_blocked then
-                            ComboData.debug_log("BLOCK_END p" .. tostring(i)
-                                .. " guard_time=" .. tostring(def and def.guard_time)
-                                .. " guard_combo_count=" .. tostring(def and def.guard_combo_count)
-                                .. " guard_combo_prev=" .. tostring(def_prev and def_prev.guard_combo_count)
-                                .. " act_st=" .. tostring(def and def.act_st)
-                                .. " guard_grace=" .. tostring(state.block_end_grace_remaining)
-                                .. " block_damage=" .. tostring((def_prev and def_prev.hp_current or 0) - (def and def.hp_current or 0))
+                        ComboData.debug_log("BLOCK_END p" .. tostring(i)
+                            .. " guard_time=" .. tostring(def and def.guard_time)
+                            .. " guard_combo_count=" .. tostring(def and def.guard_combo_count)
+                            .. " guard_combo_prev=" .. tostring(def_prev and def_prev.guard_combo_count)
+                            .. " act_st=" .. tostring(def and def.act_st)
+                            .. " guard_grace=" .. tostring(state.block_end_grace_remaining)
+                            .. " block_damage=" .. tostring((def_prev and def_prev.hp_current or 0) - (def and def.hp_current or 0)), "log_display_update"
                             )
                         end
                         ComboData.debug_log("COMBO_END p" .. tostring(i)
@@ -3175,8 +3241,9 @@ function ComboData.update_state(p1, p2)
                             .. " start_hp_lock=" .. tostring(state.start_hp_lock)
                             .. " hit_damage_lock_frozen=" .. tostring(state.hit_damage_lock_frozen)
                             .. " advantage_settle_remaining=" .. tostring(state.advantage_settle_remaining)
-                            .. " timer_remaining=" .. tostring(state.timer_remaining)
+                            .. " timer_remaining=" .. tostring(state.timer_remaining), "log_display_update"
                         )
+                        ComboData.runtime_state.log_linger_until = os.time() + 10
                         -- When ending a knockdown combo because a new attack was detected
                         -- (defender acted immediately upon recovering), capture starter
                         -- values now from p1_prev/p2_prev (still from the pre-attack frame)
@@ -3212,7 +3279,7 @@ function ComboData.update_state(p1, p2)
                     )
                     if ComboData.runtime_state.ko_logged_frame ~= ComboData.runtime_state.frame_count then
                         ComboData.runtime_state.ko_logged_frame = ComboData.runtime_state.frame_count
-                        ComboData.debug_log_state("KO_DETECTED p" .. tostring(i) .. " before_cap", state)
+                        ComboData.debug_log_state("KO_DETECTED p" .. tostring(i) .. " before_cap", state, "log_display_update")
                         ComboData.debug_log("KO_DETECTED p" .. tostring(i)
                             .. " ko_pending=" .. tostring(ko_pending)
                             .. " round_ended=" .. tostring(round_ended)
@@ -3225,10 +3292,10 @@ function ComboData.update_state(p1, p2)
                             .. " def.incapacitated=" .. tostring(def and def.incapacitated)
                             .. " def.attack_name=" .. tostring(def and def.attack_name)
                             .. " cap_hp_start=" .. tostring(cap_hp_start)
-                            .. " combo_damage_lock_before_cap=" .. tostring(state.combo_damage_lock)
+                            .. " combo_damage_lock_before_cap=" .. tostring(state.combo_damage_lock), "log_display_update"
                         )
                         if cap_hp_start > 0 and state.combo_damage_lock and state.combo_damage_lock > cap_hp_start then
-                            ComboData.debug_log("KO_DETECTED p" .. tostring(i) .. " combo_damage_lock_capped_to=" .. tostring(cap_hp_start))
+                            ComboData.debug_log("KO_DETECTED p" .. tostring(i) .. " combo_damage_lock_capped_to=" .. tostring(cap_hp_start), "log_display_update")
                         end
                     end
                     if cap_hp_start > 0 then
@@ -3271,14 +3338,14 @@ function ComboData.update_state(p1, p2)
                 end
                 if ko_pending and ComboData.runtime_state.ko_logged_frame ~= ComboData.runtime_state.frame_count then
                     ComboData.runtime_state.ko_logged_frame = ComboData.runtime_state.frame_count
-                    ComboData.debug_log_state("KO_FINISH p" .. tostring(i), state)
+                    ComboData.debug_log_state("KO_FINISH p" .. tostring(i), state, "log_display_update")
                     ComboData.debug_log("KO_FINISH p" .. tostring(i)
                         .. " ko_carry_total_p1=" .. tostring(state.ko_carry_total_p1)
                         .. " ko_carry_total_p2=" .. tostring(state.ko_carry_total_p2)
                         .. " ko_carry_finish_p1_x=" .. tostring(state.ko_carry_finish_p1_x)
                         .. " ko_carry_finish_p2_x=" .. tostring(state.ko_carry_finish_p2_x)
                         .. " atk.attack_name=" .. tostring(atk and atk.attack_name)
-                        .. " def.attack_name=" .. tostring(def and def.attack_name)
+                        .. " def.attack_name=" .. tostring(def and def.attack_name), "log_display_update"
                     )
                 end
                 state.prev_finish = previous_finish
@@ -3367,22 +3434,15 @@ UI.minimum_combo_window_width = 220
 UI.window_padding_width = 44
 UI.display_box_rounding = 10
 UI.stroke_item_id = 0
-UI.confirm_target = nil
+UI.confirm_active = {}
 function UI.confirm_button(action_key, label, id, callback)
-    local display = (UI.confirm_target == action_key) and (label .. "?##" .. id) or (label .. "##" .. id)
-    local was_clicked = false
+    local display = UI.confirm_active[action_key] and (label .. "?##" .. id) or (label .. "##" .. id)
     if imgui.button(display) then
-        was_clicked = true
-        if UI.confirm_target == action_key then
+        if UI.confirm_active[action_key] then
+            UI.confirm_active[action_key] = nil
             callback()
-            UI.confirm_target = nil
         else
-            UI.confirm_target = action_key
-        end
-    end
-    if UI.confirm_target == action_key and not was_clicked then
-        if imgui.is_mouse_clicked(0) or imgui.is_mouse_clicked(1) then
-            UI.confirm_target = nil
+            UI.confirm_active[action_key] = true
         end
     end
 end
@@ -4377,6 +4437,15 @@ function UI.ko_suppress(state, value)
 end
 
 function UI.format_column_value(v, column, percent_max, carry_percent_mode)
+    if column and column.unit_id == "drive" and Config.settings.reduce_drive and v ~= nil then
+        v = v / 10
+        if percent_max then percent_max = percent_max / 10 end
+    end
+    if column and column.unit_id == "super" and Config.settings.reduce_super and v ~= nil then
+        v = v / 10
+        if percent_max then percent_max = percent_max / 10 end
+    end
+
     if column and column.id == "hit_damage" then
         if v == nil or v == 0 then return "-" end
         return UI.format_raw_value(v)
@@ -4634,54 +4703,20 @@ function UI.get_carry_total_value(start_player, finish_player, attacker_start, a
             and attacker_start_dir ~= attacker_finish_dir
         )
 
+    local direction_sign
     if side_switched then
-        -- Side-switch totals are not simple screen-space deltas. Compare the
-        -- amount of space between the player endpoint and the wall the attacker
-        -- is facing at combo start versus combo end:
-        --   total = start-facing-wall-space - finish-facing-wall-space
-        --
-        -- This makes back-to-wall side switches large positive values, corner
-        -- give-up side switches large negative values, and midscreen switches
-        -- comparatively small. For throw side switches where the finish dir did
-        -- not flip in the snapshot, synthesize the finish facing as the opposite
-        -- of start facing so throws use the same wall-space calculation as
-        -- non-throw side-switch combos.
-        local _ = percent_max
-        local max_pos = math.max(1, tonumber(CARRY_POSITION_MAX) or 765)
-
-        local function space_to_facing_wall(pos, facing_right)
-            local clamped_pos = Utils.clamp(tonumber(pos) or 0, -max_pos, max_pos)
-            if facing_right then
-                return max_pos - clamped_pos
-            end
-            return clamped_pos + max_pos
-        end
-
-        local start_facing_right = attacker_start_dir == true
-        local finish_facing_right
-        if attacker_finish_dir ~= nil and attacker_finish_dir ~= attacker_start_dir then
-            finish_facing_right = attacker_finish_dir == true
-        elseif force_side_switch == true and attacker_start_dir ~= nil then
-            finish_facing_right = not start_facing_right
-        else
-            finish_facing_right = attacker_finish_dir == true
-        end
-
-        local start_space = space_to_facing_wall(start_pos, start_facing_right)
-        local finish_space = space_to_facing_wall(finish_pos, finish_facing_right)
-        return start_space - finish_space
+        direction_sign = -1
+    else
+        direction_sign = attacker_start and attacker_start.dir and 1 or -1
     end
-
-    local direction_sign = attacker_start and attacker_start.dir and 1 or -1
     return (finish_pos - start_pos) * direction_sign
 end
 
 
 -- BEGIN side-switch Carry total sign rule
 function UI.apply_side_switch_carry_total_sign_rule(p1_carry_total, p2_carry_total, is_p1_attacker, attacker_start, attacker_finish)
-    -- Side-switch sign is now part of UI.get_carry_total_value's wall-space
-    -- delta. Keep this function as a no-op compatibility shim for the existing
-    -- total-row call site.
+    -- Side-switch sign is now part of UI.get_carry_total_value. Keep this
+    -- function as a no-op compatibility shim for the existing total-row call site.
     local _ = is_p1_attacker
     local __ = attacker_start
     local ___ = attacker_finish
@@ -4997,18 +5032,39 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
         end)
     end
 
+    local all_values_texts = nil
+    if state and (state.ended_in_ko or (state.finished and not state.started)) then
+        for _, all_col in ipairs(COLUMN_DEFS) do
+            local all_v = values[all_col.index]
+            local is_drive_burnout = UI.is_drive_burnout_entry_marker and UI.is_drive_burnout_entry_marker(all_v)
+            local all_display_v = is_drive_burnout and UI.get_drive_burnout_entry_value(all_v) or all_v
+            local all_percent_max = percent_max_values and percent_max_values[all_col.index] or nil
+            local all_text
+            if display_modes and display_modes[all_col.id] == "percent" then
+                all_text = UI.format_percent_value(all_display_v, 100)
+            else
+                all_text = UI.format_column_value(all_display_v, all_col, all_percent_max, carry_percent_mode)
+            end
+            all_values_texts = all_values_texts or {}
+            table.insert(all_values_texts, all_col.id .. "=" .. all_text)
+        end
+    end
+
     if state and (state.ended_in_ko or (state.finished and not state.started)) and display_values_texts then
         local dv_key = "p" .. tostring((player_index or 0) + 1) .. ":" .. tostring(row_index or 0)
         local dv_hash = table.concat(display_values_texts, "\t")
         local prev_hash = ComboData.runtime_state.display_values_logged_hashes[dv_key]
         if prev_hash ~= dv_hash then
             ComboData.runtime_state.display_values_logged_hashes[dv_key] = dv_hash
+            local dv_cat = is_defense and "log_defender_display" or "log_attacker_display"
             ComboData.debug_log("DISPLAY_VALUES " .. dv_key
                 .. " character_id=" .. tostring(GameObjects.get_character_id(player_index or 0))
                 .. " is_defense=" .. tostring(is_defense)
                 .. " ended_in_ko=" .. tostring(state.ended_in_ko)
                 .. " finished=" .. tostring(state.finished)
                 .. " rendered=" .. table.concat(display_values_texts, " | ")
+                .. (all_values_texts and (" all=" .. table.concat(all_values_texts, " | ")) or ""),
+                dv_cat
             )
         end
     end
@@ -5054,6 +5110,7 @@ function UI.render_player_combo_window(player_index, title, x, y, anchor_pivot_x
     local background_opacity = UI.get_display_background_opacity()
 
     if UI.should_hide_combo_window(state) then
+        state.started = false
         state.finished = false
         state.timer_remaining = nil
         return
@@ -5107,7 +5164,7 @@ function UI.handle_hotkeys()
         else
             Config.settings.toggle_all = not Config.settings.toggle_all
             UI.action_notify("Display " .. (Config.settings.toggle_all and "Enabled" or "Disabled"), "alert_on_toggle")
-            ComboData.debug_log("SETTING_CHANGED toggle_all=" .. tostring(Config.settings.toggle_all))
+            ComboData.debug_log("SETTING_CHANGED toggle_all=" .. tostring(Config.settings.toggle_all), "log_settings_changed")
         end
         UI.mark_for_save()
     end
@@ -5127,15 +5184,17 @@ end
 
 function UI.get_default_position_coords()
     local display = imgui.get_display_size()
-    local center_x = (display and display.x or 0) * 0.5
+    local sw = math.max(1, tonumber(display and display.x) or 1920)
+    local sh = math.max(1, tonumber(display and display.y) or 1080)
+    local function r2(v) return math.floor(v * 100 + 0.5) / 100 end
     return {
         self = {
-            x = math.floor(center_x - DEFAULT_POSITION_OFFSET + 0.5),
-            y = DEFAULT_POSITION_Y,
+            x = r2(50 - DEFAULT_POSITION_OFFSET / sw * 100),
+            y = r2(DEFAULT_POSITION_Y / sh * 100),
         },
         opponent = {
-            x = math.floor(center_x + DEFAULT_POSITION_OFFSET + 0.5),
-            y = DEFAULT_POSITION_Y,
+            x = r2(50 + DEFAULT_POSITION_OFFSET / sw * 100),
+            y = r2(DEFAULT_POSITION_Y / sh * 100),
         },
     }
 end
@@ -5148,12 +5207,22 @@ function UI.ensure_position_coords()
     for _, def in ipairs(POSITION_DEFS) do
         local coords = Config.settings.position_coords[def.id]
         local default_coords = defaults[def.id]
-        if tonumber(coords.x) == nil then
+        local cx = tonumber(coords.x)
+        local cy = tonumber(coords.y)
+        if cx == nil then
             coords.x = default_coords.x
             changed = true
+        elseif cx > 100 then
+            local sw = UI.get_screen_dim("x")
+            coords.x = math.floor(cx / sw * 100 * 100 + 0.5) / 100
+            changed = true
         end
-        if tonumber(coords.y) == nil then
+        if cy == nil then
             coords.y = default_coords.y
+            changed = true
+        elseif cy > 100 then
+            local sh = UI.get_screen_dim("y")
+            coords.y = math.floor(cy / sh * 100 * 100 + 0.5) / 100
             changed = true
         end
     end
@@ -5169,7 +5238,7 @@ function UI.get_position_coord(id, axis, defaults)
     if value == nil then
         value = defaults and defaults[id] and defaults[id][axis] or 0
     end
-    return math.floor(value + 0.5)
+    return UI.percent_to_pixels(value, axis)
 end
 
 function UI.get_mirrored_position_x(x)
@@ -5204,6 +5273,25 @@ function UI.get_shared_bounded_position_y(value, defaults)
     return math.floor(Utils.clamp(rounded, 0, max_y) + 0.5)
 end
 
+function UI.get_screen_dim(axis)
+    local display = imgui.get_display_size()
+    if axis == "x" then
+        return math.max(1, tonumber(display and display.x) or 1920)
+    end
+    return math.max(1, tonumber(display and display.y) or 1080)
+end
+
+function UI.percent_to_pixels(percent, axis)
+    local screen_dim = UI.get_screen_dim(axis)
+    return math.floor((tonumber(percent) or 0) / 100 * screen_dim + 0.5)
+end
+
+function UI.format_percent_str(value)
+    local formatted = string.format("%.2f", tonumber(value) or 0)
+    formatted = formatted:gsub("%.?0+$", "")
+    return formatted
+end
+
 function UI.apply_match_vertical_position(defaults)
     Config.ensure_position_settings()
     if Config.settings.position_match_vertical == false then
@@ -5217,20 +5305,26 @@ function UI.apply_match_vertical_position(defaults)
         return false
     end
 
-    local source_y = self_coords.y
-    if tonumber(source_y) == nil then
-        source_y = opponent_coords.y
+    local source_y = tonumber(self_coords.y)
+    if source_y == nil then
+        source_y = tonumber(opponent_coords.y)
+    end
+    if source_y == nil then
+        return false
     end
 
-    local shared_y = UI.get_shared_bounded_position_y(source_y, defaults)
-    local changed = false
+    local screen_h = UI.get_screen_dim("y")
+    local pixel_y = UI.percent_to_pixels(source_y, "y")
+    local shared_pixel_y = UI.get_shared_bounded_position_y(pixel_y, nil)
+    local shared_percent = math.floor(shared_pixel_y / screen_h * 100 * 100 + 0.5) / 100
 
-    if self_coords.y ~= shared_y then
-        self_coords.y = shared_y
+    local changed = false
+    if self_coords.y ~= shared_percent then
+        self_coords.y = shared_percent
         changed = true
     end
-    if opponent_coords.y ~= shared_y then
-        opponent_coords.y = shared_y
+    if opponent_coords.y ~= shared_percent then
+        opponent_coords.y = shared_percent
         changed = true
     end
 
@@ -5242,24 +5336,28 @@ function UI.set_position_coord(id, axis, value)
     local coords = Config.settings.position_coords[id]
     if type(coords) ~= "table" then return end
 
-    local numeric = tonumber(value)
-    if numeric == nil then return end
+    local percent = tonumber(value)
+    if percent == nil then return end
 
-    local rounded
+    percent = math.floor(percent * 100 + 0.5) / 100
+
     if UI.get_bounded_position_coord then
-        rounded = UI.get_bounded_position_coord(id, axis, numeric)
-    else
-        rounded = math.floor(numeric + 0.5)
+        local screen_dim = UI.get_screen_dim(axis)
+        local pixel_val = UI.percent_to_pixels(percent, axis)
+        local bounded_pixel = UI.get_bounded_position_coord(id, axis, pixel_val)
+        percent = math.floor(bounded_pixel / screen_dim * 100 * 100 + 0.5) / 100
+    end
+
+    if axis == "y" and Config.settings.position_match_vertical ~= false then
+        local screen_h = UI.get_screen_dim("y")
+        local pixel_y = UI.percent_to_pixels(percent, "y")
+        local bounded_pixel_y = UI.get_shared_bounded_position_y(pixel_y, nil)
+        percent = math.floor(bounded_pixel_y / screen_h * 100 * 100 + 0.5) / 100
     end
 
     local changed = false
-
-    if axis == "y" and Config.settings.position_match_vertical ~= false then
-        rounded = UI.get_shared_bounded_position_y(numeric)
-    end
-
-    if coords[axis] ~= rounded then
-        coords[axis] = rounded
+    if coords[axis] ~= percent then
+        coords[axis] = percent
         changed = true
     end
 
@@ -5267,12 +5365,15 @@ function UI.set_position_coord(id, axis, value)
         local partner_id = UI.get_position_mirror_partner(id)
         local partner_coords = partner_id and Config.settings.position_coords[partner_id] or nil
         if type(partner_coords) == "table" then
-            local mirrored_x = UI.get_mirrored_position_x(rounded)
+            local screen_w = UI.get_screen_dim("x")
+            local pixel_x = UI.percent_to_pixels(percent, "x")
+            local mirrored_pixel_x = UI.get_mirrored_position_x(pixel_x)
             if UI.get_bounded_position_coord then
-                mirrored_x = UI.get_bounded_position_coord(partner_id, "x", mirrored_x)
+                mirrored_pixel_x = UI.get_bounded_position_coord(partner_id, "x", mirrored_pixel_x)
             end
-            if partner_coords.x ~= mirrored_x then
-                partner_coords.x = mirrored_x
+            local mirrored_percent = math.floor(mirrored_pixel_x / screen_w * 100 * 100 + 0.5) / 100
+            if partner_coords.x ~= mirrored_percent then
+                partner_coords.x = mirrored_percent
                 changed = true
             end
         end
@@ -5281,8 +5382,8 @@ function UI.set_position_coord(id, axis, value)
     if axis == "y" and Config.settings.position_match_vertical ~= false then
         local partner_id = UI.get_position_mirror_partner(id)
         local partner_coords = partner_id and Config.settings.position_coords[partner_id] or nil
-        if type(partner_coords) == "table" and partner_coords.y ~= rounded then
-            partner_coords.y = rounded
+        if type(partner_coords) == "table" and partner_coords.y ~= percent then
+            partner_coords.y = percent
             changed = true
         end
     end
@@ -5449,7 +5550,7 @@ function UI.update_combo_timers()
     for i = 0, 1 do
         local state = ComboData.player_states[i]
         if state.timer_remaining and state.timer_remaining > 0 then
-            state.timer_remaining = state.timer_remaining - (1.0 / 60.0)
+            state.timer_remaining = state.timer_remaining - 1
         end
     end
 end
@@ -5472,14 +5573,10 @@ function UI.render_display_settings()
                 Config.settings.display_text_opacity = DEFAULT_TEXT_OPACITY
                 Config.settings.display_scale = DEFAULT_DISPLAY_SCALE
                 Config.settings.combo_timer_duration = DEFAULT_COMBO_TIMER_DURATION
-                Config.settings.toggle_clear_on_damage = DEFAULT_CLEAR_ON_DAMAGE
-                Config.settings.toggle_clear_on_block = DEFAULT_CLEAR_ON_BLOCK
-                Config.settings.toggle_update_on_damage = DEFAULT_UPDATE_ON_DAMAGE
-                Config.settings.toggle_update_on_block = DEFAULT_UPDATE_ON_BLOCK
                 UI.mark_for_save()
             end)
-        elseif UI.confirm_target == "display_defaults" then
-            UI.confirm_target = nil
+        elseif UI.confirm_active.display_defaults then
+            UI.confirm_active.display_defaults = nil
         end
 
         imgui.text("Scale")
@@ -5504,66 +5601,7 @@ function UI.render_display_settings()
         imgui.pop_item_width()
         if changed then UI.set_display_percent("display_text_opacity", opacity, 0, 100) end
 
-        imgui.separator()
-
-        imgui.text("Update On Opponent Block")
-        imgui.same_line()
-        local blocked_changed
-        blocked_changed, Config.settings.toggle_show_blocked_attacks = imgui.checkbox("##show_blocked_attacks", Config.settings.toggle_show_blocked_attacks)
-        if blocked_changed then
-            UI.action_notify("Blocked Attacks " .. (Config.settings.toggle_show_blocked_attacks and "Enabled" or "Disabled"), "alert_on_toggle")
-            UI.mark_for_save()
-        end
-
-        imgui.text("Update On Damage Taken")
-        imgui.same_line()
-        local update_damage_changed
-        update_damage_changed, Config.settings.toggle_update_on_damage = imgui.checkbox("##update_on_damage", Config.settings.toggle_update_on_damage)
-        if update_damage_changed then
-            if Config.settings.toggle_update_on_damage then
-                Config.settings.toggle_clear_on_damage = false
-            end
-            ComboData.debug_log("SETTING_CHANGED toggle_update_on_damage=" .. tostring(Config.settings.toggle_update_on_damage))
-            UI.mark_for_save()
-        end
-
-        imgui.text("Update On Block Taken")
-        imgui.same_line()
-        local update_block_changed
-        update_block_changed, Config.settings.toggle_update_on_block = imgui.checkbox("##update_on_block", Config.settings.toggle_update_on_block)
-        if update_block_changed then
-            if Config.settings.toggle_update_on_block then
-                Config.settings.toggle_clear_on_block = false
-            end
-            ComboData.debug_log("SETTING_CHANGED toggle_update_on_block=" .. tostring(Config.settings.toggle_update_on_block))
-            UI.mark_for_save()
-        end
-
-        imgui.text("Clear On Damage Taken")
-        imgui.same_line()
-        local clear_damage_changed, clear_on_damage = imgui.checkbox("##clear_on_damage", Config.settings.toggle_clear_on_damage == true)
-        if clear_damage_changed then
-            Config.settings.toggle_clear_on_damage = clear_on_damage == true
-            if Config.settings.toggle_clear_on_damage then
-                Config.settings.toggle_update_on_damage = false
-            end
-            ComboData.debug_log("SETTING_CHANGED toggle_clear_on_damage=" .. tostring(Config.settings.toggle_clear_on_damage))
-            UI.mark_for_save()
-        end
-
-        imgui.text("Clear On Block Taken")
-        imgui.same_line()
-        local clear_block_changed, clear_on_block = imgui.checkbox("##clear_on_block", Config.settings.toggle_clear_on_block == true)
-        if clear_block_changed then
-            Config.settings.toggle_clear_on_block = clear_on_block == true
-            if Config.settings.toggle_clear_on_block then
-                Config.settings.toggle_update_on_block = false
-            end
-            ComboData.debug_log("SETTING_CHANGED toggle_clear_on_block=" .. tostring(Config.settings.toggle_clear_on_block))
-            UI.mark_for_save()
-        end
-
-        imgui.text("Clear After:")
+        imgui.text("Clear After")
         imgui.same_line()
         imgui.push_item_width(30)
         changed, Config.settings.combo_timer_duration = imgui.drag_int("##combo_timer_duration", Config.settings.combo_timer_duration, 1, 0, 120)
@@ -5571,15 +5609,15 @@ function UI.render_display_settings()
         imgui.same_line()
         imgui.text("Seconds")
         if changed then
-            ComboData.debug_log("SETTING_CHANGED combo_timer_duration=" .. tostring(Config.settings.combo_timer_duration))
+            ComboData.debug_log("SETTING_CHANGED combo_timer_duration=" .. tostring(Config.settings.combo_timer_duration), "log_settings_changed")
             UI.mark_for_save()
         end
 
         imgui.same_line()
-        UI.confirm_button("clear_now", "Clear Now", "display_clear_now", function()
+        if imgui.button("Clear Now##display_clear_now") then
             ComboData.default_state()
             UI.action_notify("Data Cleared", "alert_on_toggle")
-        end)
+        end
 
         imgui.tree_pop()
     end
@@ -5613,8 +5651,8 @@ function UI.render_unit_settings()
                 Config.reset_unit_defaults()
                 UI.mark_for_save()
             end)
-        elseif UI.confirm_target == "unit_defaults" then
-            UI.confirm_target = nil
+        elseif UI.confirm_active.unit_defaults then
+            UI.confirm_active.unit_defaults = nil
         end
 
         if imgui.begin_table("attack_info_units", 3, 4096 | 8192, Vector2f.new(300, 0)) then
@@ -5650,6 +5688,22 @@ function UI.render_unit_settings()
             imgui.end_table()
         end
 
+        imgui.separator()
+        imgui.text("Reduce")
+        UI.set_hover_tooltip("Ignore unused ones digit from Drive/Super values")
+        imgui.same_line()
+        local reduce_drive_changed
+        reduce_drive_changed, Config.settings.reduce_drive = imgui.checkbox("Drive##reduce_drive", Config.settings.reduce_drive)
+        if reduce_drive_changed then
+            UI.mark_for_save()
+        end
+        imgui.same_line()
+        local reduce_super_changed
+        reduce_super_changed, Config.settings.reduce_super = imgui.checkbox("Super##reduce_super", Config.settings.reduce_super)
+        if reduce_super_changed then
+            UI.mark_for_save()
+        end
+
         imgui.tree_pop()
     end
 end
@@ -5657,25 +5711,56 @@ end
 function UI.render_position_coord_inputs(def, defaults)
     local coords = Config.settings.position_coords[def.id]
     if type(coords) ~= "table" then return end
+    local is_percent = Config.settings.position_mode == "percent"
 
     imgui.text(def.label)
     imgui.same_line()
     imgui.text("X")
     imgui.same_line()
     imgui.push_item_width(55)
-    local x_text = tostring(UI.get_position_coord(def.id, "x", defaults))
-    local x_changed, new_x_text = imgui.input_text("##position_" .. def.id .. "_x", x_text)
+    local raw_x = tonumber(coords.x) or (defaults and defaults[def.id] and defaults[def.id].x) or 0
+    local x_display
+    if is_percent then
+        x_display = UI.format_percent_str(raw_x)
+    else
+        x_display = tostring(UI.percent_to_pixels(raw_x, "x"))
+    end
+    local x_changed, new_x_text = imgui.input_text("##position_" .. def.id .. "_x", x_display)
     imgui.pop_item_width()
-    if x_changed then UI.set_position_coord(def.id, "x", new_x_text) end
+    if x_changed then
+        if is_percent then
+            UI.set_position_coord(def.id, "x", new_x_text)
+        else
+            local pixel_val = tonumber(new_x_text)
+            if pixel_val then
+                UI.set_position_coord(def.id, "x", tostring(pixel_val / UI.get_screen_dim("x") * 100))
+            end
+        end
+    end
 
     imgui.same_line()
     imgui.text("Y")
     imgui.same_line()
     imgui.push_item_width(55)
-    local y_text = tostring(UI.get_position_coord(def.id, "y", defaults))
-    local y_changed, new_y_text = imgui.input_text("##position_" .. def.id .. "_y", y_text)
+    local raw_y = tonumber(coords.y) or (defaults and defaults[def.id] and defaults[def.id].y) or 0
+    local y_display
+    if is_percent then
+        y_display = UI.format_percent_str(raw_y)
+    else
+        y_display = tostring(UI.percent_to_pixels(raw_y, "y"))
+    end
+    local y_changed, new_y_text = imgui.input_text("##position_" .. def.id .. "_y", y_display)
     imgui.pop_item_width()
-    if y_changed then UI.set_position_coord(def.id, "y", new_y_text) end
+    if y_changed then
+        if is_percent then
+            UI.set_position_coord(def.id, "y", new_y_text)
+        else
+            local pixel_val = tonumber(new_y_text)
+            if pixel_val then
+                UI.set_position_coord(def.id, "y", tostring(pixel_val / UI.get_screen_dim("y") * 100))
+            end
+        end
+    end
 end
 
 function UI.render_position_settings()
@@ -5687,8 +5772,8 @@ function UI.render_position_settings()
                 Config.reset_position_defaults(defaults)
                 UI.mark_for_save()
             end)
-        elseif UI.confirm_target == "position_defaults" then
-            UI.confirm_target = nil
+        elseif UI.confirm_active.position_defaults then
+            UI.confirm_active.position_defaults = nil
         end
 
         local mirror_column_changed, mirror_column_order = imgui.checkbox("Mirror Column Order##mirror_column_order", Config.settings.toggle_mirror_column_order ~= false)
@@ -5712,6 +5797,26 @@ function UI.render_position_settings()
             if Config.settings.position_match_vertical then
                 UI.apply_match_vertical_position(defaults)
             end
+            UI.mark_for_save()
+        end
+
+        local current_mode = Config.settings.position_mode == "percent" and "percent" or "pixels"
+        local mode_changed = false
+        imgui.text("Mode:")
+        imgui.same_line()
+        local is_percent_mode = current_mode == "percent"
+        local pressed_percent = imgui.radio_button("Percent##position_mode", is_percent_mode)
+        if pressed_percent and not is_percent_mode then
+            Config.settings.position_mode = "percent"
+            mode_changed = true
+        end
+        imgui.same_line()
+        local pressed_pixels = imgui.radio_button("Pixels##position_mode", not is_percent_mode)
+        if pressed_pixels and is_percent_mode then
+            Config.settings.position_mode = "pixels"
+            mode_changed = true
+        end
+        if mode_changed then
             UI.mark_for_save()
         end
 
@@ -5773,6 +5878,11 @@ end
 
 function UI.render_debug_settings()
     if imgui.tree_node("Debug") then
+        imgui.same_line()
+        UI.confirm_button("clear_debug_log", "Clear Log", "clear_debug_log", function()
+            UI.clear_debug_log()
+            UI.action_notify("Debug log cleared", "alert_on_toggle")
+        end)
         local changed
         changed, Config.settings.toggle_enable_debug_logging = imgui.checkbox("Enable Debug Logging##enable_debug_logging", Config.settings.toggle_enable_debug_logging)
         if changed then
@@ -5795,12 +5905,24 @@ function UI.render_debug_settings()
             UI.tooltip_timer = 40
         end
 
-        imgui.same_line()
-
-        UI.confirm_button("clear_debug_log", "Clear Log", "clear_debug_log", function()
-            UI.clear_debug_log()
-            UI.action_notify("Debug log cleared", "alert_on_toggle")
-        end)
+        if imgui.tree_node("Log Options") then
+            local logcats = {
+                { key = "log_attacker_display", label = "Log Attacker Display" },
+                { key = "log_defender_display", label = "Log Defender Display" },
+                { key = "log_start_finish_values", label = "Log Start/Finish Values" },
+                { key = "log_settings_changed", label = "Log Settings" },
+                { key = "log_display_update", label = "Log Display Update" },
+                { key = "log_display_clear", label = "Log Display Clear" },
+            }
+            for _, lc in ipairs(logcats) do
+                local lc_changed
+                lc_changed, Config.settings[lc.key] = imgui.checkbox(lc.label .. "##" .. lc.key, Config.settings[lc.key] == true)
+                if lc_changed then
+                    UI.mark_for_save()
+                end
+            end
+            imgui.tree_pop()
+        end
 
         imgui.tree_pop()
     end
@@ -5815,8 +5937,8 @@ function UI.render_settings()
                 Config.reset_attack_info_defaults()
                 UI.mark_for_save()
             end)
-        elseif UI.confirm_target == "attack_info_defaults" then
-            UI.confirm_target = nil
+        elseif UI.confirm_active.attack_info_defaults then
+            UI.confirm_active.attack_info_defaults = nil
         end
 
         imgui.text("Enable (F2)")
@@ -5824,10 +5946,13 @@ function UI.render_settings()
         changed, Config.settings.toggle_all = imgui.checkbox("##enable", Config.settings.toggle_all)
         if changed then
             UI.action_notify("Display " .. (Config.settings.toggle_all and "Enabled" or "Disabled"), "alert_on_toggle")
-            ComboData.debug_log("SETTING_CHANGED toggle_all=" .. tostring(Config.settings.toggle_all))
+            ComboData.debug_log("SETTING_CHANGED toggle_all=" .. tostring(Config.settings.toggle_all), "log_settings_changed")
             UI.mark_for_save()
         end
 
+        -- DISABLED: Ignore Framekills — hidden until framekill/advantage
+        -- engine behavior is better understood.
+        --[[
         imgui.text("Ignore Framekills")
         imgui.same_line()
         local framekills_changed
@@ -5836,6 +5961,7 @@ function UI.render_settings()
             UI.action_notify("Framekills " .. (Config.settings.toggle_ignore_framekills and "Ignored" or "Shown"), "alert_on_toggle")
             UI.mark_for_save()
         end
+        --]]
 
         if Config.settings.toggle_all then
             imgui.text("Show/Hide")
@@ -5870,52 +5996,122 @@ function UI.render_settings()
                 UI.mark_for_save()
             end
 
-            imgui.text("End on Recovery:")
-            imgui.same_line()
-            local current_mode = Config.settings.combo_end_mode or "defender_recovery"
-            if UI.radio_button("Attacker##end_mode", current_mode == "attacker_recovery") then
-                Config.settings.combo_end_mode = "attacker_recovery"
-                ComboData.debug_log("SETTING_CHANGED combo_end_mode=attacker_recovery")
-                UI.mark_for_save()
-            end
-            imgui.same_line()
-            if UI.radio_button("Defender##end_mode", current_mode == "defender_recovery") then
-                Config.settings.combo_end_mode = "defender_recovery"
-                ComboData.debug_log("SETTING_CHANGED combo_end_mode=defender_recovery")
-                UI.mark_for_save()
-            end
-
-            if Config.settings.toggle_show_blocked_attacks then
-                imgui.text("Blockstring Leniency")
-                UI.set_hover_tooltip(BLOCKSTRING_TOOLTIP)
-                imgui.same_line()
-                imgui.push_item_width(25)
-                local string_gap_text = tostring(Config.get_string_gap())
-                local string_gap_changed, new_string_gap_text = imgui.input_text("##string_gap", string_gap_text)
-                UI.set_hover_tooltip(BLOCKSTRING_TOOLTIP)
-                imgui.pop_item_width()
-                if string_gap_changed then
-                    local new_string_gap = math.max(0, math.floor(tonumber(new_string_gap_text) or DEFAULT_STRING_GAP))
-                    if new_string_gap ~= Config.get_string_gap() then
-                        Config.settings.string_gap = new_string_gap
-                        ComboData.debug_log("SETTING_CHANGED string_gap=" .. tostring(new_string_gap))
+            if imgui.tree_node("Updating") then
+                if not Config.updating_defaults_selected() then
+                    imgui.same_line()
+                    UI.confirm_button("updating_defaults", "Defaults", "updating_defaults", function()
+                        Config.reset_updating_defaults()
                         UI.mark_for_save()
+                    end)
+                elseif UI.confirm_active.updating_defaults then
+                    UI.confirm_active.updating_defaults = nil
+                end
+
+                imgui.text("Update on Opponent Block")
+                imgui.same_line()
+                local blocked_changed
+                blocked_changed, Config.settings.toggle_show_blocked_attacks = imgui.checkbox("##show_blocked_attacks", Config.settings.toggle_show_blocked_attacks)
+                if blocked_changed then
+                    UI.action_notify("Blocked Attacks " .. (Config.settings.toggle_show_blocked_attacks and "Enabled" or "Disabled"), "alert_on_toggle")
+                    UI.mark_for_save()
+                end
+
+                if Config.settings.toggle_show_blocked_attacks then
+                    imgui.text("Blockstring Leniency")
+                    UI.set_hover_tooltip(BLOCKSTRING_TOOLTIP)
+                    imgui.same_line()
+                    imgui.push_item_width(25)
+                    local string_gap_text = tostring(Config.get_string_gap())
+                    local string_gap_changed, new_string_gap_text = imgui.input_text("##string_gap", string_gap_text)
+                    imgui.pop_item_width()
+                    if string_gap_changed then
+                        local new_string_gap = math.max(0, math.floor(tonumber(new_string_gap_text) or DEFAULT_STRING_GAP))
+                        if new_string_gap ~= Config.get_string_gap() then
+                            Config.settings.string_gap = new_string_gap
+                            ComboData.debug_log("SETTING_CHANGED string_gap=" .. tostring(new_string_gap), "log_settings_changed")
+                            UI.mark_for_save()
+                        end
                     end
                 end
+
+                imgui.text("Update on Damage Taken")
+                imgui.same_line()
+                local update_damage_changed
+                update_damage_changed, Config.settings.toggle_update_on_damage = imgui.checkbox("##update_on_damage", Config.settings.toggle_update_on_damage)
+                if update_damage_changed then
+                    if Config.settings.toggle_update_on_damage then
+                        Config.settings.toggle_clear_on_damage = false
+                    end
+                    ComboData.debug_log("SETTING_CHANGED toggle_update_on_damage=" .. tostring(Config.settings.toggle_update_on_damage), "log_settings_changed")
+                    UI.mark_for_save()
+                end
+
+                imgui.text("Update on Block Taken")
+                imgui.same_line()
+                local update_block_changed
+                update_block_changed, Config.settings.toggle_update_on_block = imgui.checkbox("##update_on_block", Config.settings.toggle_update_on_block)
+                if update_block_changed then
+                    if Config.settings.toggle_update_on_block then
+                        Config.settings.toggle_clear_on_block = false
+                    end
+                    ComboData.debug_log("SETTING_CHANGED toggle_update_on_block=" .. tostring(Config.settings.toggle_update_on_block), "log_settings_changed")
+                    UI.mark_for_save()
+                end
+
+                imgui.text("Clear on Damage Taken")
+                imgui.same_line()
+                local clear_damage_changed, clear_on_damage = imgui.checkbox("##clear_on_damage", Config.settings.toggle_clear_on_damage == true)
+                if clear_damage_changed then
+                    Config.settings.toggle_clear_on_damage = clear_on_damage == true
+                    if Config.settings.toggle_clear_on_damage then
+                        Config.settings.toggle_update_on_damage = false
+                    end
+                    ComboData.debug_log("SETTING_CHANGED toggle_clear_on_damage=" .. tostring(Config.settings.toggle_clear_on_damage), "log_settings_changed")
+                    UI.mark_for_save()
+                end
+
+                imgui.text("Clear on Block Taken")
+                imgui.same_line()
+                local clear_block_changed, clear_on_block = imgui.checkbox("##clear_on_block", Config.settings.toggle_clear_on_block == true)
+                if clear_block_changed then
+                    Config.settings.toggle_clear_on_block = clear_on_block == true
+                    if Config.settings.toggle_clear_on_block then
+                        Config.settings.toggle_update_on_block = false
+                    end
+                    ComboData.debug_log("SETTING_CHANGED toggle_clear_on_block=" .. tostring(Config.settings.toggle_clear_on_block), "log_settings_changed")
+                    UI.mark_for_save()
+                end
+
+                imgui.text("End on Recovery")
+                imgui.same_line()
+                local current_mode = Config.settings.combo_end_mode or "defender_recovery"
+                if UI.radio_button("Attacker##end_mode", current_mode == "attacker_recovery") then
+                    Config.settings.combo_end_mode = "attacker_recovery"
+                    ComboData.debug_log("SETTING_CHANGED combo_end_mode=attacker_recovery", "log_settings_changed")
+                    UI.mark_for_save()
+                end
+                imgui.same_line()
+                if UI.radio_button("Defender##end_mode", current_mode == "defender_recovery") then
+                    Config.settings.combo_end_mode = "defender_recovery"
+                    ComboData.debug_log("SETTING_CHANGED combo_end_mode=defender_recovery", "log_settings_changed")
+                    UI.mark_for_save()
+                end
+
+                imgui.tree_pop()
             end
 
             UI.render_display_settings()
             UI.render_unit_settings()
 
-            if imgui.tree_node("Column Visibility") then
+            if imgui.tree_node("Columns") then
                 if not Config.column_visibility_defaults_selected() then
                     imgui.same_line()
                     UI.confirm_button("column_visibility_defaults", "Defaults", "column_visibility_defaults", function()
                         Config.reset_column_visibility_defaults()
                         UI.mark_for_save()
                     end)
-                elseif UI.confirm_target == "column_visibility_defaults" then
-                    UI.confirm_target = nil
+                elseif UI.confirm_active.column_visibility_defaults then
+                    UI.confirm_active.column_visibility_defaults = nil
                 end
 
                 if imgui.begin_table("attack_info_column_visibility", 3, 4096 | 8192, Vector2f.new(260, 0)) then

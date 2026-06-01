@@ -54,5 +54,11 @@ Usage:
 * Save .lua file(s) to `reframework\autorun` in SF6 install folder
 * Launch game
 
+## Archive Notes
+
+`autorun/archive/` is historical Lua/script context. Search it when a task needs legacy implementation evidence, but do not treat it as active autorun source.
+
+Non-script artifacts such as virtual environments, editor settings, dependency caches, generated binaries, and local-only tool state belong in the root `archive/` folder instead of `autorun/archive/`.
+
 ## Thanks
 Thanks to [WistfulHopes](https://github.com/WistfulHopes/SF6Mods) and [Rabbiratelier](https://github.com/Rabbiratelier/SF6Mods) for code examples. Thanks to Torino, Yimbo, Gako and BV crew.

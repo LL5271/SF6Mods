@@ -3367,6 +3367,25 @@ UI.minimum_combo_window_width = 220
 UI.window_padding_width = 44
 UI.display_box_rounding = 10
 UI.stroke_item_id = 0
+UI.confirm_target = nil
+function UI.confirm_button(action_key, label, id, callback)
+    local display = (UI.confirm_target == action_key) and (label .. "?##" .. id) or (label .. "##" .. id)
+    local was_clicked = false
+    if imgui.button(display) then
+        was_clicked = true
+        if UI.confirm_target == action_key then
+            callback()
+            UI.confirm_target = nil
+        else
+            UI.confirm_target = action_key
+        end
+    end
+    if UI.confirm_target == action_key and not was_clicked then
+        if imgui.is_mouse_clicked(0) or imgui.is_mouse_clicked(1) then
+            UI.confirm_target = nil
+        end
+    end
+end
 function UI.get_active_draw_list()
     local draw_list = imgui.get_window_draw_list and imgui.get_window_draw_list()
     if not draw_list and imgui.get_foreground_draw_list then
@@ -5088,6 +5107,7 @@ function UI.handle_hotkeys()
         else
             Config.settings.toggle_all = not Config.settings.toggle_all
             UI.action_notify("Display " .. (Config.settings.toggle_all and "Enabled" or "Disabled"), "alert_on_toggle")
+            ComboData.debug_log("SETTING_CHANGED toggle_all=" .. tostring(Config.settings.toggle_all))
         end
         UI.mark_for_save()
     end
@@ -5447,7 +5467,7 @@ function UI.render_display_settings()
     if imgui.tree_node("Display") then
         if not Config.display_defaults_selected() then
             imgui.same_line()
-            if imgui.button("Defaults##display_defaults") then
+            UI.confirm_button("display_defaults", "Defaults", "display_defaults", function()
                 Config.settings.display_background_opacity = DEFAULT_BACKGROUND_OPACITY
                 Config.settings.display_text_opacity = DEFAULT_TEXT_OPACITY
                 Config.settings.display_scale = DEFAULT_DISPLAY_SCALE
@@ -5457,7 +5477,9 @@ function UI.render_display_settings()
                 Config.settings.toggle_update_on_damage = DEFAULT_UPDATE_ON_DAMAGE
                 Config.settings.toggle_update_on_block = DEFAULT_UPDATE_ON_BLOCK
                 UI.mark_for_save()
-            end
+            end)
+        elseif UI.confirm_target == "display_defaults" then
+            UI.confirm_target = nil
         end
 
         imgui.text("Scale")
@@ -5501,6 +5523,7 @@ function UI.render_display_settings()
             if Config.settings.toggle_update_on_damage then
                 Config.settings.toggle_clear_on_damage = false
             end
+            ComboData.debug_log("SETTING_CHANGED toggle_update_on_damage=" .. tostring(Config.settings.toggle_update_on_damage))
             UI.mark_for_save()
         end
 
@@ -5512,6 +5535,7 @@ function UI.render_display_settings()
             if Config.settings.toggle_update_on_block then
                 Config.settings.toggle_clear_on_block = false
             end
+            ComboData.debug_log("SETTING_CHANGED toggle_update_on_block=" .. tostring(Config.settings.toggle_update_on_block))
             UI.mark_for_save()
         end
 
@@ -5523,6 +5547,7 @@ function UI.render_display_settings()
             if Config.settings.toggle_clear_on_damage then
                 Config.settings.toggle_update_on_damage = false
             end
+            ComboData.debug_log("SETTING_CHANGED toggle_clear_on_damage=" .. tostring(Config.settings.toggle_clear_on_damage))
             UI.mark_for_save()
         end
 
@@ -5534,6 +5559,7 @@ function UI.render_display_settings()
             if Config.settings.toggle_clear_on_block then
                 Config.settings.toggle_update_on_block = false
             end
+            ComboData.debug_log("SETTING_CHANGED toggle_clear_on_block=" .. tostring(Config.settings.toggle_clear_on_block))
             UI.mark_for_save()
         end
 
@@ -5544,13 +5570,16 @@ function UI.render_display_settings()
         imgui.pop_item_width()
         imgui.same_line()
         imgui.text("Seconds")
-        if changed then UI.mark_for_save() end
+        if changed then
+            ComboData.debug_log("SETTING_CHANGED combo_timer_duration=" .. tostring(Config.settings.combo_timer_duration))
+            UI.mark_for_save()
+        end
 
         imgui.same_line()
-        if imgui.button("Clear Now##display_clear_now") then
+        UI.confirm_button("clear_now", "Clear Now", "display_clear_now", function()
             ComboData.default_state()
             UI.action_notify("Data Cleared", "alert_on_toggle")
-        end
+        end)
 
         imgui.tree_pop()
     end
@@ -5580,10 +5609,12 @@ function UI.render_unit_settings()
     if units_open then
         if not Config.unit_defaults_selected() then
             imgui.same_line()
-            if imgui.button("Defaults##unit_defaults") then
+            UI.confirm_button("unit_defaults", "Defaults", "unit_defaults", function()
                 Config.reset_unit_defaults()
                 UI.mark_for_save()
-            end
+            end)
+        elseif UI.confirm_target == "unit_defaults" then
+            UI.confirm_target = nil
         end
 
         if imgui.begin_table("attack_info_units", 3, 4096 | 8192, Vector2f.new(300, 0)) then
@@ -5652,10 +5683,12 @@ function UI.render_position_settings()
         local _, defaults = UI.ensure_position_coords()
         if not Config.position_defaults_selected(defaults) then
             imgui.same_line()
-            if imgui.button("Defaults##position_defaults") then
+            UI.confirm_button("position_defaults", "Defaults", "position_defaults", function()
                 Config.reset_position_defaults(defaults)
                 UI.mark_for_save()
-            end
+            end)
+        elseif UI.confirm_target == "position_defaults" then
+            UI.confirm_target = nil
         end
 
         local mirror_column_changed, mirror_column_order = imgui.checkbox("Mirror Column Order##mirror_column_order", Config.settings.toggle_mirror_column_order ~= false)
@@ -5689,6 +5722,55 @@ function UI.render_position_settings()
         imgui.tree_pop()
     end
 end
+function UI.resolve_debug_log_path()
+    local function resolve(level)
+        local source = debug.getinfo(level, "S").source or ""
+        if source:sub(1, 1) == "@" then
+            source = source:sub(2)
+        end
+        source = source:gsub("\\", "/")
+        local dir = source:match("^(.*/)") or ""
+        local reframework_dir = dir:gsub("autorun/$", ""):gsub("data/$", "")
+        return reframework_dir .. "data/attack_info_debug.log"
+    end
+
+    local log_path = resolve(1)
+    if log_path:match("^[a-zA-Z]:") or log_path:sub(1, 1) == "/" then
+        return log_path
+    end
+    return resolve(2)
+end
+
+function UI.clear_debug_log()
+    pcall(function()
+        local file = io.open("attack_info_debug.log", "w")
+        if file then
+            file:close()
+        end
+    end)
+end
+
+function UI.read_debug_log_tail(line_count)
+    local ok, result = pcall(function()
+        local file = io.open("attack_info_debug.log", "r")
+        if not file then return "Log file not found" end
+        local content = file:read("*a")
+        file:close()
+        local lines = {}
+        for line in content:gmatch("[^\r\n]+") do
+            table.insert(lines, line)
+        end
+        local start = math.max(1, #lines - line_count + 1)
+        local tail = {}
+        for i = start, #lines do
+            table.insert(tail, lines[i])
+        end
+        return table.concat(tail, "\n")
+    end)
+    if ok then return result end
+    return "Error reading log file"
+end
+
 function UI.render_debug_settings()
     if imgui.tree_node("Debug") then
         local changed
@@ -5696,6 +5778,30 @@ function UI.render_debug_settings()
         if changed then
             UI.mark_for_save()
         end
+
+        if imgui.button("Copy Path##debug_log_path") then
+            local log_path = UI.resolve_debug_log_path()
+            sdk.copy_to_clipboard(log_path)
+            UI.tooltip_msg = MOD_NAME .. ': Log path copied to clipboard'
+            UI.tooltip_timer = 40
+        end
+
+        imgui.same_line()
+
+        if imgui.button("Copy Log##debug_log_content") then
+            local content = UI.read_debug_log_tail(1000)
+            sdk.copy_to_clipboard(content)
+            UI.tooltip_msg = MOD_NAME .. ': Debug log copied to clipboard'
+            UI.tooltip_timer = 40
+        end
+
+        imgui.same_line()
+
+        UI.confirm_button("clear_debug_log", "Clear Log", "clear_debug_log", function()
+            UI.clear_debug_log()
+            UI.action_notify("Debug log cleared", "alert_on_toggle")
+        end)
+
         imgui.tree_pop()
     end
 end
@@ -5705,10 +5811,12 @@ function UI.render_settings()
         local changed = false
         if not Config.attack_info_defaults_selected() then
             imgui.same_line()
-            if imgui.button("Defaults##attack_info_defaults") then
+            UI.confirm_button("attack_info_defaults", "Defaults", "attack_info_defaults", function()
                 Config.reset_attack_info_defaults()
                 UI.mark_for_save()
-            end
+            end)
+        elseif UI.confirm_target == "attack_info_defaults" then
+            UI.confirm_target = nil
         end
 
         imgui.text("Enable (F2)")
@@ -5716,6 +5824,7 @@ function UI.render_settings()
         changed, Config.settings.toggle_all = imgui.checkbox("##enable", Config.settings.toggle_all)
         if changed then
             UI.action_notify("Display " .. (Config.settings.toggle_all and "Enabled" or "Disabled"), "alert_on_toggle")
+            ComboData.debug_log("SETTING_CHANGED toggle_all=" .. tostring(Config.settings.toggle_all))
             UI.mark_for_save()
         end
 
@@ -5766,11 +5875,13 @@ function UI.render_settings()
             local current_mode = Config.settings.combo_end_mode or "defender_recovery"
             if UI.radio_button("Attacker##end_mode", current_mode == "attacker_recovery") then
                 Config.settings.combo_end_mode = "attacker_recovery"
+                ComboData.debug_log("SETTING_CHANGED combo_end_mode=attacker_recovery")
                 UI.mark_for_save()
             end
             imgui.same_line()
             if UI.radio_button("Defender##end_mode", current_mode == "defender_recovery") then
                 Config.settings.combo_end_mode = "defender_recovery"
+                ComboData.debug_log("SETTING_CHANGED combo_end_mode=defender_recovery")
                 UI.mark_for_save()
             end
 
@@ -5787,6 +5898,7 @@ function UI.render_settings()
                     local new_string_gap = math.max(0, math.floor(tonumber(new_string_gap_text) or DEFAULT_STRING_GAP))
                     if new_string_gap ~= Config.get_string_gap() then
                         Config.settings.string_gap = new_string_gap
+                        ComboData.debug_log("SETTING_CHANGED string_gap=" .. tostring(new_string_gap))
                         UI.mark_for_save()
                     end
                 end
@@ -5798,10 +5910,12 @@ function UI.render_settings()
             if imgui.tree_node("Column Visibility") then
                 if not Config.column_visibility_defaults_selected() then
                     imgui.same_line()
-                    if imgui.button("Defaults##column_visibility_defaults") then
+                    UI.confirm_button("column_visibility_defaults", "Defaults", "column_visibility_defaults", function()
                         Config.reset_column_visibility_defaults()
                         UI.mark_for_save()
-                    end
+                    end)
+                elseif UI.confirm_target == "column_visibility_defaults" then
+                    UI.confirm_target = nil
                 end
 
                 if imgui.begin_table("attack_info_column_visibility", 3, 4096 | 8192, Vector2f.new(260, 0)) then

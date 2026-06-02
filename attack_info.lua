@@ -1932,7 +1932,22 @@ function ComboData.get_hit_damage_snapshot(state, attacker_key, current_finish, 
     local finish_attacker = current_finish and current_finish[attacker_key] or nil
 
     if state and state.is_blocked then
-        local chip_damage = (start_defender and start_defender.hp_current or 0) - (finish_defender and finish_defender.hp_current or 0)
+        local chip_damage = 0
+        local start_incap = start_defender and start_defender.incapacitated or false
+        local finish_incap = finish_defender and finish_defender.incapacitated or false
+        if start_incap then
+            -- Already in burnout: chip damage goes to HP
+            chip_damage = (start_defender.hp_current or 0) - (finish_defender.hp_current or 0)
+        elseif finish_incap then
+            -- Entered burnout during the blockstring: drive gauge lost then HP lost
+            local drive_portion = tonumber(start_defender.drive_adjusted) or 0
+            if drive_portion < 0 then drive_portion = 0 end
+            local hp_portion = (start_defender.hp_current or 0) - (finish_defender.hp_current or 0)
+            chip_damage = drive_portion + math.max(0, tonumber(hp_portion) or 0)
+        else
+            -- Not in burnout: chip damage goes to drive gauge
+            chip_damage = (start_defender.drive_adjusted or 0) - (finish_defender.drive_adjusted or 0)
+        end
         chip_damage = math.max(0, tonumber(chip_damage) or 0)
         return chip_damage, chip_damage > 0 and 100 or nil, chip_damage
     end
@@ -4659,7 +4674,22 @@ function UI.get_combo_damage_value(state, is_p1)
     if state.is_blocked then
         local start_defender = is_p1 and state.start.p2 or state.start.p1
         local finish_defender = is_p1 and state.finish.p2 or state.finish.p1
-        local damage = (start_defender and start_defender.hp_current or 0) - (finish_defender and finish_defender.hp_current or 0)
+        local damage = 0
+        local start_incap = start_defender and start_defender.incapacitated or false
+        local finish_incap = finish_defender and finish_defender.incapacitated or false
+        if start_incap then
+            -- Already in burnout: chip damage goes to HP
+            damage = (start_defender.hp_current or 0) - (finish_defender.hp_current or 0)
+        elseif finish_incap then
+            -- Entered burnout during the blockstring: drive gauge lost then HP lost
+            local drive_portion = tonumber(start_defender.drive_adjusted) or 0
+            if drive_portion < 0 then drive_portion = 0 end
+            local hp_portion = (start_defender.hp_current or 0) - (finish_defender.hp_current or 0)
+            damage = drive_portion + math.max(0, tonumber(hp_portion) or 0)
+        else
+            -- Not in burnout: chip damage goes to drive gauge
+            damage = (start_defender.drive_adjusted or 0) - (finish_defender.drive_adjusted or 0)
+        end
         return math.max(0, damage)
     end
 

@@ -19,6 +19,9 @@ local DRIVE_IMPACT_RESOURCE_COST = 10000
 local DRIVE_RUSH_RESOURCE_COST = 20000
 local DRIVE_IMPACT_ACTION_MIN = 850
 local DRIVE_IMPACT_ACTION_MAX = 859
+local PARRY_ACTION_MIN = 480
+local PARRY_ACTION_MAX = 489
+local PARRY_ACT_ST = 39
 local POST_MATCH_CLEAR_FRAMES = 120
 local CARRY_POSITION_MAX = 765
 local DEFAULT_STRING_GAP = 2
@@ -987,6 +990,7 @@ function ComboData.default_state()
     ComboData.runtime_state.last_global_combo_id = 0
     ComboData.runtime_state.display_values_logged_hashes = {}
     ComboData.throw_carry_baseline = nil
+    ComboData.parry_tracker = { [0] = nil, [1] = nil }
 end
 
 ComboData.runtime_state = {
@@ -1410,6 +1414,9 @@ function ComboData.clear_player_sequence_state_for_snapshot_load(player_index)
     state.poison_was_active = false
     state.clear_hidden_reason = "snapshot_load"
     state.last_seen_combo_id = 0
+    if ComboData.parry_tracker then
+        ComboData.parry_tracker[player_index] = nil
+    end
 end
 
 function ComboData.clear_sequence_state_for_snapshot_load()
@@ -1789,6 +1796,23 @@ end
 
 function ComboData.is_drive_impact_state(player)
     return player ~= nil and ComboData.is_drive_impact_action_id(player.action_id)
+end
+
+
+function ComboData.is_parry_action_id(action_id)
+    local id = tonumber(action_id)
+    return id ~= nil and id >= PARRY_ACTION_MIN and id <= PARRY_ACTION_MAX
+end
+
+function ComboData.is_parry_state(player)
+    if not player then return false end
+    return ComboData.is_parry_action_id(player.action_id) or (tonumber(player.act_st) or 0) == PARRY_ACT_ST
+end
+
+function ComboData.is_neutral_act_st(player)
+    if not player then return false end
+    local act_st = tonumber(player.act_st) or 0
+    return act_st == 0 or act_st == 1 or act_st == 4
 end
 
 function ComboData.clear_pending_start(state)
@@ -2816,6 +2840,57 @@ function ComboData.update_state(p1, p2)
                 .. " def.armor_now=" .. tostring(def and def.armor_now), "log_display_update"
             )
         end
+        -- BEGIN Parry/Drive Rush tracking
+        if not ComboData.parry_tracker then
+            ComboData.parry_tracker = { [0] = nil, [1] = nil }
+        end
+        local parry_tracker = ComboData.parry_tracker[i]
+
+        -- Entering Parry: save the pre-Parry Drive value.
+        -- Any previous state (attack, block, neutral, walk, etc.) is fine.
+        if ComboData.is_parry_state(atk) and not ComboData.is_parry_state(atk_prev) then
+            parry_tracker = {
+                drive = tonumber(atk_prev.drive_adjusted) or (tonumber(atk.drive_adjusted) or 0),
+                active = true,
+            }
+            ComboData.parry_tracker[i] = parry_tracker
+        end
+
+        -- When the player leaves Parry, start a grace counter to keep the
+        -- pre-Parry Drive snapshot alive through the Parry -> Drive Rush chain.
+        if parry_tracker and parry_tracker.active then
+            if not ComboData.is_parry_state(atk) and ComboData.is_parry_state(atk_prev) then
+                parry_tracker.post_parry_frames = 15
+            elseif parry_tracker.post_parry_frames and parry_tracker.post_parry_frames > 0 then
+                parry_tracker.post_parry_frames = parry_tracker.post_parry_frames - 1
+            end
+        end
+
+        -- Clear the parry tracker only after the post-Parry grace expires and
+        -- the player has returned to neutral without attacking.
+        if parry_tracker and parry_tracker.active then
+            local grace_expired = parry_tracker.post_parry_frames ~= nil and parry_tracker.post_parry_frames <= 0
+            if grace_expired and ComboData.is_neutral_act_st(atk) and not ComboData.is_parry_state(atk) then
+                ComboData.parry_tracker[i] = nil
+                parry_tracker = nil
+            end
+        end
+
+        -- When an attack connects and a parry tracker is active,
+        -- override the pending_start attacker Drive with the pre-Parry value.
+        if attack_kind and parry_tracker and parry_tracker.active then
+            local pending_start = state.pending_start
+            if not pending_start then
+                state.pending_start = { p1 = Utils.deep_copy(ComboData.p1_prev), p2 = Utils.deep_copy(ComboData.p2_prev) }
+                pending_start = state.pending_start
+            end
+            local pending_attacker = i == 0 and pending_start.p1 or pending_start.p2
+            if pending_attacker then
+                pending_attacker.drive_adjusted = parry_tracker.drive
+            end
+        end
+        -- END Parry/Drive Rush tracking
+
         ComboData.clear_defender_display_box_for_incoming_attack(i, attack_kind)
         if attack_kind == "throw" and not state.started then
             ComboData.clear_pending_start(state)
@@ -3007,6 +3082,11 @@ function ComboData.update_state(p1, p2)
                 start_defender.current_hit_damage = 0
             end
             ComboData.clear_pending_start(state)
+            -- Clear parry tracker now that the combo has started using the
+            -- pre-Parry drive baseline.
+            if ComboData.parry_tracker then
+                ComboData.parry_tracker[i] = nil
+            end
             -- For throws, use the pre-startup carry baseline to set position
             -- values in start that reflect the throw's true initiation point,
             -- not the frame before CATCH. This makes carry/gap/position deltas

@@ -32,8 +32,7 @@ local DEFAULT_CLEAR_ON_DAMAGE = false
 local DEFAULT_CLEAR_ON_BLOCK = false
 local DEFAULT_UPDATE_ON_DAMAGE = true
 local DEFAULT_UPDATE_ON_BLOCK = true
-local DEFAULT_POSITION_OFFSET = 73
-local DEFAULT_POSITION_Y = 210
+-- DEFAULT_POSITION_OFFSET and DEFAULT_POSITION_Y removed: now using static defaults in get_default_position_coords()
 local DEFAULT_UNIT_MODE = "raw"
 local DEFAULT_UNIT_MODES = {
     damage = "raw",
@@ -161,6 +160,11 @@ function Config.loaded_settings_missing_defaults(loaded_settings)
     if loaded_settings.combo_end_mode == nil then
         return true
     end
+
+    if loaded_settings.log_attacker_display == nil or loaded_settings.log_defender_display == nil or loaded_settings.log_start_finish_values == nil or loaded_settings.log_settings_changed == nil or loaded_settings.log_display_update == nil or loaded_settings.log_display_clear == nil then
+        return true
+    end
+
 
     for _, unit in ipairs(UNIT_DEFS) do
         if loaded_settings.unit_display[unit.id] == nil then
@@ -324,6 +328,30 @@ function Config.ensure_defaults(force_save)
     end
     if Config.settings.toggle_enable_debug_logging == nil then
         Config.settings.toggle_enable_debug_logging = false
+        changed = true
+    end
+    if Config.settings.log_attacker_display == nil then
+        Config.settings.log_attacker_display = true
+        changed = true
+    end
+    if Config.settings.log_defender_display == nil then
+        Config.settings.log_defender_display = true
+        changed = true
+    end
+    if Config.settings.log_start_finish_values == nil then
+        Config.settings.log_start_finish_values = true
+        changed = true
+    end
+    if Config.settings.log_settings_changed == nil then
+        Config.settings.log_settings_changed = true
+        changed = true
+    end
+    if Config.settings.log_display_update == nil then
+        Config.settings.log_display_update = true
+        changed = true
+    end
+    if Config.settings.log_display_clear == nil then
+        Config.settings.log_display_clear = true
         changed = true
     end
     if Config.settings.toggle_damage_scaling_icon ~= nil then
@@ -1434,9 +1462,26 @@ function ComboData.should_defer_after_snapshot_load(p1, p2)
 
     -- If no valid v3 Attack Info payload was restored, avoid all combo-start processing
     -- while the game applies the training snapshot, then reseed p1_prev/p2_prev from live state.
+    -- Freeze p1_prev/p2_prev once combat activity (hit/combo/block) is detected so the
+    -- pre-attack baseline is preserved for accurate start values after the guard expires.
     if ComboData.snapshot_load_restored_state ~= true then
-        ComboData.p1_prev = p1 and Utils.deep_copy(p1) or {}
-        ComboData.p2_prev = p2 and Utils.deep_copy(p2) or {}
+        local combat_detected = false
+        for _, player in ipairs({ p1, p2 }) do
+            if player then
+                if (tonumber(player.combo_count) or 0) > 0
+                    or (tonumber(player.combo_damage) or 0) > 0
+                    or (tonumber(player.current_hit_damage) or 0) > 0
+                    or (tonumber(player.guard_time) or 0) > 0
+                then
+                    combat_detected = true
+                    break
+                end
+            end
+        end
+        if not combat_detected then
+            ComboData.p1_prev = p1 and Utils.deep_copy(p1) or {}
+            ComboData.p2_prev = p2 and Utils.deep_copy(p2) or {}
+        end
         return true
     end
 
@@ -2659,6 +2704,10 @@ function ComboData.clear_finished_display_box(player_index, reason)
     if state.started == true then return false end
     if state.finished ~= true then return false end
 
+    -- If the combo timer is still running, do not destroy the finished state;
+    -- let the timer handle cleanup when it expires (guard for combo_timer_duration > 0).
+    if state.timer_remaining and state.timer_remaining > 0 then return false end
+
     state.finished = false
     state.timer_remaining = nil
     state.knockdown_drive_settle = false
@@ -2870,7 +2919,7 @@ function ComboData.update_state(p1, p2)
                 .. " atk.drive_cooldown=" .. tostring(atk and atk.drive_cooldown)
                 .. " atk.super=" .. tostring(atk and atk.super)
                 .. " atk.action_id=" .. tostring(atk and atk.action_id)
-                .. " atk.act_st=" .. tostring(atk and atk.act_st), "log_display_update"
+                .. " atk.act_st=" .. tostring(atk and atk.act_st)
                 .. " def.hp=" .. tostring(def and def.hp_current)
                 .. " def.drive=" .. tostring(def and def.drive_adjusted)
                 .. " def.drive_cooldown=" .. tostring(def and def.drive_cooldown)
@@ -2881,7 +2930,7 @@ function ComboData.update_state(p1, p2)
                 .. " def.sp_armor=" .. tostring(def and def.sp_armor)
                 .. " def.armor_now=" .. tostring(def and def.armor_now)
                 .. " def_prev.hp=" .. tostring(def_prev and def_prev.hp_current)
-                .. " pending_start_hp_lock=" .. tostring(state.pending_start_hp_lock)
+                .. " pending_start_hp_lock=" .. tostring(state.pending_start_hp_lock), "log_display_update"
             )
             local pending_start = state.pending_start
             local pending_start_hp_lock = state.pending_start_hp_lock
@@ -3051,7 +3100,7 @@ function ComboData.update_state(p1, p2)
                         .. " atk.attack_name=" .. tostring(atk and atk.attack_name)
                         .. " atk.drive=" .. tostring(atk and atk.drive_adjusted)
                         .. " atk.super=" .. tostring(atk and atk.super)
-                        .. " def.hp=" .. tostring(def and def.hp_current), "log_display_update"
+                        .. " def.hp=" .. tostring(def and def.hp_current)
                         .. " def.combo_scale_now=" .. tostring(def and def.combo_scale_now)
                         .. " def.act_st=" .. tostring(def and def.act_st)
                         .. " def.attack_name=" .. tostring(def and def.attack_name)
@@ -3060,7 +3109,7 @@ function ComboData.update_state(p1, p2)
                         .. " def.armor_now=" .. tostring(def and def.armor_now)
                         .. " def_prev.hp=" .. tostring(def_prev and def_prev.hp_current)
                         .. " combo_damage_lock=" .. tostring(state.combo_damage_lock)
-                        .. " start_hp_lock=" .. tostring(state.start_hp_lock)
+                        .. " start_hp_lock=" .. tostring(state.start_hp_lock), "log_display_update"
                     )
                 end
                 -- Track A.K.I.-style poison/DoT damage. mComboDamage can omit poison ticks,
@@ -5183,18 +5232,14 @@ function UI.handle_hotkeys()
 end
 
 function UI.get_default_position_coords()
-    local display = imgui.get_display_size()
-    local sw = math.max(1, tonumber(display and display.x) or 1920)
-    local sh = math.max(1, tonumber(display and display.y) or 1080)
-    local function r2(v) return math.floor(v * 100 + 0.5) / 100 end
     return {
         self = {
-            x = r2(50 - DEFAULT_POSITION_OFFSET / sw * 100),
-            y = r2(DEFAULT_POSITION_Y / sh * 100),
+            x = 45,
+            y = 20,
         },
         opponent = {
-            x = r2(50 + DEFAULT_POSITION_OFFSET / sw * 100),
-            y = r2(DEFAULT_POSITION_Y / sh * 100),
+            x = 55,
+            y = 20,
         },
     }
 end
@@ -5316,7 +5361,12 @@ function UI.apply_match_vertical_position(defaults)
     local screen_h = UI.get_screen_dim("y")
     local pixel_y = UI.percent_to_pixels(source_y, "y")
     local shared_pixel_y = UI.get_shared_bounded_position_y(pixel_y, nil)
-    local shared_percent = math.floor(shared_pixel_y / screen_h * 100 * 100 + 0.5) / 100
+    local shared_percent
+    if shared_pixel_y == pixel_y then
+        shared_percent = source_y
+    else
+        shared_percent = math.floor(shared_pixel_y / screen_h * 100 * 100 + 0.5) / 100
+    end
 
     local changed = false
     if self_coords.y ~= shared_percent then
@@ -5345,14 +5395,18 @@ function UI.set_position_coord(id, axis, value)
         local screen_dim = UI.get_screen_dim(axis)
         local pixel_val = UI.percent_to_pixels(percent, axis)
         local bounded_pixel = UI.get_bounded_position_coord(id, axis, pixel_val)
-        percent = math.floor(bounded_pixel / screen_dim * 100 * 100 + 0.5) / 100
+        if bounded_pixel ~= pixel_val then
+            percent = math.floor(bounded_pixel / screen_dim * 100 * 100 + 0.5) / 100
+        end
     end
 
     if axis == "y" and Config.settings.position_match_vertical ~= false then
         local screen_h = UI.get_screen_dim("y")
         local pixel_y = UI.percent_to_pixels(percent, "y")
         local bounded_pixel_y = UI.get_shared_bounded_position_y(pixel_y, nil)
-        percent = math.floor(bounded_pixel_y / screen_h * 100 * 100 + 0.5) / 100
+        if bounded_pixel_y ~= pixel_y then
+            percent = math.floor(bounded_pixel_y / screen_h * 100 * 100 + 0.5) / 100
+        end
     end
 
     local changed = false
@@ -5805,13 +5859,13 @@ function UI.render_position_settings()
         imgui.text("Mode:")
         imgui.same_line()
         local is_percent_mode = current_mode == "percent"
-        local pressed_percent = imgui.radio_button("Percent##position_mode", is_percent_mode)
+        local pressed_percent = UI.radio_button("Percent##position_mode", is_percent_mode)
         if pressed_percent and not is_percent_mode then
             Config.settings.position_mode = "percent"
             mode_changed = true
         end
         imgui.same_line()
-        local pressed_pixels = imgui.radio_button("Pixels##position_mode", not is_percent_mode)
+        local pressed_pixels = UI.radio_button("Pixels##position_mode", not is_percent_mode)
         if pressed_pixels and is_percent_mode then
             Config.settings.position_mode = "pixels"
             mode_changed = true

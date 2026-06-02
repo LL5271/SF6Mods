@@ -643,8 +643,10 @@ GameObjects.GameField    = _gBattle:get_field("Game")
 local ZERO_UNPAUSED_MODES = { [10] = true, [13] = true }
 
 -- Scene/flow IDs where pause_type_bit == 0 means "not paused", rather than
--- the standard BATTLE flag (bit 64). These are scenes without a battle overlay.
-local ZERO_UNPAUSED_SCENES = { [79] = true }
+-- the standard BATTLE flag (bit 64). These use their own overlay system.
+-- 29=BHAvatarBattle, 71=eWorldTourOnlineBattle, 79=eAvatarRoomTraining,
+-- 86=eBattleHubAvatarBattleIn, 87=eBattleHubAvatarBattleOut.
+local ZERO_UNPAUSED_SCENES = { [79] = true, [86] = true, [87] = true, [71] = true, [29] = true }
 
 -- pause_type_bit values that mean "not paused" in normal modes.
 local PAUSED_BITS = { [2] = true, [320] = true, [256] = true, [324] = true, [2112] = false, [2368] = true, [4294967616] = true }
@@ -926,7 +928,7 @@ function GameObjects.is_paused()
     local pause_type_bit = GameObjects.PauseManager:get_field("_CurrentPauseTypeBit")
     local mode = GameObjects.get_game_mode_id()
 
-    -- Certain scenes (like 79 = eAvatarRoomTraining / Avatar Room Training)
+    -- Certain scenes (like 79 = eAvatarRoomTraining, 86 = eBattleHubAvatarBattleIn, etc.)
     -- do not have a battle overlay active, so bit=0 means "unpaused" rather
     -- than the usual BATTLE flag (bit 64). Check the scene/flow ID directly.
     local is_zero_bit_mode = ZERO_UNPAUSED_MODES[mode] == true
@@ -938,7 +940,8 @@ function GameObjects.is_paused()
     end
 
     -- Modes 10 (STORY_TRAINING), 13 (STORY_SPECTATE), and scenes like
-    -- 79 (eAvatarRoomTraining) use bit=0 as their "not paused" sentinel.
+    -- 79 (eAvatarRoomTraining), 86 (eBattleHubAvatarBattleIn), and other avatar
+    -- battle scenes use bit=0 as their "not paused" sentinel.
     if is_zero_bit_mode then
         return pause_type_bit ~= 0
     end

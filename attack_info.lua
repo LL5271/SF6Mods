@@ -706,6 +706,20 @@ function GameObjects.get_game_mode_id()
     return 0
 end
 
+function GameObjects.is_avatar_battle_mode()
+    local mode = GameObjects.get_game_mode_id()
+    if ZERO_UNPAUSED_MODES[mode] then
+        return true
+    end
+    if GameObjects.bFlowManager then
+        local ok, flow_id = pcall(function() return GameObjects.bFlowManager:get_MainFlowID() end)
+        if ok and flow_id and ZERO_UNPAUSED_SCENES[flow_id] then
+            return true
+        end
+    end
+    return false
+end
+
 function GameObjects.get_round_no()
     local battle_round = GameObjects.RoundField and GameObjects.RoundField:get_data() or nil
     if not battle_round then return nil end
@@ -971,8 +985,8 @@ end
 
 function ComboData.default_state()
     ComboData.player_states = {
-        [0] = { started = false, finished = false, attacker = 0, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil },
-        [1] = { started = false, finished = false, attacker = 1, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil },
+        [0] = { started = false, finished = false, attacker = 0, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, hit_start_hp = nil, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil },
+        [1] = { started = false, finished = false, attacker = 1, hit_start_hp = nil, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil },
     }
     ComboData.p1_prev, ComboData.p2_prev = {}, {}
     ComboData.resource_baselines = { [0] = nil, [1] = nil }
@@ -1404,6 +1418,7 @@ function ComboData.clear_player_sequence_state_for_snapshot_load(player_index)
     state.hit_damage_lock_combo_damage_total = nil
     state.pending_ko_hit_damage_delta = nil
     state.combo_damage_lock = nil
+    state.hit_start_hp = nil
     state.start_hp_lock = nil
     state.ko_start_hp_locked = false
     state.ko_start_snapshot = nil
@@ -1983,6 +1998,22 @@ function ComboData.get_hit_damage_snapshot(state, attacker_key, current_finish, 
         raw_damage = current_raw_damage
     end
 
+
+    -- Avatar battle mode: per-hit damage from HP delta.
+    -- pDmgHitDT.DmgValue reflects base move damage and does not include
+    -- World Tour/avatar stat/buff modifiers. Use the defender's HP change
+    -- since the last hit boundary (hit_start_hp) to get the actual damage.
+    -- Since the HP delta already includes scaling and buffs, set scaling
+    -- to 100 so scaled_damage (which = raw * scaling / 100) stays correct.
+    if GameObjects.is_avatar_battle_mode() and state and state.hit_start_hp ~= nil and not state.is_blocked then
+        local defender_current = tonumber(finish_defender and finish_defender.hp_current) or 0
+        local hp_delta = state.hit_start_hp - defender_current
+        if hp_delta > 0 then
+            raw_damage = hp_delta
+            scaling = 100
+        end
+    end
+
     scaling = tonumber(scaling) or 100
 
     if raw_damage <= 0 then
@@ -2194,7 +2225,7 @@ function ComboData.update_hit_damage_lock(state, attacker_key, current_finish, c
     -- pDmgHitDT.DmgValue can linger from the prior attack when a new sequence
     -- begins. If the game's combo damage advanced by a different amount, trust
     -- that delta for the displayed Damage-Per-Hit value.
-    if raw_damage > 0 and not state.is_blocked and not ko_pending then
+    if raw_damage > 0 and not state.is_blocked and not ko_pending and not GameObjects.is_avatar_battle_mode() then
         local combo_delta = latest_combo_damage - (tonumber(state.combo_damage_lock) or 0)
 
         -- Derive effective scaling from actual damage when the game's
@@ -2964,15 +2995,6 @@ function ComboData.update_state(p1, p2)
                 state.pending_start_drive_impact_sequence = true
             end
             if pending_attacker and current_attacker then
-                local current_drive = tonumber(current_attacker.drive_adjusted)
-                local pending_drive = tonumber(pending_attacker.drive_adjusted)
-                local trade_start = ComboData.is_trade_start(current_attacker, def)
-                if current_drive ~= nil and not trade_start and (pending_drive == nil or current_drive > pending_drive) then
-                    pending_attacker.drive_adjusted = current_attacker.drive_adjusted
-                    if current_attacker.incapacitated ~= nil then
-                        pending_attacker.incapacitated = current_attacker.incapacitated
-                    end
-                end
                 local current_super = tonumber(current_attacker.super)
                 local pending_super = tonumber(pending_attacker.super)
                 if current_super ~= nil and (pending_super == nil or current_super < pending_super) then
@@ -3049,6 +3071,7 @@ function ComboData.update_state(p1, p2)
             state.hit_damage_lock_combo_damage_total = nil
             state.pending_ko_hit_damage_delta = nil
             state.combo_damage_lock = nil
+            state.hit_start_hp = nil
             state.start_hp_lock = nil
             state.ko_start_hp_locked = false
             state.ko_start_snapshot = nil
@@ -3338,6 +3361,24 @@ function ComboData.update_state(p1, p2)
 
                     if ComboData.should_freeze_hit_damage_during_defender_recovery(state, atk, combo_ended, round_ended, ko_pending, end_mode, ended_in_knockdown) then
                         ComboData.freeze_hit_damage_lock(state)
+                    end
+
+                    -- Avatar battle mode: track defender HP at hit boundaries.
+                    -- pDmgHitDT.DmgValue reflects base move damage and does not include
+                    -- World Tour/avatar stat/buff modifiers. Track the defender's HP
+                    -- before each individual hit so get_hit_damage_snapshot can derive
+                    -- the actual (buffed) per-hit damage from the HP delta.
+                    if GameObjects.is_avatar_battle_mode() and not state.is_blocked then
+                        local latest_combo_damage = tonumber(atk and atk.combo_damage) or 0
+                        local locked_combo_damage = tonumber(state.combo_damage_lock) or 0
+                        if state.hit_start_hp == nil then
+                            local start_def = i == 0 and state.start.p2 or state.start.p1
+                            state.hit_start_hp = tonumber(start_def and start_def.hp_current) or 0
+                        elseif latest_combo_damage > locked_combo_damage then
+                            -- New hit in the combo: snapshot defender HP from the frame before
+                            -- damage was applied.
+                            state.hit_start_hp = tonumber(def_prev and def_prev.hp_current) or 0
+                        end
                     end
 
                     ComboData.update_hit_damage_lock(state, attacker_key, current_finish, combo_ended, round_ended, ko_pending)

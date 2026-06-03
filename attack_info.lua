@@ -1005,6 +1005,7 @@ function ComboData.default_state()
     ComboData.runtime_state.display_values_logged_hashes = {}
     ComboData.throw_carry_baseline = nil
     ComboData.parry_tracker = { [0] = nil, [1] = nil }
+    ComboData.drive_cooldown_peak = { [0] = 0, [1] = 0 }
 end
 
 ComboData.runtime_state = {
@@ -4377,6 +4378,70 @@ function UI.reserve_drawn_item(id_prefix, size)
         imgui.new_line()
     end
 end
+function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, peak, scale)
+    if not draw_list or not cooldown or cooldown <= 0 then return end
+    if not peak or peak <= 0 then return end
+    local fraction = Utils.clamp(cooldown / peak, 0, 1)
+    if fraction <= 0 then return end
+
+    local num_segments = 32
+    local start_angle = -math.pi / 2
+
+    -- Draw red base circle (always full, no duplicate vertex at seam)
+    draw_list:path_clear()
+    for i = 0, num_segments - 1 do
+        local t = i / num_segments
+        local angle = start_angle + t * 2 * math.pi
+        draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+    end
+    draw_list:path_fill_convex(0xFF0000FF)
+
+    -- Draw black fill for elapsed portion as contiguous convex pie slices
+    -- (avoids visible internal edges from individual triangle wedges)
+    local elapsed_fraction = 1 - fraction
+    if elapsed_fraction > 0 then
+        local fill_count = math.floor(elapsed_fraction * num_segments + 0.5)
+        if fill_count > 0 then
+            local function draw_pie_slice(start_idx, count, last_slice)
+                draw_list:path_clear()
+                draw_list:path_line_to(Vector2f.new(cx, cy))
+                local end_idx = start_idx + count
+                for i = start_idx, end_idx do
+                    local frac = i / num_segments
+                    -- Nudge the last vertex slightly past the boundary
+                    -- to cover anti-aliasing gaps at the red/black seam
+                    if last_slice and i == end_idx then
+                        frac = frac + (1 / num_segments) * 0.7
+                    end
+                    local angle = start_angle + frac * 2 * math.pi
+                    draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+                end
+                draw_list:path_fill_convex(0xFF000000)
+            end
+
+            local half = math.floor(num_segments / 2)
+            if fill_count <= half then
+                -- Single convex pie slice (<= 180 degrees)
+                draw_pie_slice(0, fill_count, true)
+            else
+                -- Split into two convex halves
+                draw_pie_slice(0, half, false)
+                draw_pie_slice(half, fill_count - half, true)
+            end
+        end
+    end
+
+    -- Draw stroke outline in black (no duplicate vertex at seam)
+    draw_list:path_clear()
+    for i = 0, num_segments - 1 do
+        local t = i / num_segments
+        local angle = start_angle + t * 2 * math.pi
+        draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+    end
+    local stroke_width = math.max(1.0, 2.0 * (scale or 1))
+    draw_list:path_stroke(0xFF000000, 1, stroke_width)
+end
+
 
 function UI.draw_text_with_black_stroke(text, color)
     local draw_list = UI.get_active_draw_list()
@@ -5266,7 +5331,32 @@ function UI.render_combo_window_table(state, player_index, is_defense)
         for display_index, column in ipairs(visible_columns) do
             imgui.table_set_column_index(display_index - 1)
             local label = UI.get_combo_column_label(column, visible_columns)
-            UI.center_text(label, column.width, function() UI.draw_text_with_black_stroke(label) end)
+            local label_color = nil
+            UI.center_text(label, column.width, function()
+                local cursor_before = imgui.get_cursor_screen_pos()
+                UI.draw_text_with_black_stroke(label, label_color)
+                if column.id == "p1_drive" or column.id == "p2_drive" then
+                    local cd_value = (column.id == "p1_drive" and ComboData.p1_prev.drive_cooldown)
+                                  or (column.id == "p2_drive" and ComboData.p2_prev.drive_cooldown)
+                                  or 0
+                    if cd_value and cd_value > 0 then
+                        local cd_peak = (column.id == "p1_drive" and ComboData.drive_cooldown_peak[0])
+                                  or (column.id == "p2_drive" and ComboData.drive_cooldown_peak[1])
+                                  or 0
+                        local draw_list = UI.get_active_draw_list()
+                        if draw_list then
+                            local text_size = imgui.calc_text_size(label)
+                            local scale = UI.get_column_width_scale()
+                            local circle_radius = math.max(1, math.floor(8 * scale + 0.5))
+                            local gap = math.floor(10 * scale + 0.5)
+                            local offset = math.floor(2 * scale + 0.5)
+                            local cx_val = (cursor_before.x or 0) + text_size.x + gap + circle_radius - offset
+                            local cy_val = (cursor_before.y or 0) + text_size.y / 2 + offset
+                            UI.draw_drive_cooldown_indicator(draw_list, cx_val, cy_val, circle_radius, cd_value, cd_peak, scale)
+                        end
+                    end
+                end
+            end)
         end
         imgui.pop_font()
 
@@ -6386,6 +6476,26 @@ re.on_frame(function()
         GameObjects.update_lua_probe(p1, p2)
         ComboData.update_state(p1, p2)
         ComboData.update_post_match_timer(p1, p2)
+
+        -- Track drive cooldown peaks for circular timer display
+        local p1_cd = (p1 and p1.drive_cooldown) or 0
+        local p2_cd = (p2 and p2.drive_cooldown) or 0
+
+        if p1_cd > 0 then
+            if p1_cd > ComboData.drive_cooldown_peak[0] then
+                ComboData.drive_cooldown_peak[0] = p1_cd
+            end
+        else
+            ComboData.drive_cooldown_peak[0] = 0
+        end
+
+        if p2_cd > 0 then
+            if p2_cd > ComboData.drive_cooldown_peak[1] then
+                ComboData.drive_cooldown_peak[1] = p2_cd
+            end
+        else
+            ComboData.drive_cooldown_peak[1] = 0
+        end
         UI.render_windows()
     end
 end)

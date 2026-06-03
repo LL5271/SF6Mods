@@ -4390,7 +4390,7 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
     -- Circle opacity: current Opacity (BG) + 25%, clamped to 100%
     local circle_opacity = Utils.clamp(UI.get_display_background_opacity() + 0.50, 0, 1)
     local red_base_color = UI.apply_opacity_to_color(0xFF0000FF, circle_opacity)
-    local black_color = UI.apply_opacity_to_color(0xFF000000, circle_opacity)
+    local off_white_color = UI.apply_opacity_to_color(0xFFE0E0E0, circle_opacity)
 
     -- Draw red base circle (always full, no duplicate vertex at seam)
     draw_list:path_clear()
@@ -4401,7 +4401,7 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
     end
     draw_list:path_fill_convex(red_base_color)
 
-    -- Draw black fill for elapsed portion as contiguous convex pie slices
+    -- Draw off-white fill for elapsed portion as contiguous convex pie slices
     -- (avoids visible internal edges from individual triangle wedges)
     local elapsed_fraction = 1 - fraction
     if elapsed_fraction > 0 then
@@ -4414,14 +4414,14 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
                 for i = start_idx, end_idx do
                     local frac = i / num_segments
                     -- Nudge the last vertex slightly past the boundary
-                    -- to cover anti-aliasing gaps at the red/black seam
+                    -- to cover anti-aliasing gaps at the red/off-white seam
                     if last_slice and i == end_idx then
                         frac = frac + (1 / num_segments) * 0.7
                     end
                     local angle = start_angle + frac * 2 * math.pi
                     draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
                 end
-                draw_list:path_fill_convex(black_color)
+                draw_list:path_fill_convex(off_white_color)
             end
 
             local half = math.floor(num_segments / 2)
@@ -4436,7 +4436,7 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
         end
     end
 
-    -- Draw stroke outline in black (no duplicate vertex at seam)
+    -- Draw stroke outline in off-white (no duplicate vertex at seam)
     draw_list:path_clear()
     for i = 0, num_segments - 1 do
         local t = i / num_segments
@@ -4444,7 +4444,7 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
         draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
     end
     local stroke_width = math.max(1.0, 2.0 * (scale or 1))
-    draw_list:path_stroke(black_color, 1, stroke_width)
+    draw_list:path_stroke(off_white_color, 1, stroke_width)
 end
 
 

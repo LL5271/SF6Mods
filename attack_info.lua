@@ -4387,6 +4387,11 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
     local num_segments = 32
     local start_angle = -math.pi / 2
 
+    -- Circle opacity: current Opacity (BG) + 25%, clamped to 100%
+    local circle_opacity = Utils.clamp(UI.get_display_background_opacity() + 0.50, 0, 1)
+    local red_base_color = UI.apply_opacity_to_color(0xFF0000FF, circle_opacity)
+    local black_color = UI.apply_opacity_to_color(0xFF000000, circle_opacity)
+
     -- Draw red base circle (always full, no duplicate vertex at seam)
     draw_list:path_clear()
     for i = 0, num_segments - 1 do
@@ -4394,7 +4399,7 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
         local angle = start_angle + t * 2 * math.pi
         draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
     end
-    draw_list:path_fill_convex(0xFF0000FF)
+    draw_list:path_fill_convex(red_base_color)
 
     -- Draw black fill for elapsed portion as contiguous convex pie slices
     -- (avoids visible internal edges from individual triangle wedges)
@@ -4416,7 +4421,7 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
                     local angle = start_angle + frac * 2 * math.pi
                     draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
                 end
-                draw_list:path_fill_convex(0xFF000000)
+                draw_list:path_fill_convex(black_color)
             end
 
             local half = math.floor(num_segments / 2)
@@ -4439,7 +4444,7 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
         draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
     end
     local stroke_width = math.max(1.0, 2.0 * (scale or 1))
-    draw_list:path_stroke(0xFF000000, 1, stroke_width)
+    draw_list:path_stroke(black_color, 1, stroke_width)
 end
 
 
@@ -5350,8 +5355,8 @@ function UI.render_combo_window_table(state, player_index, is_defense)
                             local circle_radius = math.max(1, math.floor(8 * scale + 0.5))
                             local gap = math.floor(10 * scale + 0.5)
                             local offset = math.floor(2 * scale + 0.5)
-                            local cx_val = (cursor_before.x or 0) + text_size.x + gap + circle_radius - offset
-                            local cy_val = (cursor_before.y or 0) + text_size.y / 2 + offset
+                            local cx_val = (cursor_before.x or 0) + text_size.x + gap + circle_radius - offset - 1
+                            local cy_val = (cursor_before.y or 0) + text_size.y / 2 + offset - 1
                             UI.draw_drive_cooldown_indicator(draw_list, cx_val, cy_val, circle_radius, cd_value, cd_peak, scale)
                         end
                     end

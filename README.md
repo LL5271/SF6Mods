@@ -53,4 +53,3 @@ Usage:
 * Install [REFramework](https://github.com/praydog/REFramework)
 * Save .lua file(s) to `reframework\autorun` in SF6 install folder
 * Launch game
-* 

@@ -3499,12 +3499,12 @@ function ComboData.update_state(p1, p2)
                     local start_p2 = state.start.p2 or {}
                     local attacker_start = i == 0 and start_p1 or start_p2
                     -- Build minimal finish objects with only pos_x locked
-                    local frozen_finish_p1 = { pos_x = state.ko_carry_finish_p1_x or 0 }
-                    local frozen_finish_p2 = { pos_x = state.ko_carry_finish_p2_x or 0 }
+                    local frozen_finish_p1 = { pos_x = state.ko_carry_finish_p1_x or 0, dir = current_finish.p1 and current_finish.p1.dir }
+                    local frozen_finish_p2 = { pos_x = state.ko_carry_finish_p2_x or 0, dir = current_finish.p2 and current_finish.p2.dir }
                     local attacker_finish = i == 0 and frozen_finish_p1 or frozen_finish_p2
                     -- Compute carry totals with frozen positions
                     local percent_max_values = UI.get_percent_max_values(state)
-                    local throw_side_switch = UI.should_use_throw_side_switch_carry(state, i == 0, start_p1, start_p2)
+                    local throw_side_switch = UI.should_use_side_switch_carry(state, i == 0, start_p1, start_p2)
                     state.ko_carry_total_p1 = UI.get_carry_total_value(start_p1, frozen_finish_p1, attacker_start, attacker_finish, percent_max_values and percent_max_values[7], throw_side_switch)
                     state.ko_carry_total_p2 = UI.get_carry_total_value(start_p2, frozen_finish_p2, attacker_start, attacker_finish, percent_max_values and percent_max_values[8], throw_side_switch)
                     local sign_p1, sign_p2 = UI.apply_side_switch_carry_total_sign_rule(
@@ -4910,8 +4910,8 @@ function UI.did_carry_position_order_side_switch(attacker_start, defender_start,
     return (start_delta > 0 and finish_delta < 0) or (start_delta < 0 and finish_delta > 0)
 end
 
-function UI.should_use_throw_side_switch_carry(state, is_p1_attacker, start_p1, start_p2)
-    if not state or state.is_throw ~= true or not state.finish then
+function UI.should_use_side_switch_carry(state, is_p1_attacker, start_p1, start_p2)
+    if not state or not state.finish then
         return false
     end
 
@@ -4923,15 +4923,71 @@ function UI.should_use_throw_side_switch_carry(state, is_p1_attacker, start_p1, 
         return false
     end
 
-    -- Non-throw side switches already reach the wall-space branch through the
-    -- attacker's facing-dir flip. Some throw side switches swap player order
-    -- without a reliable dir flip in the finish snapshot, so detect the same
-    -- side-switch condition from relative position order and force that branch.
-    if attacker_start.dir == nil then
-        return false
+    -- Side-switch detection: three complementary checks
+    -- 1. Relative position order swapped (position-order check)
+    -- 2. Attacker direction flipped between start and finish (dir-flip check)
+    -- 3. Defender crossed past the attacker's start position (crossed-start check)
+    -- Any one of these indicates a side switch.
+
+    local result = false
+    local reasons = {}
+
+    -- Check 1: position-order swap
+    if UI.did_carry_position_order_side_switch(attacker_start, defender_start, attacker_finish, defender_finish) then
+        result = true
+        reasons[#reasons + 1] = "position_order"
     end
 
-    return UI.did_carry_position_order_side_switch(attacker_start, defender_start, attacker_finish, defender_finish)
+    -- Check 2: attacker direction flip
+    local attacker_start_dir = attacker_start and attacker_start.dir
+    local attacker_finish_dir = attacker_finish and attacker_finish.dir
+    if not result
+        and attacker_start_dir ~= nil
+        and attacker_finish_dir ~= nil
+        and attacker_start_dir ~= attacker_finish_dir
+    then
+        result = true
+        reasons[#reasons + 1] = "dir_flip"
+    end
+
+    -- Check 3: defender crossed past the attacker's start position
+    if not result
+        and defender_start
+        and defender_finish
+        and attacker_start
+        and attacker_start.pos_x ~= nil
+        and defender_start.pos_x ~= nil
+        and defender_finish.pos_x ~= nil
+    then
+        local s_def = tonumber(defender_start.pos_x)
+        local f_def = tonumber(defender_finish.pos_x)
+        local s_atk = tonumber(attacker_start.pos_x)
+        if s_def and f_def and s_atk then
+            local def_started_left = s_def < s_atk
+            local def_finished_right = f_def > s_atk
+            local def_started_right = s_def > s_atk
+            local def_finished_left = f_def < s_atk
+            if (def_started_left and def_finished_right) or (def_started_right and def_finished_left) then
+                result = true
+                reasons[#reasons + 1] = "crossed_start"
+            end
+        end
+    end
+
+    ComboData.debug_log("should_use_side_switch_carry"
+        .. " is_p1_atk=" .. tostring(is_p1_attacker)
+        .. " atk_start.dir=" .. tostring(attacker_start and attacker_start.dir)
+        .. " atk_finish.dir=" .. tostring(attacker_finish and attacker_finish.dir)
+        .. " atk_start_x=" .. tostring(attacker_start and attacker_start.pos_x)
+        .. " def_start_x=" .. tostring(defender_start and defender_start.pos_x)
+        .. " atk_finish_x=" .. tostring(attacker_finish and attacker_finish.pos_x)
+        .. " def_finish_x=" .. tostring(defender_finish and defender_finish.pos_x)
+        .. " result=" .. tostring(result)
+        .. " reasons=" .. table.concat(reasons, ",")
+        , "carry_debug"
+    )
+
+    return result
 end
 
 function UI.get_carry_total_value(start_player, finish_player, attacker_start, attacker_finish, percent_max, force_side_switch)
@@ -4958,6 +5014,8 @@ function UI.get_carry_total_value(start_player, finish_player, attacker_start, a
     return (finish_pos - start_pos) * direction_sign
 end
 
+-- Keep old name as backward-compatible redirect
+UI.should_use_throw_side_switch_carry = UI.should_use_side_switch_carry
 
 -- BEGIN side-switch Carry total sign rule
 function UI.apply_side_switch_carry_total_sign_rule(p1_carry_total, p2_carry_total, is_p1_attacker, attacker_start, attacker_finish)
@@ -5000,7 +5058,7 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
     end
     local hit_damage_start, hit_damage_finish, hit_damage_total = UI.get_hit_damage_breakdown(state, is_p1)
     local hit_damage_scaling = hit_damage_finish
-    local throw_side_switch = UI.should_use_throw_side_switch_carry(state, is_p1, start_p1, start_p2)
+    local throw_side_switch = UI.should_use_side_switch_carry(state, is_p1, start_p1, start_p2)
     local p1_carry_total
     local p2_carry_total
     if state.ko_carry_total_p1 ~= nil then

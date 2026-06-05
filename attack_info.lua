@@ -15,6 +15,7 @@ local PRECOMBO_RESOURCE_BASELINE_FRAMES = 120
 local DEFENDER_PRECOMBO_RESOURCE_BASELINE_FRAMES = 8
 local PENDING_START_TTL_FRAMES = 12
 local THROW_CONNECT_MIN_ACTION_FRAME = 8
+local THROW_SIDE_SWITCH_CONFIRM_FRAMES = 20
 local DRIVE_IMPACT_RESOURCE_COST = 10000
 local DRIVE_RUSH_RESOURCE_COST = 20000
 local DRIVE_IMPACT_ACTION_MIN = 850
@@ -126,6 +127,7 @@ Config.settings = {
     position_match_vertical = true,
     combo_end_mode = "defender_recovery",
     toggle_enable_debug_logging = false,
+    toggle_enable_drive_cooldown_debug = false,
     log_attacker_display = true,
     log_defender_display = true,
     log_start_finish_values = true,
@@ -167,7 +169,6 @@ function Config.loaded_settings_missing_defaults(loaded_settings)
     if loaded_settings.log_attacker_display == nil or loaded_settings.log_defender_display == nil or loaded_settings.log_start_finish_values == nil or loaded_settings.log_settings_changed == nil or loaded_settings.log_display_update == nil or loaded_settings.log_display_clear == nil then
         return true
     end
-
 
     for _, unit in ipairs(UNIT_DEFS) do
         if loaded_settings.unit_display[unit.id] == nil then
@@ -330,7 +331,12 @@ function Config.ensure_defaults(force_save)
         changed = true
     end
     if Config.settings.toggle_enable_debug_logging == nil then
-        Config.settings.toggle_enable_debug_logging = false
+    Config.settings.toggle_enable_debug_logging = false
+    Config.settings.toggle_enable_drive_cooldown_debug = false
+        changed = true
+    end
+    if Config.settings.toggle_enable_drive_cooldown_debug == nil then
+        Config.settings.toggle_enable_drive_cooldown_debug = false
         changed = true
     end
     if Config.settings.log_attacker_display == nil then
@@ -439,6 +445,7 @@ function Config.attack_info_defaults_selected()
     local _, defaults = UI.ensure_position_coords()
     if not Config.position_defaults_selected(defaults) then return false end
     if Config.settings.toggle_enable_debug_logging ~= false then return false end
+    if Config.settings.toggle_enable_drive_cooldown_debug ~= false then return false end
     if Config.settings.log_attacker_display ~= true then return false end
     if Config.settings.log_defender_display ~= true then return false end
     if Config.settings.log_start_finish_values ~= true then return false end
@@ -706,6 +713,33 @@ function GameObjects.get_game_mode_id()
     return 0
 end
 
+function GameObjects.get_training_drive_refill_settings(player_index)
+    if not GameObjects.TrainingManager then return nil end
+
+    local ok, data = pcall(function()
+        local param_func = GameObjects.TrainingManager:call("get_ParamFunc")
+        local game_local_data = param_func and param_func._gData or nil
+        local player_datas = game_local_data and game_local_data.PlayerDatas or nil
+        local player_data = player_datas and player_datas[player_index] or nil
+        if not player_data then return nil end
+
+        local target = tonumber(player_data.tempDGgauge)
+        if target == nil or target <= 0 then
+            target = tonumber(player_data.DG_Point)
+        end
+
+        return {
+            point_lock = player_data.Is_DG_Point_Lock == true,
+            configured_timer = tonumber(player_data.DG_Timer) or 0,
+            runtime_timer = tonumber(player_data.dgTimer) or 0,
+            target = target,
+        }
+    end)
+
+    if not ok then return nil end
+    return data
+end
+
 function GameObjects.is_avatar_battle_mode()
     local mode = GameObjects.get_game_mode_id()
     if ZERO_UNPAUSED_MODES[mode] then
@@ -777,6 +811,7 @@ function GameObjects.map_player_data(cPlayer, cTeam)
     local data_vals = {}
     for player_index = 0, 1 do
         local player = cPlayer[player_index]
+        local training_drive = GameObjects.get_training_drive_refill_settings(player_index)
         -- if not player then
         --     data_vals[player_index] = { hp_current = 0, hp_max = 0, combo_count = 0, incapacitated = false }
         -- else
@@ -789,6 +824,10 @@ function GameObjects.map_player_data(cPlayer, cTeam)
         data.incapacitated = player.incapacitated or false
         data.drive_adjusted = data.incapacitated and ((player.focus_new or 0) - 60000) or (player.focus_new or 0)
         data.drive_cooldown = player.focus_wait or 0
+        data.training_drive_point_lock = training_drive and training_drive.point_lock == true or false
+        data.training_drive_target = training_drive and training_drive.target or nil
+        data.training_drive_configured_timer = training_drive and training_drive.configured_timer or 0
+        data.training_drive_runtime_timer = training_drive and training_drive.runtime_timer or 0
         data.stance = player.pose_st or ""
         data.super = team and team.mSuperGauge or 0
         data.combo_count = team and team.mComboCount or 0
@@ -824,11 +863,18 @@ function GameObjects.map_player_data(cPlayer, cTeam)
         data.gap = (player.vs_distance and player.vs_distance.v or 0) / 65536.0
         data.action_id = 0
         data.action_frame = 0
+        data.action_total_frames = 0
         if player.mpActParam and player.mpActParam.ActionPart then
             local engine = player.mpActParam.ActionPart._Engine
             if engine then
                 data.action_id = Utils.read_sfix(engine:get_ActionID())
                 data.action_frame = Utils.read_sfix(engine:get_ActionFrame())
+                local ok_margin, margin_frame = pcall(function()
+                    return engine:get_MarginFrame()
+                end)
+                if ok_margin then
+                    data.action_total_frames = Utils.read_sfix(margin_frame)
+                end
             end
         end
         data.attack_name = GameObjects.resolve_attack_name(data.action_id, data.action_frame)
@@ -889,6 +935,10 @@ function GameObjects.to_lua_probe_player(data, index)
         ActState = tostring(data.act_st or ""),
         Stance = tonumber(data.stance) or 0,
         IsPoisoned = data.is_poisoned == true,
+        TrainingDrivePointLock = data.training_drive_point_lock == true,
+        TrainingDriveTarget = tonumber(data.training_drive_target) or 0,
+        TrainingDriveConfiguredTimer = tonumber(data.training_drive_configured_timer) or 0,
+        TrainingDriveRuntimeTimer = tonumber(data.training_drive_runtime_timer) or 0,
     }
 end
 
@@ -918,12 +968,18 @@ function GameObjects.update_lua_probe(p1, p2)
 
         if should_log then
             GameObjects.lua_probe_log(string.format(
-                "[AttackInfoLuaProbe] sample frame=%d p1_hp=%d p2_hp=%d p1_combo=%d p2_combo=%d",
+                "[AttackInfoLuaProbe] sample frame=%d p1_hp=%d p2_hp=%d p1_combo=%d p2_combo=%d p1_cd=%d p2_cd=%d p1_lock=%s p2_lock=%s p1_target=%d p2_target=%d",
                 snapshot.Frame,
                 snapshot.P1.HpCurrent,
                 snapshot.P2.HpCurrent,
                 snapshot.P1.ComboCount,
-                snapshot.P2.ComboCount
+                snapshot.P2.ComboCount,
+                snapshot.P1.DriveCooldown,
+                snapshot.P2.DriveCooldown,
+                tostring(snapshot.P1.TrainingDrivePointLock),
+                tostring(snapshot.P2.TrainingDrivePointLock),
+                snapshot.P1.TrainingDriveTarget,
+                snapshot.P2.TrainingDriveTarget
             ))
             GameObjects.lua_probe_last_log_frame = GameObjects.lua_probe_frame
         end
@@ -985,8 +1041,8 @@ end
 
 function ComboData.default_state()
     ComboData.player_states = {
-        [0] = { started = false, finished = false, attacker = 0, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, hit_start_hp = nil, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil },
-        [1] = { started = false, finished = false, attacker = 1, hit_start_hp = nil, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil },
+        [0] = { started = false, finished = false, attacker = 0, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, throw_side_switch_frames = 0, throw_side_switch_last_action_frame = nil, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, hit_start_hp = nil, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil },
+        [1] = { started = false, finished = false, attacker = 1, hit_start_hp = nil, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, throw_side_switch_frames = 0, throw_side_switch_last_action_frame = nil, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil },
     }
     ComboData.p1_prev, ComboData.p2_prev = {}, {}
     ComboData.resource_baselines = { [0] = nil, [1] = nil }
@@ -1006,6 +1062,13 @@ function ComboData.default_state()
     ComboData.throw_carry_baseline = nil
     ComboData.parry_tracker = { [0] = nil, [1] = nil }
     ComboData.drive_cooldown_peak = { [0] = 0, [1] = 0 }
+    ComboData.drive_cooldown_legitimate = { [0] = nil, [1] = nil }
+    ComboData.drive_cooldown_pending = { [0] = false, [1] = false }
+    ComboData.drive_cooldown_pending_age = { [0] = 0, [1] = 0 }
+    ComboData.drive_cooldown_pending_peak = { [0] = 0, [1] = 0 }
+    ComboData.drive_cooldown_total_peak = { [0] = 0, [1] = 0 }
+    ComboData.drive_cooldown_pending_peak_final = { [0] = 0, [1] = 0 }
+    ComboData.runtime_state.drive_cooldown_debug_last = { [0] = nil, [1] = nil }
 end
 
 ComboData.runtime_state = {
@@ -1016,11 +1079,12 @@ ComboData.runtime_state = {
     frame_count = 0,
     ko_logged_frame = -999,
     display_values_logged_hashes = {},
+    drive_cooldown_debug_last = { [0] = nil, [1] = nil },
 }
 
-function ComboData.debug_log(message, cat)
-    if Config.settings.toggle_enable_debug_logging ~= true then return false end
-    if cat and Config.settings[cat] == false then
+function ComboData.debug_log(message, cat, force)
+    if force ~= true and Config.settings.toggle_enable_debug_logging ~= true then return false end
+    if force ~= true and cat and Config.settings[cat] == false then
         local linger = ComboData.runtime_state.log_linger_until or 0
         if cat ~= "log_attacker_display" and cat ~= "log_defender_display" or os.time() >= linger then
             return false
@@ -1233,8 +1297,6 @@ function ComboData.install_snapshot_hooks(type_def)
 
     ComboData.snapshot_debug("install_snapshot_hooks end")
 end
-
-
 function ComboData.get_serializable_player_state(player_index)
     local state = ComboData.player_states and ComboData.player_states[player_index]
     if not state then return {} end
@@ -1412,6 +1474,8 @@ function ComboData.clear_player_sequence_state_for_snapshot_load(player_index)
     state.block_end_grace_remaining = 0
     state.defender_recovery_grace_remaining = 0
     state.throw_end_wait_for_exit = false
+    state.throw_side_switch_frames = 0
+    state.throw_side_switch_last_action_frame = nil
     state.advantage_lock = nil
     state.hit_damage_lock = nil
     state.hit_damage_lock_frozen = false
@@ -1813,8 +1877,6 @@ end
 function ComboData.is_drive_impact_state(player)
     return player ~= nil and ComboData.is_drive_impact_action_id(player.action_id)
 end
-
-
 function ComboData.is_parry_action_id(action_id)
     local id = tonumber(action_id)
     return id ~= nil and id >= PARRY_ACTION_MIN and id <= PARRY_ACTION_MAX
@@ -1998,8 +2060,6 @@ function ComboData.get_hit_damage_snapshot(state, attacker_key, current_finish, 
     elseif raw_damage <= 0 then
         raw_damage = current_raw_damage
     end
-
-
     -- Avatar battle mode: per-hit damage from HP delta.
     -- pDmgHitDT.DmgValue reflects base move damage and does not include
     -- World Tour/avatar stat/buff modifiers. Use the defender's HP change
@@ -2134,8 +2194,6 @@ function ComboData.derive_ko_hit_damage_from_combo_damage(state, latest, scaling
         first_hit_ko_damage_derived_from_combo_damage = true,
     }
 end
-
-
 function ComboData.update_hit_damage_lock(state, attacker_key, current_finish, combo_ended, round_ended, ko_pending)
     if not state then
         return
@@ -2297,8 +2355,6 @@ function ComboData.update_hit_damage_lock(state, attacker_key, current_finish, c
         state.hit_damage_lock_frozen = false
     end
 end
-
-
 function ComboData.update_combo_damage_lock(state, attacker_key, current_finish)
     if not state or state.is_blocked then
         return
@@ -2312,8 +2368,6 @@ function ComboData.update_combo_damage_lock(state, attacker_key, current_finish)
         state.combo_damage_lock = latest_combo_damage
     end
 end
-
-
 -- BEGIN DPH knockdown scaling freeze
 function ComboData.freeze_hit_damage_finish_player(current_player, previous_player)
     if not current_player or not previous_player then return end
@@ -2365,8 +2419,6 @@ function ComboData.apply_hit_damage_lock_to_finish(state, attacker_key, current_
     end
 end
 -- END DPH knockdown scaling freeze
-
-
 -- BEGIN DPH defender-recovery knockdown freeze
 function ComboData.freeze_hit_damage_lock(state)
     if state and state.hit_damage_lock and not state.hit_damage_lock_provisional then
@@ -2390,8 +2442,6 @@ function ComboData.should_freeze_hit_damage_during_defender_recovery(state, atk,
     return (tonumber(atk and atk.combo_count) or 0) <= 0
 end
 -- END DPH defender-recovery knockdown freeze
-
-
 function ComboData.freeze_drive_finish(current_finish, latest)
     if not current_finish or not latest then return end
 
@@ -2592,8 +2642,6 @@ function ComboData.update_resource_baselines(p1, p2)
         end
     end
 end
-
-
 function ComboData.copy_start_resources_from_baseline(start_player, baseline)
     if not start_player or not baseline then return false end
 
@@ -2677,6 +2725,92 @@ function ComboData.apply_drive_cooldown_resource_fallback(state, start_player, c
     return true
 end
 
+function ComboData.get_training_drive_refill_override_debug(prev, current)
+    if not current then return false, "current=nil" end
+    if GameObjects.TrainingManager == nil then return false, "training_manager=nil" end
+    if ComboData.any_sequence_started() then return false, "sequence_started=true" end
+
+    local target = tonumber(current.training_drive_target)
+    local current_drive = tonumber(current.drive_adjusted)
+    if target == nil or target <= 0 then return false, "target<=0" end
+    if current_drive == nil then return false, "current_drive=nil" end
+
+    local point_lock = current.training_drive_point_lock == true
+    local runtime_timer = tonumber(current.training_drive_runtime_timer) or 0
+    local configured_timer = tonumber(current.training_drive_configured_timer) or 0
+    if not point_lock and runtime_timer <= 0 then
+        return false, "point_lock=false runtime_timer=" .. tostring(runtime_timer)
+    end
+    if configured_timer <= 0 and runtime_timer <= 0 and not point_lock then
+        return false, "configured_timer<=0 runtime_timer<=0"
+    end
+
+    local distance_to_target = math.abs(current_drive - target)
+    if distance_to_target > 100 then
+        return false, "target_distance=" .. tostring(distance_to_target)
+    end
+
+    return true,
+        "target_distance=" .. tostring(distance_to_target)
+            .. " point_lock=" .. tostring(point_lock)
+            .. " runtime_timer=" .. tostring(runtime_timer)
+            .. " configured_timer=" .. tostring(configured_timer)
+end
+
+function ComboData.is_training_drive_refill_override(prev, current)
+    local is_override = ComboData.get_training_drive_refill_override_debug(prev, current)
+    return is_override == true
+end
+
+function ComboData.debug_log_drive_cooldown(player_index, phase, prev, current, legitimacy, note)
+    if Config.settings.toggle_enable_drive_cooldown_debug ~= true then return end
+    local prev_cd = tonumber(prev and prev.drive_cooldown) or 0
+    local current_cd = tonumber(current and current.drive_cooldown) or 0
+    local prev_drive = tonumber(prev and prev.drive_adjusted) or 0
+    local current_drive = tonumber(current and current.drive_adjusted) or 0
+    local lock = current and current.training_drive_point_lock == true or false
+    local target = tonumber(current and current.training_drive_target) or 0
+    local configured_timer = tonumber(current and current.training_drive_configured_timer) or 0
+    local runtime_timer = tonumber(current and current.training_drive_runtime_timer) or 0
+    local signature = table.concat({
+        tostring(phase),
+        tostring(prev_cd),
+        tostring(current_cd),
+        tostring(prev_drive),
+        tostring(current_drive),
+        tostring(legitimacy),
+        tostring(lock),
+        tostring(target),
+        tostring(configured_timer),
+        tostring(runtime_timer),
+        tostring(note),
+    }, "|")
+
+    if ComboData.runtime_state.drive_cooldown_debug_last[player_index] == signature then
+        return
+    end
+    ComboData.runtime_state.drive_cooldown_debug_last[player_index] = signature
+
+    ComboData.debug_log(
+        "DRIVE_COOLDOWN p" .. tostring(player_index)
+            .. " phase=" .. tostring(phase)
+            .. " prev_cd=" .. tostring(prev_cd)
+            .. " current_cd=" .. tostring(current_cd)
+            .. " prev_drive=" .. tostring(prev_drive)
+            .. " current_drive=" .. tostring(current_drive)
+            .. " legitimacy=" .. tostring(legitimacy)
+            .. " point_lock=" .. tostring(lock)
+            .. " target=" .. tostring(target)
+            .. " configured_timer=" .. tostring(configured_timer)
+            .. " runtime_timer=" .. tostring(runtime_timer)
+            .. " any_sequence_started=" .. tostring(ComboData.any_sequence_started())
+            .. " cd_total_peak=" .. tostring(ComboData.drive_cooldown_total_peak[player_index] or 0)
+            .. " note=" .. tostring(note),
+        "log_display_update",
+        true
+    )
+end
+
 function ComboData.apply_start_resource_baseline(state, player_idx, current, allow_action_baseline, allow_recent_baseline, recent_max_age)
     local key = player_idx == 0 and "p1" or "p2"
     local start_player = state and state.start and state.start[key] or nil
@@ -2721,6 +2855,146 @@ function ComboData.player_start_has_drive_spend(state, player_idx, current)
 
     local drive_delta = (tonumber(current.drive_adjusted) or 0) - (tonumber(start_player.drive_adjusted) or 0)
     return drive_delta <= -9000
+end
+
+function ComboData.player_has_known_drive_spend(player_idx, current)
+    if not current then return false, "current=nil" end
+
+    if ComboData.recent_resource_baseline_would_show_drive_spend(player_idx, current, PRECOMBO_RESOURCE_BASELINE_FRAMES) then
+        return true, "recent_baseline"
+    end
+
+    if not ComboData.player_states then return false, "no_player_states" end
+
+    for attacker_idx = 0, 1 do
+        local state = ComboData.player_states[attacker_idx]
+        if ComboData.player_start_has_drive_spend(state, player_idx, current) then
+            return true, "state_start_p" .. tostring(attacker_idx)
+        end
+    end
+
+    return false, "no_known_spend"
+end
+
+function ComboData.get_pending_attack_frames(current)
+    if not current then return nil end
+
+    local total = tonumber(current.action_total_frames)
+    local frame = tonumber(current.action_frame)
+    if total == nil or total <= 0 or frame == nil or frame < 0 then
+        return nil
+    end
+
+    return math.max(0, total - frame)
+end
+
+function ComboData.update_drive_cooldown_pending(player_idx, prev, current)
+    if not ComboData.drive_cooldown_pending then
+        ComboData.drive_cooldown_pending = { [0] = false, [1] = false }
+    end
+    if not ComboData.drive_cooldown_pending_age then
+        ComboData.drive_cooldown_pending_age = { [0] = 0, [1] = 0 }
+    end
+    if not ComboData.drive_cooldown_pending_peak then
+        ComboData.drive_cooldown_pending_peak = { [0] = 0, [1] = 0 }
+    end
+    if not ComboData.drive_cooldown_total_peak then
+        ComboData.drive_cooldown_total_peak = { [0] = 0, [1] = 0 }
+    end
+    if not ComboData.drive_cooldown_pending_peak_final then
+        ComboData.drive_cooldown_pending_peak_final = { [0] = 0, [1] = 0 }
+    end
+
+    if not current then
+        ComboData.drive_cooldown_pending[player_idx] = false
+        ComboData.drive_cooldown_pending_age[player_idx] = 0
+        ComboData.drive_cooldown_pending_peak[player_idx] = 0
+        ComboData.drive_cooldown_total_peak[player_idx] = 0
+        ComboData.drive_cooldown_pending_peak_final[player_idx] = 0
+        return
+    end
+
+    local current_cd = tonumber(current.drive_cooldown) or 0
+    local pending_frames = ComboData.get_pending_attack_frames(current)
+    if current_cd > 0 then
+        if ComboData.drive_cooldown_pending[player_idx] == true then
+            ComboData.drive_cooldown_pending_peak_final[player_idx] = current_cd
+            if Config.settings.toggle_enable_drive_cooldown_debug == true then
+                ComboData.debug_log(
+                "DRIVE_COOLDOWN_PENDING p" .. tostring(player_idx)
+                    .. " phase=handoff"
+                    .. " current_cd=" .. tostring(current_cd)
+                    .. " pending_frames=" .. tostring(pending_frames)
+                    .. " total_peak=" .. tostring(ComboData.drive_cooldown_total_peak[player_idx])
+                    .. " pending_peak_final=" .. tostring(ComboData.drive_cooldown_pending_peak_final[player_idx]),
+                "log_display_update",
+                true
+            )
+            end
+        end
+        ComboData.drive_cooldown_pending[player_idx] = false
+        ComboData.drive_cooldown_pending_age[player_idx] = 0
+        ComboData.drive_cooldown_pending_peak[player_idx] = 0
+        return
+    end
+
+    local is_override = ComboData.is_training_drive_refill_override(prev, current)
+    if is_override then
+        ComboData.drive_cooldown_pending[player_idx] = false
+        ComboData.drive_cooldown_pending_age[player_idx] = 0
+        ComboData.drive_cooldown_pending_peak[player_idx] = 0
+        ComboData.drive_cooldown_total_peak[player_idx] = 0
+        return
+    end
+
+    local prev_drive = tonumber(prev and prev.drive_adjusted) or 0
+    local current_drive = tonumber(current.drive_adjusted) or 0
+    local drive_drop = prev_drive - current_drive
+    if drive_drop > 1000 then
+        ComboData.drive_cooldown_pending[player_idx] = true
+        ComboData.drive_cooldown_pending_age[player_idx] = 0
+        ComboData.drive_cooldown_pending_peak[player_idx] = math.max(
+            tonumber(ComboData.drive_cooldown_pending_peak[player_idx]) or 0,
+            pending_frames or 0
+        )
+        ComboData.drive_cooldown_total_peak[player_idx] = math.max(
+            tonumber(ComboData.drive_cooldown_total_peak[player_idx]) or 0,
+            (pending_frames or 0) + 120
+        )
+        if Config.settings.toggle_enable_drive_cooldown_debug == true then
+            ComboData.debug_log(
+                "DRIVE_COOLDOWN_PENDING p" .. tostring(player_idx)
+                    .. " phase=spend"
+                    .. " action_total_frames=" .. tostring(current.action_total_frames)
+                    .. " action_frame=" .. tostring(current.action_frame)
+                    .. " pending_frames=" .. tostring(pending_frames)
+                    .. " pending_peak=" .. tostring(ComboData.drive_cooldown_pending_peak[player_idx])
+                    .. " total_peak=" .. tostring(ComboData.drive_cooldown_total_peak[player_idx]),
+                "log_display_update",
+                true
+            )
+        end
+        return
+    end
+
+    if ComboData.drive_cooldown_pending[player_idx] == true then
+        local age = (ComboData.drive_cooldown_pending_age[player_idx] or 0) + 1
+        if pending_frames ~= nil and pending_frames > 0 then
+            ComboData.drive_cooldown_pending_peak[player_idx] = math.max(
+                tonumber(ComboData.drive_cooldown_pending_peak[player_idx]) or 0,
+                pending_frames
+            )
+        end
+        local target = tonumber(current.training_drive_target)
+        local at_target = target ~= nil and target > 0 and math.abs(current_drive - target) <= 100
+        if age > 480 or current_drive > prev_drive + 100 or at_target or (pending_frames ~= nil and pending_frames <= 0) then
+            ComboData.drive_cooldown_pending[player_idx] = false
+            ComboData.drive_cooldown_pending_age[player_idx] = 0
+            ComboData.drive_cooldown_pending_peak[player_idx] = 0
+        else
+            ComboData.drive_cooldown_pending_age[player_idx] = age
+        end
+    end
 end
 
 function ComboData.is_drive_impact_sequence_still_recovering(state, atk, def)
@@ -3060,6 +3334,8 @@ function ComboData.update_state(p1, p2)
             state.ko_carry_finish_p2_x = nil
             state.ko_carry_total_p1 = nil
             state.ko_carry_total_p2 = nil
+            state.throw_side_switch_frames = 0
+            state.throw_side_switch_last_action_frame = nil
             state.knockdown_drive_settle = false
             state.knockdown_drive_settle_frames = nil
             state.block_end_grace_remaining = state.is_blocked and Config.get_string_gap() or 0
@@ -3771,8 +4047,6 @@ function UI.rgb_to_hex_color(r, g, b)
     b = Utils.clamp(math.floor((tonumber(b) or 0) + 0.5), 0, 255)
     return UI.apply_opacity_to_color(0xFF000000 + (b << 16) + (g << 8) + r, UI.get_display_text_opacity())
 end
-
-
 function UI.value_to_rgb_color(v, max_val)
     -- Total Damage gradient anchors:
     -- red at 0, yellow at 1500, soft green at 3000, full green at 7000.
@@ -3957,8 +4231,6 @@ function UI.smoothed_gradient_color_for_state(state, column, kind, target_r, tar
 
     return UI.smoothed_gradient_rgb_color(combo_key, target_r, target_g, target_b, target_identity)
 end
-
-
 function UI.smoothed_value_to_hex_color_for_state(state, column, v, max_val)
     local r, g, b = UI.value_to_rgb_color(v, max_val)
     local target_identity = UI.get_gradient_target_identity("value", v, max_val)
@@ -3976,8 +4248,6 @@ function UI.smoothed_yellow_to_red_hex_color_for_state(state, column, v, max_val
     local target_identity = UI.get_gradient_target_identity("yellow_to_red", v, max_val)
     return UI.smoothed_gradient_color_for_state(state, column, "yellow_to_red", r, g, b, target_identity)
 end
-
-
 
 -- BEGIN role-specific Drive/Super/Carry gradient colors
 function UI.rgb_from_gradient_anchors(v, anchors)
@@ -4036,8 +4306,6 @@ function UI.self_super_to_rgb_color(v)
         { 13000,   0, 255,   0 }, -- fully green at +13000
     })
 end
-
-
 function UI.carry_total_to_rgb_color(v, max_value)
     local carry_max = math.max(1, tonumber(max_value) or 1530)
     return UI.rgb_from_gradient_anchors(v, {
@@ -4061,8 +4329,6 @@ function UI.opposing_carry_total_to_rgb_color(v, max_value)
         { carry_max * 0.75,    0, 255,   0 }, -- full green at +75%
     })
 end
-
-
 function UI.smoothed_self_drive_to_hex_color_for_state(state, column, v)
     local r, g, b = UI.self_drive_to_rgb_color(v)
     local target_identity = UI.get_gradient_target_identity("self_drive", v, 60000)
@@ -4080,8 +4346,6 @@ function UI.smoothed_self_super_to_hex_color_for_state(state, column, v)
     local target_identity = UI.get_gradient_target_identity("self_super", v, 30000)
     return UI.smoothed_gradient_color_for_state(state, column, "self_super", r, g, b, target_identity)
 end
-
-
 function UI.smoothed_carry_total_to_hex_color_for_state(state, column, v, max_value)
     local carry_max = math.max(1, tonumber(max_value) or 1530)
     local r, g, b = UI.carry_total_to_rgb_color(v, carry_max)
@@ -4446,8 +4710,6 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
     local stroke_width = math.max(1.0, 2.0 * (scale or 1))
     draw_list:path_stroke(off_white_color, 1, stroke_width)
 end
-
-
 function UI.draw_text_with_black_stroke(text, color)
     local draw_list = UI.get_active_draw_list()
     local screen_pos = imgui.get_cursor_screen_pos()
@@ -4923,6 +5185,65 @@ function UI.should_use_side_switch_carry(state, is_p1_attacker, start_p1, start_
         return false
     end
 
+    local position_order_swapped = UI.did_carry_position_order_side_switch(
+        attacker_start, defender_start, attacker_finish, defender_finish
+    )
+
+    if state.is_throw == true then
+        local throw_active = state.started == true and state.finished ~= true
+
+        if throw_active then
+            local current_throw_frame = tonumber(attacker_finish and attacker_finish.action_frame)
+
+            if not position_order_swapped then
+                state.throw_side_switch_frames = 0
+                state.throw_side_switch_last_action_frame = current_throw_frame
+            elseif current_throw_frame ~= nil then
+                if state.throw_side_switch_last_action_frame ~= current_throw_frame then
+                    state.throw_side_switch_frames = (tonumber(state.throw_side_switch_frames) or 0) + 1
+                    state.throw_side_switch_last_action_frame = current_throw_frame
+                end
+            else
+                state.throw_side_switch_frames = 0
+                state.throw_side_switch_last_action_frame = nil
+            end
+
+            local confirmed_side_switch = (tonumber(state.throw_side_switch_frames) or 0) >= THROW_SIDE_SWITCH_CONFIRM_FRAMES
+
+            ComboData.debug_log("should_use_side_switch_carry"
+                .. " is_p1_atk=" .. tostring(is_p1_attacker)
+                .. " atk_start.dir=" .. tostring(attacker_start and attacker_start.dir)
+                .. " atk_finish.dir=" .. tostring(attacker_finish and attacker_finish.dir)
+                .. " atk_start_x=" .. tostring(attacker_start and attacker_start.pos_x)
+                .. " def_start_x=" .. tostring(defender_start and defender_start.pos_x)
+                .. " atk_finish_x=" .. tostring(attacker_finish and attacker_finish.pos_x)
+                .. " def_finish_x=" .. tostring(defender_finish and defender_finish.pos_x)
+                .. " throw_side_switch_frames=" .. tostring(state.throw_side_switch_frames)
+                .. " result=" .. tostring(confirmed_side_switch)
+                .. " reasons=" .. (position_order_swapped and (confirmed_side_switch and "throw_active_confirmed" or "throw_active_tracking") or "throw_active")
+                , "carry_debug"
+            )
+            return confirmed_side_switch
+        end
+
+        -- Some throws briefly swap sides mid-animation, which can flip facing,
+        -- but should only count as side-switch carry after the throw has
+        -- resolved and the players actually end on opposite sides.
+        ComboData.debug_log("should_use_side_switch_carry"
+            .. " is_p1_atk=" .. tostring(is_p1_attacker)
+            .. " atk_start.dir=" .. tostring(attacker_start and attacker_start.dir)
+            .. " atk_finish.dir=" .. tostring(attacker_finish and attacker_finish.dir)
+            .. " atk_start_x=" .. tostring(attacker_start and attacker_start.pos_x)
+            .. " def_start_x=" .. tostring(defender_start and defender_start.pos_x)
+            .. " atk_finish_x=" .. tostring(attacker_finish and attacker_finish.pos_x)
+            .. " def_finish_x=" .. tostring(defender_finish and defender_finish.pos_x)
+            .. " result=" .. tostring(position_order_swapped)
+            .. " reasons=" .. (position_order_swapped and "throw_position_order" or "")
+            , "carry_debug"
+        )
+        return position_order_swapped
+    end
+
     -- Side-switch detection: three complementary checks
     -- 1. Relative position order swapped (position-order check)
     -- 2. Attacker direction flipped between start and finish (dir-flip check)
@@ -4933,7 +5254,7 @@ function UI.should_use_side_switch_carry(state, is_p1_attacker, start_p1, start_
     local reasons = {}
 
     -- Check 1: position-order swap
-    if UI.did_carry_position_order_side_switch(attacker_start, defender_start, attacker_finish, defender_finish) then
+    if position_order_swapped then
         result = true
         reasons[#reasons + 1] = "position_order"
     end
@@ -5005,12 +5326,38 @@ function UI.get_carry_total_value(start_player, finish_player, attacker_start, a
             and attacker_start_dir ~= attacker_finish_dir
         )
 
-    local direction_sign
     if side_switched then
-        direction_sign = -1
-    else
-        direction_sign = attacker_start and attacker_start.dir and 1 or -1
+        -- Side-switch totals are not simple screen-space deltas. Measure how
+        -- much space remains to the wall the attacker is facing at combo start
+        -- versus combo end so corner escapes and corner-to-corner carry stay
+        -- large even when the defender's raw position barely changes.
+        local _ = percent_max
+        local max_pos = math.max(1, tonumber(CARRY_POSITION_MAX) or 765)
+
+        local function space_to_facing_wall(pos, facing_right)
+            local clamped_pos = Utils.clamp(tonumber(pos) or 0, -max_pos, max_pos)
+            if facing_right then
+                return max_pos - clamped_pos
+            end
+            return clamped_pos + max_pos
+        end
+
+        local start_facing_right = attacker_start_dir == true
+        local finish_facing_right
+        if attacker_finish_dir ~= nil and attacker_finish_dir ~= attacker_start_dir then
+            finish_facing_right = attacker_finish_dir == true
+        elseif force_side_switch == true and attacker_start_dir ~= nil then
+            finish_facing_right = not start_facing_right
+        else
+            finish_facing_right = attacker_finish_dir == true
+        end
+
+        local start_space = space_to_facing_wall(start_pos, start_facing_right)
+        local finish_space = space_to_facing_wall(finish_pos, finish_facing_right)
+        return start_space - finish_space
     end
+
+    local direction_sign = attacker_start and attacker_start.dir and 1 or -1
     return (finish_pos - start_pos) * direction_sign
 end
 
@@ -5026,6 +5373,7 @@ function UI.apply_side_switch_carry_total_sign_rule(p1_carry_total, p2_carry_tot
     local ___ = attacker_finish
     return p1_carry_total, p2_carry_total
 end
+
 -- END side-switch Carry total sign rule
 
 function UI.get_gap_value(gap)
@@ -5399,15 +5747,46 @@ function UI.render_combo_window_table(state, player_index, is_defense)
                 local cursor_before = imgui.get_cursor_screen_pos()
                 UI.draw_text_with_black_stroke(label, label_color)
                 if column.id == "p1_drive" or column.id == "p2_drive" then
+                    local player_idx = column.id == "p1_drive" and 0 or 1
                     local cd_value = (column.id == "p1_drive" and ComboData.p1_prev.drive_cooldown)
                                   or (column.id == "p2_drive" and ComboData.p2_prev.drive_cooldown)
                                   or 0
-                    if cd_value and cd_value > 0 then
+                    local cd_pending = ComboData.drive_cooldown_pending
+                        and ComboData.drive_cooldown_pending[player_idx] == true
+                    local cd_pending_peak = ComboData.drive_cooldown_pending_peak
+                        and (ComboData.drive_cooldown_pending_peak[player_idx] or 0)
+                        or 0
+                    local cd_pending_frames = ComboData.get_pending_attack_frames(
+                        player_idx == 0 and ComboData.p1_prev or ComboData.p2_prev
+                    ) or 0
+                    local cd_total_peak = ComboData.drive_cooldown_total_peak
+                        and (ComboData.drive_cooldown_total_peak[player_idx] or 0)
+                        or 0
+                    local cd_pending_peak_final = ComboData.drive_cooldown_pending_peak_final
+                        and (ComboData.drive_cooldown_pending_peak_final[player_idx] or 0)
+                        or 0
+                    local cd_legitimate = (column.id == "p1_drive" and ComboData.drive_cooldown_legitimate[0] == true)
+                                      or (column.id == "p2_drive" and ComboData.drive_cooldown_legitimate[1] == true)
+                    local should_draw = (cd_value and cd_value > 0 and cd_legitimate) or cd_pending
+                    if should_draw then
                         local cd_peak = (column.id == "p1_drive" and ComboData.drive_cooldown_peak[0])
                                   or (column.id == "p2_drive" and ComboData.drive_cooldown_peak[1])
                                   or 0
+                        local draw_cd_value = cd_value
+                        local draw_cd_peak = cd_peak
+                        if cd_pending and (not draw_cd_value or draw_cd_value <= 0) then
+                            local pending_peak = math.max(cd_pending_peak, cd_pending_frames)
+                            draw_cd_value = math.max(0, cd_pending_frames) + 120
+                            draw_cd_peak = math.max(1, pending_peak + 120)
+                        elseif draw_cd_value and draw_cd_value > 0 then
+                            if cd_pending_peak_final and cd_pending_peak_final > 0 then
+                                draw_cd_peak = cd_pending_peak_final
+                            elseif cd_total_peak and cd_total_peak > draw_cd_peak then
+                                draw_cd_peak = cd_total_peak
+                            end
+                        end
                         local draw_list = UI.get_active_draw_list()
-                        if draw_list then
+                        if draw_list and draw_cd_value and draw_cd_value > 0 and draw_cd_peak and draw_cd_peak > 0 then
                             local text_size = imgui.calc_text_size(label)
                             local scale = UI.get_column_width_scale()
                             local circle_radius = math.max(1, math.floor(8 * scale + 0.5))
@@ -5415,7 +5794,7 @@ function UI.render_combo_window_table(state, player_index, is_defense)
                             local offset = math.floor(2 * scale + 0.5)
                             local cx_val = (cursor_before.x or 0) + text_size.x + gap + circle_radius - offset - 1
                             local cy_val = (cursor_before.y or 0) + text_size.y / 2 + offset - 1
-                            UI.draw_drive_cooldown_indicator(draw_list, cx_val, cy_val, circle_radius, cd_value, cd_peak, scale)
+                            UI.draw_drive_cooldown_indicator(draw_list, cx_val, cy_val, circle_radius, draw_cd_value, draw_cd_peak, scale)
                         end
                     end
                 end
@@ -6247,6 +6626,7 @@ function UI.render_debug_settings()
                 { key = "log_settings_changed", label = "Log Settings" },
                 { key = "log_display_update", label = "Log Display Update" },
                 { key = "log_display_clear", label = "Log Display Clear" },
+                { key = "toggle_enable_drive_cooldown_debug", label = "Log Drive Cooldown" },
             }
             for _, lc in ipairs(logcats) do
                 local lc_changed
@@ -6537,27 +6917,125 @@ re.on_frame(function()
     if in_battle then
         local p1, p2 = GameObjects.map_player_data(cPlayer, cTeam)
         GameObjects.update_lua_probe(p1, p2)
+
+        -- Capture previous frame drive gauge BEFORE update_state overwrites p1_prev/p2_prev.
+        -- Used to classify cooldown at start: if gauge decreased when cooldown started,
+        -- it's a legitimate spend; otherwise it's artificial (refill system).
+        local prev_p1 = ComboData.p1_prev
+        local prev_p2 = ComboData.p2_prev
+        local prev_p1_drive = (ComboData.p1_prev and ComboData.p1_prev.drive_adjusted) or 0
+        local prev_p2_drive = (ComboData.p2_prev and ComboData.p2_prev.drive_adjusted) or 0
+        local prev_p1_cd = (ComboData.p1_prev and ComboData.p1_prev.drive_cooldown) or 0
+        local prev_p2_cd = (ComboData.p2_prev and ComboData.p2_prev.drive_cooldown) or 0
+
         ComboData.update_state(p1, p2)
         ComboData.update_post_match_timer(p1, p2)
 
-        -- Track drive cooldown peaks for circular timer display
+        -- Track drive cooldown peaks for circular timer display.
+        -- Classify cooldown at start: legitimate (from Drive spend) or artificial (from refill).
         local p1_cd = (p1 and p1.drive_cooldown) or 0
         local p2_cd = (p2 and p2.drive_cooldown) or 0
+        local p1_drive = (p1 and p1.drive_adjusted) or 0
+        local p2_drive = (p2 and p2.drive_adjusted) or 0
 
+        ComboData.update_drive_cooldown_pending(0, prev_p1, p1)
+        ComboData.update_drive_cooldown_pending(1, prev_p2, p2)
+
+        -- P1: classify cooldown at start
         if p1_cd > 0 then
+            local p1_is_override, p1_override_note = ComboData.get_training_drive_refill_override_debug(prev_p1, p1)
+            local p1_known_spend, p1_spend_note = ComboData.player_has_known_drive_spend(0, p1)
+            local p1_legitimate = not p1_is_override
+            local p1_drive_drop = prev_p1_drive > p1_drive + 1000
+            if prev_p1_cd <= 0 then
+                if (ComboData.drive_cooldown_total_peak[0] or 0) <= 0 then
+                    ComboData.drive_cooldown_total_peak[0] = p1_cd
+                    if prev_p1_cd < 0 then
+                        ComboData.drive_cooldown_total_peak[0] = math.abs(prev_p1_cd) + p1_cd
+                    end
+                end
+                ComboData.debug_log_drive_cooldown(
+                    0,
+                    "start",
+                    prev_p1,
+                    p1,
+                    p1_legitimate,
+                    "cooldown_started known_spend=" .. tostring(p1_spend_note)
+                        .. " drive_drop=" .. tostring(p1_drive_drop)
+                        .. " override=" .. tostring(p1_override_note)
+                )
+            elseif ComboData.drive_cooldown_legitimate[0] ~= p1_legitimate then
+                ComboData.debug_log_drive_cooldown(0, "reclassified", prev_p1, p1, p1_legitimate, p1_override_note)
+            elseif p1.training_drive_point_lock == true or (tonumber(p1.training_drive_runtime_timer) or 0) > 0 then
+                ComboData.debug_log_drive_cooldown(0, "override_check", prev_p1, p1, p1_legitimate, p1_override_note)
+            end
+            if ComboData.drive_cooldown_total_peak[0] == nil or ComboData.drive_cooldown_total_peak[0] < p1_cd then
+                ComboData.drive_cooldown_total_peak[0] = p1_cd
+            end
+            ComboData.drive_cooldown_legitimate[0] = p1_legitimate
+        elseif p1_cd <= 0 then
+            if prev_p1_cd > 0 or (prev_p1 and prev_p1.training_drive_point_lock == true) then
+                ComboData.debug_log_drive_cooldown(0, "end", prev_p1, p1, ComboData.drive_cooldown_legitimate[0], "cooldown_cleared")
+            end
+            ComboData.drive_cooldown_legitimate[0] = nil
+            ComboData.drive_cooldown_peak[0] = 0
+            ComboData.drive_cooldown_total_peak[0] = 0
+            ComboData.drive_cooldown_pending_peak_final[0] = 0
+        end
+
+        -- P2: classify cooldown at start
+        if p2_cd > 0 then
+            local p2_is_override, p2_override_note = ComboData.get_training_drive_refill_override_debug(prev_p2, p2)
+            local p2_known_spend, p2_spend_note = ComboData.player_has_known_drive_spend(1, p2)
+            local p2_legitimate = not p2_is_override
+            local p2_drive_drop = prev_p2_drive > p2_drive + 1000
+            if prev_p2_cd <= 0 then
+                if (ComboData.drive_cooldown_total_peak[1] or 0) <= 0 then
+                    ComboData.drive_cooldown_total_peak[1] = p2_cd
+                    if prev_p2_cd < 0 then
+                        ComboData.drive_cooldown_total_peak[1] = math.abs(prev_p2_cd) + p2_cd
+                    end
+                end
+                ComboData.debug_log_drive_cooldown(
+                    1,
+                    "start",
+                    prev_p2,
+                    p2,
+                    p2_legitimate,
+                    "cooldown_started known_spend=" .. tostring(p2_spend_note)
+                        .. " drive_drop=" .. tostring(p2_drive_drop)
+                        .. " override=" .. tostring(p2_override_note)
+                )
+            elseif ComboData.drive_cooldown_legitimate[1] ~= p2_legitimate then
+                ComboData.debug_log_drive_cooldown(1, "reclassified", prev_p2, p2, p2_legitimate, p2_override_note)
+            elseif p2.training_drive_point_lock == true or (tonumber(p2.training_drive_runtime_timer) or 0) > 0 then
+                ComboData.debug_log_drive_cooldown(1, "override_check", prev_p2, p2, p2_legitimate, p2_override_note)
+            end
+            if ComboData.drive_cooldown_total_peak[1] == nil or ComboData.drive_cooldown_total_peak[1] < p2_cd then
+                ComboData.drive_cooldown_total_peak[1] = p2_cd
+            end
+            ComboData.drive_cooldown_legitimate[1] = p2_legitimate
+        elseif p2_cd <= 0 then
+            if prev_p2_cd > 0 or (prev_p2 and prev_p2.training_drive_point_lock == true) then
+                ComboData.debug_log_drive_cooldown(1, "end", prev_p2, p2, ComboData.drive_cooldown_legitimate[1], "cooldown_cleared")
+            end
+            ComboData.drive_cooldown_legitimate[1] = nil
+            ComboData.drive_cooldown_peak[1] = 0
+            ComboData.drive_cooldown_total_peak[1] = 0
+            ComboData.drive_cooldown_pending_peak_final[1] = 0
+        end
+
+        -- Track peak only for legitimate cooldown
+        if p1_cd > 0 and ComboData.drive_cooldown_legitimate[0] == true then
             if p1_cd > ComboData.drive_cooldown_peak[0] then
                 ComboData.drive_cooldown_peak[0] = p1_cd
             end
-        else
-            ComboData.drive_cooldown_peak[0] = 0
         end
 
-        if p2_cd > 0 then
+        if p2_cd > 0 and ComboData.drive_cooldown_legitimate[1] == true then
             if p2_cd > ComboData.drive_cooldown_peak[1] then
                 ComboData.drive_cooldown_peak[1] = p2_cd
             end
-        else
-            ComboData.drive_cooldown_peak[1] = 0
         end
         UI.render_windows()
     end

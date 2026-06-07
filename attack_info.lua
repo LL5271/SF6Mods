@@ -5122,7 +5122,12 @@ function UI.get_combo_damage_value(state, is_p1)
     local start_def = (is_p1 and state.start.p2 or state.start.p1) or {}
     local finish_def = (is_p1 and state.finish.p2 or state.finish.p1) or {}
     local finish_atk = (is_p1 and state.finish.p1 or state.finish.p2) or {}
-    local combo_dmg = math.max(tonumber(state.combo_damage_lock) or 0, tonumber(finish_atk.combo_damage) or 0)
+    local locked_combo_damage_total = math.max(
+        tonumber(state.combo_damage_lock) or 0,
+        tonumber(state.hit_damage_lock_combo_damage_total) or 0,
+        tonumber(state.hit_damage_lock and state.hit_damage_lock.combo_damage_total) or 0
+    )
+    local combo_dmg = math.max(locked_combo_damage_total, tonumber(finish_atk.combo_damage) or 0)
 
     -- When poison/DoT damage is present (A.K.I.), mComboDamage can omit poison
     -- ticks. Prefer the defender HP delta whenever poison was seen or whenever
@@ -5136,8 +5141,8 @@ function UI.get_combo_damage_value(state, is_p1)
     local total
     if state.poison_was_active or hp_delta > combo_dmg then
         total = math.max(combo_dmg, hp_delta)
-    elseif state and state.combo_damage_lock ~= nil and (state.hit_damage_lock_frozen or (state.finished and not state.started)) then
-        total = state.combo_damage_lock
+    elseif state and locked_combo_damage_total > 0 and (state.hit_damage_lock_frozen or (state.finished and not state.started)) then
+        total = locked_combo_damage_total
     else
         total = combo_dmg
     end

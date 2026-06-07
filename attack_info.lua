@@ -36,6 +36,12 @@ local DEFAULT_CLEAR_ON_DAMAGE = false
 local DEFAULT_CLEAR_ON_BLOCK = false
 local DEFAULT_UPDATE_ON_DAMAGE = true
 local DEFAULT_UPDATE_ON_BLOCK = true
+local DEFAULT_COMBO_END_MODE = "latest"
+local COMBO_END_MODES = {
+    latest = true,
+    attacker_recovery = true,
+    defender_recovery = true,
+}
 -- DEFAULT_POSITION_OFFSET and DEFAULT_POSITION_Y removed: now using static defaults in get_default_position_coords()
 local DEFAULT_UNIT_MODE = "raw"
 local DEFAULT_UNIT_MODES = {
@@ -125,7 +131,7 @@ Config.settings = {
     },
     position_mirror_y_axis = true,
     position_match_vertical = true,
-    combo_end_mode = "defender_recovery",
+    combo_end_mode = DEFAULT_COMBO_END_MODE,
     toggle_enable_debug_logging = false,
     toggle_enable_drive_cooldown_debug = false,
     log_attacker_display = true,
@@ -326,8 +332,8 @@ function Config.ensure_defaults(force_save)
         changed = true
     end
     changed = Config.ensure_position_settings() or changed
-    if Config.settings.combo_end_mode == nil then
-        Config.settings.combo_end_mode = "defender_recovery"
+    if not COMBO_END_MODES[Config.settings.combo_end_mode] then
+        Config.settings.combo_end_mode = DEFAULT_COMBO_END_MODE
         changed = true
     end
     if Config.settings.toggle_enable_debug_logging == nil then
@@ -458,7 +464,7 @@ end
 function Config.updating_defaults_selected()
     return Config.settings.toggle_show_blocked_attacks == true
         and (tonumber(Config.settings.string_gap) or DEFAULT_STRING_GAP) == DEFAULT_STRING_GAP
-        and (Config.settings.combo_end_mode or "defender_recovery") == "defender_recovery"
+        and Config.get_combo_end_mode() == DEFAULT_COMBO_END_MODE
         and Config.settings.toggle_clear_on_damage == DEFAULT_CLEAR_ON_DAMAGE
         and Config.settings.toggle_clear_on_block == DEFAULT_CLEAR_ON_BLOCK
         and Config.settings.toggle_update_on_damage == DEFAULT_UPDATE_ON_DAMAGE
@@ -468,12 +474,21 @@ end
 function Config.reset_updating_defaults()
     Config.settings.toggle_show_blocked_attacks = true
     Config.settings.string_gap = DEFAULT_STRING_GAP
-    Config.settings.combo_end_mode = "defender_recovery"
+    Config.settings.combo_end_mode = DEFAULT_COMBO_END_MODE
     Config.settings.toggle_clear_on_damage = DEFAULT_CLEAR_ON_DAMAGE
     Config.settings.toggle_clear_on_block = DEFAULT_CLEAR_ON_BLOCK
     Config.settings.toggle_update_on_damage = DEFAULT_UPDATE_ON_DAMAGE
     Config.settings.toggle_update_on_block = DEFAULT_UPDATE_ON_BLOCK
 end
+
+function Config.get_combo_end_mode()
+    local mode = Config.settings.combo_end_mode
+    if not COMBO_END_MODES[mode] then
+        return DEFAULT_COMBO_END_MODE
+    end
+    return mode
+end
+
 function Config.display_defaults_selected()
     return (tonumber(Config.settings.display_background_opacity) or DEFAULT_BACKGROUND_OPACITY) == DEFAULT_BACKGROUND_OPACITY
         and (tonumber(Config.settings.display_text_opacity) or DEFAULT_TEXT_OPACITY) == DEFAULT_TEXT_OPACITY
@@ -2495,6 +2510,32 @@ function ComboData.is_defender_recovered(def)
     return act_st == 0 or act_st == 1
 end
 
+function ComboData.resolve_end_mode(end_mode, state, atk, def)
+    if end_mode ~= "latest" then
+        return end_mode
+    end
+
+    local attacker_recovered = false
+    local defender_recovered = ComboData.is_defender_recovered(def)
+
+    if state and state.is_blocked then
+        attacker_recovered = atk and atk.act_st == 0
+    elseif state and state.is_throw then
+        attacker_recovered = atk and atk.act_st ~= 37
+    else
+        attacker_recovered = atk and (atk.combo_count or 0) == 0
+    end
+
+    if attacker_recovered and not defender_recovered then
+        return "defender_recovery"
+    end
+    if defender_recovered and not attacker_recovered then
+        return "attacker_recovery"
+    end
+
+    return "defender_recovery"
+end
+
 function ComboData.is_throw_ready_to_start(atk)
     if not atk then return false end
     if (tonumber(atk.combo_count) or 0) > 0 then return true end
@@ -3527,7 +3568,7 @@ function ComboData.update_state(p1, p2)
                     state.block_end_grace_remaining = 0
                 end
                 local combo_ended = false
-                local end_mode = Config.settings.combo_end_mode or "defender_recovery"
+                local end_mode = ComboData.resolve_end_mode(Config.get_combo_end_mode(), state, atk, def)
                 if state.is_blocked then
                     if end_mode == "attacker_recovery" then
                         combo_ended = atk and atk.act_st == 0
@@ -6803,7 +6844,13 @@ function UI.render_settings()
 
                 imgui.text("End on Recovery")
                 imgui.same_line()
-                local current_mode = Config.settings.combo_end_mode or "defender_recovery"
+                local current_mode = Config.get_combo_end_mode()
+                if UI.radio_button("Latest##end_mode", current_mode == "latest") then
+                    Config.settings.combo_end_mode = "latest"
+                    ComboData.debug_log("SETTING_CHANGED combo_end_mode=latest", "log_settings_changed")
+                    UI.mark_for_save()
+                end
+                imgui.same_line()
                 if UI.radio_button("Attacker##end_mode", current_mode == "attacker_recovery") then
                     Config.settings.combo_end_mode = "attacker_recovery"
                     ComboData.debug_log("SETTING_CHANGED combo_end_mode=attacker_recovery", "log_settings_changed")

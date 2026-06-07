@@ -32,6 +32,7 @@ local DEFAULT_BACKGROUND_OPACITY = 20
 local DEFAULT_TEXT_OPACITY = 100
 local DEFAULT_DISPLAY_SCALE = 100
 local DEFAULT_COMBO_TIMER_DURATION = 30
+local DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY = true
 local DEFAULT_CLEAR_ON_DAMAGE = false
 local DEFAULT_CLEAR_ON_BLOCK = false
 local DEFAULT_UPDATE_ON_DAMAGE = true
@@ -108,6 +109,7 @@ Config.settings = {
     display_background_opacity = DEFAULT_BACKGROUND_OPACITY,
     display_text_opacity = DEFAULT_TEXT_OPACITY,
     display_scale = DEFAULT_DISPLAY_SCALE,
+    hide_builtin_attack_data_display = DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY,
     unit_display = {
         damage = DEFAULT_UNIT_MODES.damage,
         drive = DEFAULT_UNIT_MODES.drive,
@@ -148,7 +150,7 @@ function Config.loaded_settings_missing_defaults(loaded_settings)
         return true
     end
 
-    if loaded_settings.display_background_opacity == nil or loaded_settings.display_text_opacity == nil or loaded_settings.display_scale == nil then
+    if loaded_settings.display_background_opacity == nil or loaded_settings.display_text_opacity == nil or loaded_settings.display_scale == nil or loaded_settings.hide_builtin_attack_data_display == nil then
         return true
     end
 
@@ -242,6 +244,11 @@ function Config.ensure_display_settings()
     changed = Config.ensure_percent_setting("display_background_opacity", DEFAULT_BACKGROUND_OPACITY, old_opacity, 0, 100) or changed
     changed = Config.ensure_percent_setting("display_text_opacity", DEFAULT_TEXT_OPACITY, nil, 0, 100) or changed
     changed = Config.ensure_percent_setting("display_scale", DEFAULT_DISPLAY_SCALE, nil, 50, 150) or changed
+
+    if Config.settings.hide_builtin_attack_data_display == nil then
+        Config.settings.hide_builtin_attack_data_display = DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY
+        changed = true
+    end
 
     if Config.settings.display_opacity ~= nil then
         Config.settings.display_opacity = nil
@@ -494,12 +501,14 @@ function Config.display_defaults_selected()
         and (tonumber(Config.settings.display_text_opacity) or DEFAULT_TEXT_OPACITY) == DEFAULT_TEXT_OPACITY
         and (tonumber(Config.settings.display_scale) or DEFAULT_DISPLAY_SCALE) == DEFAULT_DISPLAY_SCALE
         and (tonumber(Config.settings.combo_timer_duration) or DEFAULT_COMBO_TIMER_DURATION) == DEFAULT_COMBO_TIMER_DURATION
+        and Config.settings.hide_builtin_attack_data_display == DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY
 end
 function Config.reset_display_defaults()
     Config.settings.display_background_opacity = DEFAULT_BACKGROUND_OPACITY
     Config.settings.display_text_opacity = DEFAULT_TEXT_OPACITY
     Config.settings.display_scale = DEFAULT_DISPLAY_SCALE
     Config.settings.combo_timer_duration = DEFAULT_COMBO_TIMER_DURATION
+    Config.settings.hide_builtin_attack_data_display = DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY
 end
 function Config.column_visibility_defaults_selected()
     for _, key in ipairs({ "column_visibility_p1", "column_visibility_p2" }) do
@@ -767,6 +776,46 @@ function GameObjects.is_avatar_battle_mode()
         end
     end
     return false
+end
+
+function GameObjects.update_builtin_attack_data_display()
+    local hide_builtin_attack_data_display = Config.settings.hide_builtin_attack_data_display == true
+    if not GameObjects.TrainingManager then return end
+
+    local ok_display, display_func = pcall(function()
+        return GameObjects.TrainingManager:call("get_DisplayFunc")
+    end)
+    if ok_display and display_func then
+        pcall(function()
+            display_func:call("SetViewAttackInfo", not hide_builtin_attack_data_display)
+        end)
+    end
+
+    local ok_dict, view_dict = pcall(function()
+        return GameObjects.TrainingManager:get_field("_ViewUIWigetDict")
+    end)
+    if not ok_dict or not view_dict then return end
+
+    local ok_widgets, widget_list = pcall(function()
+        return view_dict:call("get_Item", 3)
+    end)
+    if not ok_widgets or not widget_list then return end
+
+    local ok_count, widget_count = pcall(function()
+        return tonumber(widget_list:call("get_Count")) or 0
+    end)
+    if not ok_count then return end
+
+    for i = 0, math.max(0, widget_count - 1) do
+        local ok_widget, widget = pcall(function()
+            return widget_list:call("get_Item", i)
+        end)
+        if ok_widget and widget then
+            pcall(function()
+                widget:set_IsStopDraw(hide_builtin_attack_data_display)
+            end)
+        end
+    end
 end
 
 function GameObjects.get_round_no()
@@ -1183,6 +1232,7 @@ function ComboData.update_post_match_timer(p1, p2)
     local any_finished = false
     local any_combat = false
     local any_ko = false
+    local any_timer_active = false
 
     for i = 0, 1 do
         local state = ComboData.player_states and ComboData.player_states[i]
@@ -1190,6 +1240,9 @@ function ComboData.update_post_match_timer(p1, p2)
 
         if state and state.finished and not state.started then
             any_finished = true
+            if (tonumber(state.timer_remaining) or 0) > 0 then
+                any_timer_active = true
+            end
         end
 
         if player then
@@ -1206,7 +1259,7 @@ function ComboData.update_post_match_timer(p1, p2)
         any_combat = false
     end
 
-    if any_finished and not any_combat and any_ko then
+    if any_finished and not any_combat and any_ko and not any_timer_active then
         ComboData.runtime_state.match_clear_frames = (ComboData.runtime_state.match_clear_frames or 0) + 1
         if ComboData.runtime_state.match_clear_frames >= POST_MATCH_CLEAR_FRAMES then
             for i = 0, 1 do
@@ -1518,6 +1571,18 @@ function ComboData.clear_sequence_state_for_snapshot_load()
     for i = 0, 1 do
         ComboData.clear_player_sequence_state_for_snapshot_load(i)
     end
+
+    ComboData.throw_carry_baseline = nil
+    ComboData.parry_tracker = { [0] = nil, [1] = nil }
+    ComboData.drive_cooldown_peak = { [0] = 0, [1] = 0 }
+    ComboData.drive_cooldown_legitimate = { [0] = nil, [1] = nil }
+    ComboData.drive_cooldown_pending = { [0] = false, [1] = false }
+    ComboData.drive_cooldown_pending_age = { [0] = 0, [1] = 0 }
+    ComboData.drive_cooldown_pending_peak = { [0] = 0, [1] = 0 }
+    ComboData.drive_cooldown_total_peak = { [0] = 0, [1] = 0 }
+    ComboData.drive_cooldown_pending_peak_final = { [0] = 0, [1] = 0 }
+    ComboData.runtime_state.display_values_logged_hashes = {}
+    ComboData.runtime_state.last_global_combo_id = 0
 end
 
 function ComboData.any_restored_snapshot_sequence_started()
@@ -1536,6 +1601,21 @@ function ComboData.live_combo_state_visible(p1, p2)
             if (tonumber(p.combo_count) or 0) > 0 then return true end
             if (tonumber(p.combo_damage) or 0) > 0 then return true end
             if (tonumber(p.current_hit_damage) or 0) > 0 then return true end
+        end
+    end
+    return false
+end
+
+function ComboData.live_combat_detected(p1, p2)
+    for _, player in ipairs({ p1, p2 }) do
+        if player then
+            if (tonumber(player.combo_count) or 0) > 0
+                or (tonumber(player.combo_damage) or 0) > 0
+                or (tonumber(player.current_hit_damage) or 0) > 0
+                or (tonumber(player.guard_time) or 0) > 0
+            then
+                return true
+            end
         end
     end
     return false
@@ -1570,20 +1650,7 @@ function ComboData.should_defer_after_snapshot_load(p1, p2)
     -- Freeze p1_prev/p2_prev once combat activity (hit/combo/block) is detected so the
     -- pre-attack baseline is preserved for accurate start values after the guard expires.
     if ComboData.snapshot_load_restored_state ~= true then
-        local combat_detected = false
-        for _, player in ipairs({ p1, p2 }) do
-            if player then
-                if (tonumber(player.combo_count) or 0) > 0
-                    or (tonumber(player.combo_damage) or 0) > 0
-                    or (tonumber(player.current_hit_damage) or 0) > 0
-                    or (tonumber(player.guard_time) or 0) > 0
-                then
-                    combat_detected = true
-                    break
-                end
-            end
-        end
-        if not combat_detected then
+        if not ComboData.live_combat_detected(p1, p2) then
             ComboData.p1_prev = p1 and Utils.deep_copy(p1) or {}
             ComboData.p2_prev = p2 and Utils.deep_copy(p2) or {}
         end
@@ -1595,22 +1662,31 @@ function ComboData.should_defer_after_snapshot_load(p1, p2)
     if ComboData.any_restored_snapshot_sequence_started()
         and not ComboData.live_combo_state_visible(p1, p2)
     then
-        return true
+        return not ComboData.live_combat_detected(p1, p2)
     end
 
     return false
 end
 
-function ComboData.after_snapshot_load(restored_serialized_state)
-    ComboData.snapshot_load_guard_frames = 90
+function ComboData.after_snapshot_load(restored_serialized_state, live_p1, live_p2)
+    ComboData.snapshot_load_guard_frames = 12
     ComboData.snapshot_load_restored_state = restored_serialized_state == true
 
     if restored_serialized_state then
-        for i = 0, 1 do
-            local state = ComboData.player_states and ComboData.player_states[i]
-            if state then
-                ComboData.clear_pending_start(state)
-                state.prev_finish = nil
+        local restored_combo_started = ComboData.any_restored_snapshot_sequence_started()
+        if restored_combo_started then
+            for i = 0, 1 do
+                local state = ComboData.player_states and ComboData.player_states[i]
+                if state then
+                    ComboData.clear_pending_start(state)
+                    state.prev_finish = nil
+                end
+            end
+        else
+            ComboData.clear_sequence_state_for_snapshot_load()
+            if live_p1 or live_p2 then
+                ComboData.p1_prev = live_p1 and Utils.deep_copy(live_p1) or {}
+                ComboData.p2_prev = live_p2 and Utils.deep_copy(live_p2) or {}
             end
         end
     else
@@ -1759,7 +1835,7 @@ function ComboData.save_snapshot(slot_id, state_override)
     return actual_slot_id or slot_key
 end
 
-function ComboData.load_snapshot(slot_id)
+function ComboData.load_snapshot(slot_id, live_p1, live_p2)
     local actual_slot_id = slot_id
     if actual_slot_id == nil then
         actual_slot_id = ComboData.resolve_snapshot_slot_id("load")
@@ -1782,7 +1858,7 @@ function ComboData.load_snapshot(slot_id)
         .. " saved_version=" .. ComboData.snapshot_payload_version(saved and saved[slot_key] or nil)
     )
 
-    ComboData.after_snapshot_load(restored_serialized_state)
+    ComboData.after_snapshot_load(restored_serialized_state, live_p1, live_p2)
     return actual_slot_id or slot_key
 end
 
@@ -1906,6 +1982,11 @@ function ComboData.is_neutral_act_st(player)
     if not player then return false end
     local act_st = tonumber(player.act_st) or 0
     return act_st == 0 or act_st == 1 or act_st == 4
+end
+
+function ComboData.is_neutral_recovery_state(player)
+    if not player then return false end
+    return ComboData.is_neutral_act_st(player) and (tonumber(player.action_id) or 0) == 0
 end
 
 function ComboData.clear_pending_start(state)
@@ -2523,7 +2604,7 @@ function ComboData.resolve_end_mode(end_mode, state, atk, def)
     elseif state and state.is_throw then
         attacker_recovered = atk and atk.act_st ~= 37
     else
-        attacker_recovered = atk and (atk.combo_count or 0) == 0
+        attacker_recovered = atk and ((atk.combo_count or 0) == 0 or ComboData.is_neutral_recovery_state(atk))
     end
 
     if attacker_recovered and not defender_recovered then
@@ -3594,7 +3675,7 @@ function ComboData.update_state(p1, p2)
                     end
                 else
                     if end_mode == "attacker_recovery" then
-                        combo_ended = atk and (atk.combo_count or 0) == 0
+                        combo_ended = atk and ((atk.combo_count or 0) == 0 or ComboData.is_neutral_recovery_state(atk))
                     else
                         combo_ended = ComboData.is_defender_recovered(def)
                         local drive_impact_still_recovering = ComboData.is_drive_impact_sequence_still_recovering(state, atk, def)
@@ -3620,7 +3701,7 @@ function ComboData.update_state(p1, p2)
                                 -- over, do not keep the combo alive with the normal
                                 -- post-recovery grace window.
                                 combo_ended = true
-                            elseif atk and (atk.combo_count or 0) == 0 then
+                            elseif atk and ((atk.combo_count or 0) == 0 or ComboData.is_neutral_recovery_state(atk)) then
                                 state.defender_recovery_grace_remaining = (state.defender_recovery_grace_remaining or 0) + 1
                                 if state.defender_recovery_grace_remaining >= 30 then
                                     combo_ended = true
@@ -4697,47 +4778,40 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
     local red_base_color = UI.apply_opacity_to_color(0xFF0000FF, circle_opacity)
     local off_white_color = UI.apply_opacity_to_color(0xFFE0E0E0, circle_opacity)
 
-    -- Draw red base circle (always full, no duplicate vertex at seam)
-    draw_list:path_clear()
-    for i = 0, num_segments - 1 do
-        local t = i / num_segments
-        local angle = start_angle + t * 2 * math.pi
-        draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+    local function draw_full_circle(color)
+        draw_list:path_clear()
+        for i = 0, num_segments - 1 do
+            local t = i / num_segments
+            local angle = start_angle + t * 2 * math.pi
+            draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+        end
+        draw_list:path_fill_convex(color)
     end
-    draw_list:path_fill_convex(red_base_color)
 
-    -- Draw off-white fill for elapsed portion as contiguous convex pie slices
-    -- (avoids visible internal edges from individual triangle wedges)
-    local elapsed_fraction = 1 - fraction
-    if elapsed_fraction > 0 then
-        local fill_count = math.floor(elapsed_fraction * num_segments + 0.5)
-        if fill_count > 0 then
-            local function draw_pie_slice(start_idx, count, last_slice)
-                draw_list:path_clear()
-                draw_list:path_line_to(Vector2f.new(cx, cy))
-                local end_idx = start_idx + count
-                for i = start_idx, end_idx do
-                    local frac = i / num_segments
-                    -- Nudge the last vertex slightly past the boundary
-                    -- to cover anti-aliasing gaps at the red/off-white seam
-                    if last_slice and i == end_idx then
-                        frac = frac + (1 / num_segments) * 0.7
-                    end
-                    local angle = start_angle + frac * 2 * math.pi
-                    draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
-                end
-                draw_list:path_fill_convex(off_white_color)
+    -- Always use off-white as the background circle so there's no color flip at 50%.
+    draw_full_circle(off_white_color)
+
+    -- Draw the red remaining portion as individual fan triangles from center,
+    -- starting at the elapsed boundary (matching original clockwise tick direction).
+    -- Each triangle is convex so PathFillConvex handles it correctly at any size,
+    -- avoiding the shared-edge seam from splitting a >180-degree fill into halves.
+    local elapsed_count = math.floor((1 - fraction) * num_segments + 0.5)
+    if elapsed_count < num_segments then
+        for i = elapsed_count, num_segments - 1 do
+            draw_list:path_clear()
+            draw_list:path_line_to(Vector2f.new(cx, cy))
+
+            local frac_a = i / num_segments
+            local frac_b = (i + 1) / num_segments
+            if i == num_segments - 1 then
+                frac_b = math.min(frac_b + (1 / num_segments) * 0.7, 1.0)
             end
 
-            local half = math.floor(num_segments / 2)
-            if fill_count <= half then
-                -- Single convex pie slice (<= 180 degrees)
-                draw_pie_slice(0, fill_count, true)
-            else
-                -- Split into two convex halves
-                draw_pie_slice(0, half, false)
-                draw_pie_slice(half, fill_count - half, true)
-            end
+            local angle_a = start_angle + frac_a * 2 * math.pi
+            local angle_b = start_angle + frac_b * 2 * math.pi
+            draw_list:path_line_to(Vector2f.new(cx + math.cos(angle_a) * radius, cy + math.sin(angle_a) * radius))
+            draw_list:path_line_to(Vector2f.new(cx + math.cos(angle_b) * radius, cy + math.sin(angle_b) * radius))
+            draw_list:path_fill_convex(red_base_color)
         end
     end
 
@@ -5827,8 +5901,6 @@ function UI.render_combo_window_table(state, player_index, is_defense)
                         elseif draw_cd_value and draw_cd_value > 0 then
                             if cd_pending_peak_final and cd_pending_peak_final > 0 then
                                 draw_cd_peak = cd_pending_peak_final
-                            elseif cd_total_peak and cd_total_peak > draw_cd_peak then
-                                draw_cd_peak = cd_total_peak
                             end
                         end
                         local draw_list = UI.get_active_draw_list()
@@ -6332,10 +6404,19 @@ function UI.render_display_settings()
                 Config.settings.display_text_opacity = DEFAULT_TEXT_OPACITY
                 Config.settings.display_scale = DEFAULT_DISPLAY_SCALE
                 Config.settings.combo_timer_duration = DEFAULT_COMBO_TIMER_DURATION
+                Config.settings.hide_builtin_attack_data_display = DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY
                 UI.mark_for_save()
             end)
         elseif UI.confirm_active.display_defaults then
             UI.confirm_active.display_defaults = nil
+        end
+
+		imgui.text("Hide Built-In Attack Data")
+        imgui.same_line()
+        changed, Config.settings.hide_builtin_attack_data_display = imgui.checkbox("##hide_builtin_attack_data_display", Config.settings.hide_builtin_attack_data_display ~= false)
+        if changed then
+            ComboData.debug_log("SETTING_CHANGED hide_builtin_attack_data_display=" .. tostring(Config.settings.hide_builtin_attack_data_display), "log_settings_changed")
+            UI.mark_for_save()
         end
 
         imgui.text("Scale")
@@ -6941,6 +7022,7 @@ re.on_frame(function()
     local round_no = in_battle and GameObjects.get_round_no() or nil
     UI.handle_hotkeys()
     UI.update_combo_timers()
+    GameObjects.update_builtin_attack_data_display()
     UI.tooltip_handler()
     UI.save_handler()
     UI.draw_action_notify()
@@ -6956,12 +7038,6 @@ re.on_frame(function()
         ComboData.hook_save_payload = nil
         ComboData.save_snapshot(nil, save_payload)
     end
-    if ComboData.hook_load_fired then
-        ComboData.snapshot_debug("on_frame_process_load")
-        ComboData.hook_load_fired = nil
-        ComboData.load_snapshot()
-    end
-
     -- Use the combat visibility gate instead of prev_no_push_bit, which is 0
     -- in story-training and other modes even during active gameplay. The gate
     -- now requires a live action engine so retained postmatch objects do not
@@ -6969,6 +7045,12 @@ re.on_frame(function()
     if in_battle then
         local p1, p2 = GameObjects.map_player_data(cPlayer, cTeam)
         GameObjects.update_lua_probe(p1, p2)
+
+        if ComboData.hook_load_fired then
+            ComboData.snapshot_debug("on_frame_process_load")
+            ComboData.hook_load_fired = nil
+            ComboData.load_snapshot(nil, p1, p2)
+        end
 
         -- Capture previous frame drive gauge BEFORE update_state overwrites p1_prev/p2_prev.
         -- Used to classify cooldown at start: if gauge decreased when cooldown started,
@@ -7090,5 +7172,11 @@ re.on_frame(function()
             end
         end
         UI.render_windows()
+    end
+
+    if ComboData.hook_load_fired then
+        ComboData.snapshot_debug("on_frame_process_load")
+        ComboData.hook_load_fired = nil
+        ComboData.load_snapshot()
     end
 end)

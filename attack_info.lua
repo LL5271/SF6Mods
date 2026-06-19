@@ -135,7 +135,7 @@ Config.settings = {
     position_match_vertical = true,
     combo_end_mode = DEFAULT_COMBO_END_MODE,
     toggle_enable_debug_logging = false,
-    toggle_enable_drive_cooldown_debug = false,
+    toggle_enable_drive_cooldown_debug = true,
     log_attacker_display = true,
     log_defender_display = true,
     log_start_finish_values = true,
@@ -345,11 +345,11 @@ function Config.ensure_defaults(force_save)
     end
     if Config.settings.toggle_enable_debug_logging == nil then
     Config.settings.toggle_enable_debug_logging = false
-    Config.settings.toggle_enable_drive_cooldown_debug = false
+    Config.settings.toggle_enable_drive_cooldown_debug = true
         changed = true
     end
     if Config.settings.toggle_enable_drive_cooldown_debug == nil then
-        Config.settings.toggle_enable_drive_cooldown_debug = false
+        Config.settings.toggle_enable_drive_cooldown_debug = true
         changed = true
     end
     if Config.settings.log_attacker_display == nil then
@@ -395,6 +395,11 @@ function Config.reset_unit_defaults()
 end
 
 function Config.reset_attack_info_defaults()
+    Config.settings.toggle_all = true
+    Config.settings.toggle_p1 = true
+    Config.settings.toggle_p2 = true
+    Config.settings.toggle_minimal_view_p1 = true
+    Config.settings.toggle_minimal_view_p2 = true
     Config.reset_updating_defaults()
     Config.reset_display_defaults()
     Config.reset_unit_defaults()
@@ -402,6 +407,7 @@ function Config.reset_attack_info_defaults()
     local _, defaults = UI.ensure_position_coords()
     Config.reset_position_defaults(defaults)
     Config.settings.toggle_enable_debug_logging = false
+    Config.settings.toggle_enable_drive_cooldown_debug = true
     Config.settings.log_attacker_display = true
     Config.settings.log_defender_display = true
     Config.settings.log_start_finish_values = true
@@ -451,6 +457,11 @@ function Config.unit_defaults_selected()
 end
 
 function Config.attack_info_defaults_selected()
+    if Config.settings.toggle_all ~= true then return false end
+    if Config.settings.toggle_p1 ~= true then return false end
+    if Config.settings.toggle_p2 ~= true then return false end
+    if Config.settings.toggle_minimal_view_p1 ~= true then return false end
+    if Config.settings.toggle_minimal_view_p2 ~= true then return false end
     if not Config.updating_defaults_selected() then return false end
     if not Config.display_defaults_selected() then return false end
     if not Config.unit_defaults_selected() then return false end
@@ -458,7 +469,7 @@ function Config.attack_info_defaults_selected()
     local _, defaults = UI.ensure_position_coords()
     if not Config.position_defaults_selected(defaults) then return false end
     if Config.settings.toggle_enable_debug_logging ~= false then return false end
-    if Config.settings.toggle_enable_drive_cooldown_debug ~= false then return false end
+    if Config.settings.toggle_enable_drive_cooldown_debug ~= true then return false end
     if Config.settings.log_attacker_display ~= true then return false end
     if Config.settings.log_defender_display ~= true then return false end
     if Config.settings.log_start_finish_values ~= true then return false end
@@ -1989,6 +2000,11 @@ function ComboData.is_neutral_recovery_state(player)
     return ComboData.is_neutral_act_st(player) and (tonumber(player.action_id) or 0) == 0
 end
 
+function ComboData.is_throw_state(player)
+    if not player then return false end
+    return (tonumber(player.act_st) or 0) == 37
+end
+
 function ComboData.clear_pending_start(state)
     if not state then return end
 
@@ -2707,11 +2723,15 @@ end
 function ComboData.update_resource_baselines(p1, p2)
     local sequence_started = ComboData.any_sequence_started()
     local sequence_settling = ComboData.any_finished_sequence_settling and ComboData.any_finished_sequence_settling() or false
+    local throw_sequence_started = ComboData.is_throw_state(p1) or ComboData.is_throw_state(p2)
 
     -- Do not let active combos or post-combo settle frames seed resource
     -- baselines for the next sequence. Those stale baselines can make the next
     -- combo's Drive start/total display the previous combo's finish endpoint.
-    if sequence_started or sequence_settling then
+    -- Treat throw startup as live too; throws can spend Drive before combo_count
+    -- increments, and letting refill logic keep seeding baselines there hides the
+    -- throw's own resource snapshot.
+    if sequence_started or sequence_settling or throw_sequence_started then
         ComboData.clear_all_resource_baselines()
         return
     end
@@ -2850,6 +2870,7 @@ end
 function ComboData.get_training_drive_refill_override_debug(prev, current)
     if not current then return false, "current=nil" end
     if GameObjects.TrainingManager == nil then return false, "training_manager=nil" end
+    if ComboData.is_throw_state(current) then return false, "throw_pending=true" end
     if ComboData.any_sequence_started() then return false, "sequence_started=true" end
 
     local target = tonumber(current.training_drive_target)
@@ -3362,9 +3383,21 @@ function ComboData.update_state(p1, p2)
             and atk and (atk.act_st or 0) == 37
             and (state.is_throw == true and state.throw_end_wait_for_exit == true or same_finished_catch_action)
 
-        local throw_ready_to_start = attack_kind ~= "throw" or ComboData.is_throw_ready_to_start(atk)
+        local throw_ready_to_start = attack_kind ~= "throw"
+            or ComboData.is_throw_ready_to_start(atk)
+            or (state.finished == true and state.is_blocked == true)
+            or (state.is_blocked == true and attack_kind == "throw")
 
-        if throw_ready_to_start and not suppress_throw_restart and not state.started and def_prev.hp_current and (attack_kind or precombo_opener_damage) then
+        local throw_can_restart_block = attack_kind == "throw"
+            and state.started == true
+            and (state.is_blocked == true or state.finished == true)
+
+        if throw_ready_to_start
+            and not suppress_throw_restart
+            and (not state.started or throw_can_restart_block)
+            and def_prev.hp_current
+            and (attack_kind or precombo_opener_damage)
+        then
             if not state.pending_start then
                 state.pending_start = { p1 = Utils.deep_copy(ComboData.p1_prev), p2 = Utils.deep_copy(ComboData.p2_prev) }
             end
@@ -3404,7 +3437,12 @@ function ComboData.update_state(p1, p2)
             ComboData.settle_finished_advantage(state, p1, p2)
         end
 
-        if throw_ready_to_start and not suppress_throw_restart and not state.started and attack_kind and def_prev.hp_current then
+        if throw_ready_to_start
+            and not suppress_throw_restart
+            and (not state.started or throw_can_restart_block)
+            and attack_kind
+            and def_prev.hp_current
+        then
             ComboData.debug_log("COMBO_START p" .. tostring(i)
                 .. " kind=" .. tostring(attack_kind)
                 .. " atk.combo_count=" .. tostring(atk and atk.combo_count)
@@ -4775,8 +4813,22 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
 
     -- Circle opacity: current Opacity (BG) + 25%, clamped to 100%
     local circle_opacity = Utils.clamp(UI.get_display_background_opacity() + 0.50, 0, 1)
-    local red_base_color = UI.apply_opacity_to_color(0xFF0000FF, circle_opacity)
+    local foreground_opacity = Utils.clamp(circle_opacity * 1.20, 0, 1)
     local off_white_color = UI.apply_opacity_to_color(0xFFE0E0E0, circle_opacity)
+
+    -- Single solid foreground color based on the cooldown fraction.
+    -- fraction=1 (high/peak cooldown) → red,
+    -- fraction=0.5 → yellow,
+    -- fraction=0 (low/expired cooldown) → green.
+    -- Packed ABGR: 0xAABBGGRR.
+    local function compute_solid_color()
+        local t = fraction
+        local r = math.floor(255 * t + 0.5)
+        local g = math.floor(120 * (1 - t * t) + 0.5)
+        local b = 0
+        local rgb = (b * 0x10000) + (g * 0x100) + r
+        return (math.floor(Utils.clamp(foreground_opacity, 0, 1) * 255 + 0.5) << 24) + rgb
+    end
 
     local function draw_full_circle(color)
         draw_list:path_clear()
@@ -4791,12 +4843,16 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
     -- Always use off-white as the background circle so there's no color flip at 50%.
     draw_full_circle(off_white_color)
 
-    -- Draw the red remaining portion as individual fan triangles from center,
+    -- Draw the remaining portion as individual fan triangles from center,
     -- starting at the elapsed boundary (matching original clockwise tick direction).
+    -- Each triangle is graded from green (near the moving edge) through yellow
+    -- to red (near the fixed 12-o'clock start).
     -- Each triangle is convex so PathFillConvex handles it correctly at any size,
     -- avoiding the shared-edge seam from splitting a >180-degree fill into halves.
     local elapsed_count = math.floor((1 - fraction) * num_segments + 0.5)
     if elapsed_count < num_segments then
+        local total_segments = num_segments - elapsed_count
+        local solid_color = compute_solid_color()
         for i = elapsed_count, num_segments - 1 do
             draw_list:path_clear()
             draw_list:path_line_to(Vector2f.new(cx, cy))
@@ -4811,7 +4867,8 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
             local angle_b = start_angle + frac_b * 2 * math.pi
             draw_list:path_line_to(Vector2f.new(cx + math.cos(angle_a) * radius, cy + math.sin(angle_a) * radius))
             draw_list:path_line_to(Vector2f.new(cx + math.cos(angle_b) * radius, cy + math.sin(angle_b) * radius))
-            draw_list:path_fill_convex(red_base_color)
+
+            draw_list:path_fill_convex(solid_color)
         end
     end
 
@@ -5070,7 +5127,7 @@ function UI.format_column_value(v, column, percent_max, carry_percent_mode)
     end
 
     if column and column.id == "hit_damage" then
-        if v == nil or v == 0 then return "-" end
+        if v == nil then return "-" end
         return UI.format_raw_value(v)
     end
 

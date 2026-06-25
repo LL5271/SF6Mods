@@ -1230,9 +1230,13 @@ function ComboData.sync_gameplay_state(in_battle, round_no)
     if runtime_state.was_in_battle ~= in_battle then
         ComboData.debug_log("ROUND_START in_battle=" .. tostring(in_battle) .. " round_no=" .. tostring(round_no), "log_start_finish_values")
         ComboData.default_state()
+        UI.begin_fadeout(0)
+        UI.begin_fadeout(1)
     elseif in_battle and runtime_state.last_round_no ~= nil and round_no ~= nil and round_no ~= runtime_state.last_round_no then
         ComboData.debug_log("ROUND_START round_no=" .. tostring(round_no) .. " (was " .. tostring(runtime_state.last_round_no) .. ")", "log_start_finish_values")
         ComboData.default_state()
+        UI.begin_fadeout(0)
+        UI.begin_fadeout(1)
     end
 
     runtime_state.was_in_battle = in_battle
@@ -1283,6 +1287,7 @@ function ComboData.update_post_match_timer(p1, p2)
                     state.block_end_grace_remaining = 0
                     state.defender_recovery_grace_remaining = 0
                     ComboData.clear_pending_start(state)
+                    UI.begin_fadeout(i)
                 end
             end
             ComboData.runtime_state.match_clear_frames = 0
@@ -4047,6 +4052,22 @@ UI.minimum_combo_window_width = 220
 UI.window_padding_width = 44
 UI.display_box_rounding = 10
 UI.stroke_item_id = 0
+UI.FADEOUT_FRAMES = 4
+UI.fadeout_alpha_override = nil
+UI.fadeout_frame_counter = 0
+UI.fadeout_global_frame = 0
+UI.fadeout = {
+    [0] = { active = false, snapshot = nil, title = nil, is_defense = nil, x = nil, y = nil, anchor = nil, width = nil, minimal = nil, player_index = 0 },
+    [1] = { active = false, snapshot = nil, title = nil, is_defense = nil, x = nil, y = nil, anchor = nil, width = nil, minimal = nil, player_index = 1 },
+}
+UI.fadeout_snapshot = {
+    [0] = { state = nil, title = nil, is_defense = nil, x = nil, y = nil, anchor = nil, width = nil, minimal = nil, stamp = -1, snapshot_has_state = false },
+    [1] = { state = nil, title = nil, is_defense = nil, x = nil, y = nil, anchor = nil, width = nil, minimal = nil, stamp = -1, snapshot_has_state = false },
+}
+-- Last fully-rendered combo window size per player index, captured inside
+-- draw_combo_window_frame so the next frame can bound the window position to
+-- keep it entirely within the game window. nil until the first render.
+UI.last_window_size = { [0] = nil, [1] = nil }
 UI.confirm_active = {}
 function UI.confirm_button(action_key, label, id, callback)
     local display = UI.confirm_active[action_key] and (label .. "?##" .. id) or (label .. "##" .. id)
@@ -4120,12 +4141,16 @@ end
 
 function UI.get_display_background_opacity()
     local opacity = tonumber(Config.settings.display_background_opacity) or DEFAULT_BACKGROUND_OPACITY
-    return Utils.clamp(opacity, 0, 100) / 100
+    local v = Utils.clamp(opacity, 0, 100) / 100
+    if UI.fadeout_alpha_override ~= nil then v = v * (UI.fadeout_alpha_override or 0) end
+    return v
 end
 
 function UI.get_display_text_opacity()
     local opacity = tonumber(Config.settings.display_text_opacity) or DEFAULT_TEXT_OPACITY
-    return Utils.clamp(opacity, 0, 100) / 100
+    local v = Utils.clamp(opacity, 0, 100) / 100
+    if UI.fadeout_alpha_override ~= nil then v = v * (UI.fadeout_alpha_override or 0) end
+    return v
 end
 
 function UI.get_display_scale()
@@ -4810,22 +4835,32 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
 
     local num_segments = 32
     local start_angle = -math.pi / 2
+    local stroke_width = math.max(1.0, 2.0 * (scale or 1))
+    local inner_radius = math.max(1.0, radius - stroke_width)
 
     -- Circle opacity: current Opacity (BG) + 25%, clamped to 100%
-    local circle_opacity = Utils.clamp(UI.get_display_background_opacity() + 0.50, 0, 1)
+    local circle_opacity = Utils.clamp(UI.get_display_background_opacity() + 0.30, 0, 1)
     local foreground_opacity = Utils.clamp(circle_opacity * 1.20, 0, 1)
-    local off_white_color = UI.apply_opacity_to_color(0xFFE0E0E0, circle_opacity)
+    local inner_bg_color = UI.apply_opacity_to_color(0xFF202020, circle_opacity)
+    local ring_color = UI.apply_opacity_to_color(0xFFE0E0E0, circle_opacity)
 
     -- Single solid foreground color based on the cooldown fraction.
     -- fraction=1 (high/peak cooldown) → red,
-    -- fraction=0.5 → yellow,
+    -- fraction=0.5 → bright yellow,
     -- fraction=0 (low/expired cooldown) → green.
     -- Packed ABGR: 0xAABBGGRR.
     local function compute_solid_color()
         local t = fraction
-        local r = math.floor(255 * t + 0.5)
-        local g = math.floor(120 * (1 - t * t) + 0.5)
-        local b = 0
+        local r, g, b
+        if t < 0.5 then
+            r = math.floor(255 * (t / 0.5) + 0.5)
+            g = 255
+            b = 0
+        else
+            r = 255
+            g = math.floor(255 * (1 - (t - 0.5) / 0.5) + 0.5)
+            b = 0
+        end
         local rgb = (b * 0x10000) + (g * 0x100) + r
         return (math.floor(Utils.clamp(foreground_opacity, 0, 1) * 255 + 0.5) << 24) + rgb
     end
@@ -4835,40 +4870,43 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
         for i = 0, num_segments - 1 do
             local t = i / num_segments
             local angle = start_angle + t * 2 * math.pi
-            draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+            draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * inner_radius, cy + math.sin(angle) * inner_radius))
         end
         draw_list:path_fill_convex(color)
     end
 
-    -- Always use off-white as the background circle so there's no color flip at 50%.
-    draw_full_circle(off_white_color)
+    -- Always use dark inner background so there's no color flip at 50%.
+    draw_full_circle(inner_bg_color)
 
-    -- Draw the remaining portion as individual fan triangles from center,
-    -- starting at the elapsed boundary (matching original clockwise tick direction).
-    -- Each triangle is graded from green (near the moving edge) through yellow
-    -- to red (near the fixed 12-o'clock start).
-    -- Each triangle is convex so PathFillConvex handles it correctly at any size,
-    -- avoiding the shared-edge seam from splitting a >180-degree fill into halves.
+    -- Draw the remaining portion as a single filled pie slice from center.
+    -- For arcs > 180°, split into two convex halves to satisfy PathFillConvex.
     local elapsed_count = math.floor((1 - fraction) * num_segments + 0.5)
     if elapsed_count < num_segments then
-        local total_segments = num_segments - elapsed_count
         local solid_color = compute_solid_color()
-        for i = elapsed_count, num_segments - 1 do
+        local first_seg = elapsed_count
+        local last_seg = num_segments - 1
+        local total_segs = last_seg - first_seg + 1
+
+        local function fill_arc(seg_start, seg_end)
             draw_list:path_clear()
             draw_list:path_line_to(Vector2f.new(cx, cy))
-
-            local frac_a = i / num_segments
-            local frac_b = (i + 1) / num_segments
-            if i == num_segments - 1 then
-                frac_b = math.min(frac_b + (1 / num_segments) * 0.7, 1.0)
+            for i = seg_start, seg_end do
+                local frac_a = i / num_segments
+                if i == num_segments - 1 then
+                    frac_a = math.min(frac_a + (1 / num_segments) * 0.7, 1.0)
+                end
+                local angle_a = start_angle + frac_a * 2 * math.pi
+                draw_list:path_line_to(Vector2f.new(cx + math.cos(angle_a) * inner_radius, cy + math.sin(angle_a) * inner_radius))
             end
-
-            local angle_a = start_angle + frac_a * 2 * math.pi
-            local angle_b = start_angle + frac_b * 2 * math.pi
-            draw_list:path_line_to(Vector2f.new(cx + math.cos(angle_a) * radius, cy + math.sin(angle_a) * radius))
-            draw_list:path_line_to(Vector2f.new(cx + math.cos(angle_b) * radius, cy + math.sin(angle_b) * radius))
-
             draw_list:path_fill_convex(solid_color)
+        end
+
+        if total_segs <= num_segments / 2 then
+            fill_arc(first_seg, last_seg)
+        else
+            local mid_seg = first_seg + math.floor(total_segs / 2)
+            fill_arc(first_seg, mid_seg)
+            fill_arc(mid_seg, last_seg)
         end
     end
 
@@ -4879,8 +4917,7 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
         local angle = start_angle + t * 2 * math.pi
         draw_list:path_line_to(Vector2f.new(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
     end
-    local stroke_width = math.max(1.0, 2.0 * (scale or 1))
-    draw_list:path_stroke(off_white_color, 1, stroke_width)
+    draw_list:path_stroke(ring_color, 1, stroke_width)
 end
 function UI.draw_text_with_black_stroke(text, color)
     local draw_list = UI.get_active_draw_list()
@@ -5879,7 +5916,7 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
         end
     end
 
-    if state and (state.ended_in_ko or (state.finished and not state.started)) and display_values_texts then
+    if state and (state.ended_in_ko or (state.finished and not state.started)) and display_values_texts and not UI.fadeout_alpha_override then
         local dv_key = "p" .. tostring((player_index or 0) + 1) .. ":" .. tostring(row_index or 0)
         local dv_hash = table.concat(display_values_texts, "\t")
         local prev_hash = ComboData.runtime_state.display_values_logged_hashes[dv_key]
@@ -5922,6 +5959,7 @@ function UI.render_combo_window_table(state, player_index, is_defense)
             local label_color = nil
             UI.center_text(label, column.width, function()
                 local cursor_before = imgui.get_cursor_screen_pos()
+                local text_size = imgui.calc_text_size(label)
                 UI.draw_text_with_black_stroke(label, label_color)
                 if column.id == "p1_drive" or column.id == "p2_drive" then
                     local player_idx = column.id == "p1_drive" and 0 or 1
@@ -5962,13 +6000,13 @@ function UI.render_combo_window_table(state, player_index, is_defense)
                         end
                         local draw_list = UI.get_active_draw_list()
                         if draw_list and draw_cd_value and draw_cd_value > 0 and draw_cd_peak and draw_cd_peak > 0 then
-                            local text_size = imgui.calc_text_size(label)
                             local scale = UI.get_column_width_scale()
                             local circle_radius = math.max(1, math.floor(8 * scale + 0.5))
-                            local gap = math.floor(10 * scale + 0.5)
-                            local offset = math.floor(2 * scale + 0.5)
-                            local cx_val = (cursor_before.x or 0) + text_size.x + gap + circle_radius - offset - 1
-                            local cy_val = (cursor_before.y or 0) + text_size.y / 2 + offset - 1
+                            local space_width = imgui.calc_text_size(" ")
+                            local space_w = space_width and space_width.x or math.floor(8 * scale + 0.5)
+                            local text_right = (cursor_before.x or 0) + text_size.x
+                            local cx_val = text_right + space_w + circle_radius
+                            local cy_val = (cursor_before.y or 0) + text_size.y / 2 - 1
                             UI.draw_drive_cooldown_indicator(draw_list, cx_val, cy_val, circle_radius, draw_cd_value, draw_cd_peak, scale)
                         end
                     end
@@ -5987,25 +6025,21 @@ function UI.render_combo_window_table(state, player_index, is_defense)
     end
 end
 
-function UI.render_player_combo_window(player_index, title, x, y, anchor_pivot_x, toggle_setting, minimal_setting, state, is_defense)
-    if not state or not (state.started or state.finished) then return end
-    local window_width = UI.get_combo_window_width(state, player_index)
+function UI.draw_combo_window_frame(player_index, title, x, y, anchor_pivot_x, window_width, minimal_setting, state, is_defense)
     local background_opacity = UI.get_display_background_opacity()
-
-    if UI.should_hide_combo_window(state) then
-        state.started = false
-        state.finished = false
-        state.timer_remaining = nil
-        return
-    end
-
     local can_push_style_var = imgui.push_style_var and imgui.pop_style_var
     local window_rounding_style_var = can_push_style_var and UI.get_imgui_style_var("WindowRounding") or nil
     local border_size_style_var = can_push_style_var and UI.get_imgui_style_var("WindowBorderSize") or nil
     local suppress_border = background_opacity <= 0 and border_size_style_var ~= nil
     local style_var_push_count = 0
 
-    imgui.set_next_window_pos(Vector2f.new(x, y), 1 << 0, Vector2f.new(anchor_pivot_x, 0))
+    local window_title = title
+    if UI.fadeout_alpha_override ~= nil then
+        window_title = tostring(title) .. "##fadeout_p" .. tostring((player_index or 0) + 1)
+    end
+
+    local bound_x, bound_y = UI.bound_window_position(player_index, x, y, anchor_pivot_x, window_width)
+    imgui.set_next_window_pos(Vector2f.new(bound_x, bound_y), 1 << 0, Vector2f.new(anchor_pivot_x, 0))
     imgui.set_next_window_size(Vector2f.new(window_width, 0), 1)
 
     imgui.push_style_color(IMGUI_COL_WINDOW_BG, UI.apply_opacity_to_color(0xFF000000, background_opacity))
@@ -6019,8 +6053,8 @@ function UI.render_player_combo_window(player_index, title, x, y, anchor_pivot_x
         style_var_push_count = style_var_push_count + 1
     end
 
-    if imgui.begin_window(title, true, 1 | 8 | 32) then
-        if UI.is_toggle_view_clicked() then
+    if imgui.begin_window(window_title, true, 1 | 8 | 32) then
+        if UI.fadeout_alpha_override == nil and UI.is_toggle_view_clicked() then
             Config.settings[minimal_setting] = not Config.settings[minimal_setting]
 
             local side = (player_index == 0) and "P1 " or "P2 "
@@ -6030,12 +6064,34 @@ function UI.render_player_combo_window(player_index, title, x, y, anchor_pivot_x
             UI.mark_for_save()
         end
         UI.render_combo_window_table(state, player_index, is_defense)
+        local captured = imgui.get_window_size and imgui.get_window_size()
+        if captured then
+            UI.last_window_size[player_index] = { x = tonumber(captured.x) or 0, y = tonumber(captured.y) or 0 }
+        end
         imgui.end_window()
     end
     if style_var_push_count > 0 then
         imgui.pop_style_var(style_var_push_count)
     end
     imgui.pop_style_color(2)
+end
+
+function UI.render_player_combo_window(player_index, title, x, y, anchor_pivot_x, toggle_setting, minimal_setting, state, is_defense)
+    if not state or not (state.started or state.finished) then return end
+    local window_width = UI.get_combo_window_width(state, player_index)
+
+    if UI.should_hide_combo_window(state) then
+        UI.begin_fadeout_from_state(player_index, state, title, is_defense, x, y, anchor_pivot_x, window_width, minimal_setting)
+        state.started = false
+        state.finished = false
+        state.timer_remaining = nil
+        return
+    end
+
+    UI.store_fadeout_snapshot(player_index, state, title, is_defense, x, y, anchor_pivot_x, window_width, minimal_setting)
+    UI.cancel_fadeout(player_index)
+
+    UI.draw_combo_window_frame(player_index, title, x, y, anchor_pivot_x, window_width, minimal_setting, state, is_defense)
 end
 
 function UI.handle_hotkeys()
@@ -6130,6 +6186,108 @@ function UI.get_position_mirror_partner(id)
     if id == "self" then return "opponent" end
     if id == "opponent" then return "self" end
     return nil
+end
+
+-- Maps a position id ("self"/"opponent") to the player index whose combo window
+-- it controls. self == P1 (right-anchored, anchor_pivot_x = 1); opponent == P2
+-- (left-anchored, anchor_pivot_x = 0). See UI.render_windows.
+function UI.get_position_player_index(id)
+    if id == "self" then return 0 end
+    if id == "opponent" then return 1 end
+    return nil
+end
+
+function UI.get_position_anchor_x(id)
+    return id == "self" and 1 or 0
+end
+
+-- Conservative over-estimate of a combo window's rendered height in pixels,
+-- used only on the first frame before a real size has been captured. Over-
+-- estimating is safe for clipping prevention (it pushes the window up, never
+-- out of bounds). Once UI.last_window_size[player_index] is populated the real
+-- height is used instead.
+function UI.estimate_combo_window_height(player_index)
+    local scale = UI.get_column_width_scale()
+    local is_minimal = (player_index == 0 and Config.settings.toggle_minimal_view_p1 ~= false)
+        or (player_index == 1 and Config.settings.toggle_minimal_view_p2 ~= false)
+    local large = UI.get_scaled_font_size(UI.large_font)
+    local medium = UI.get_scaled_font_size(UI.medium_font)
+    local rows_height = is_minimal and large or (large + medium * 2)
+    local row_count = is_minimal and 1 or 3
+    local per_row_pad = math.ceil(20 * scale)
+    local window_pad = math.ceil(24 * scale)
+    return rows_height + row_count * per_row_pad + window_pad
+end
+
+-- Returns (width, height) in pixels for the combo window controlled by the
+-- given position id. Width is always computed fresh from the current column
+-- config; height uses the last captured render size, falling back to 0 (which
+-- only bounds y to >= 0) so stored config values are never over-corrected by a
+-- guess before the first render.
+function UI.get_position_box_size(id)
+    local player_index = UI.get_position_player_index(id)
+    if player_index == nil then return 0, 0 end
+    local width = UI.get_combo_window_width(nil, player_index)
+    local last = UI.last_window_size and UI.last_window_size[player_index] or nil
+    local height = (last and tonumber(last.y)) or 0
+    return width, height
+end
+
+-- Clamps a pixel coordinate for the given position id/axis so the window stays
+-- fully on-screen. Used by UI.set_position_coord to keep stored values sane and
+-- by UI.get_shared_bounded_position_y for vertical matching.
+function UI.get_bounded_position_coord(id, axis, pixel_val)
+    local screen_w = UI.get_screen_dim("x")
+    local screen_h = UI.get_screen_dim("y")
+    local width, height = UI.get_position_box_size(id)
+    local anchor_x = UI.get_position_anchor_x(id)
+    local val = math.floor((tonumber(pixel_val) or 0) + 0.5)
+
+    if axis == "x" then
+        if anchor_x == 1 then
+            local min_x = math.min(width, screen_w)
+            val = Utils.clamp(val, min_x, screen_w)
+        else
+            local max_x = math.max(0, screen_w - width)
+            val = Utils.clamp(val, 0, max_x)
+        end
+    else
+        local max_y = math.max(0, screen_h - height)
+        val = Utils.clamp(val, 0, max_y)
+    end
+
+    return val
+end
+
+-- Authoritative draw-time bounding. Clamps (x, y) so the combo window for
+-- player_index (anchored at anchor_pivot_x) stays entirely within the game
+-- window. Uses the freshly-computed window_width for X and the last captured
+-- height (or a safe over-estimate on the first frame) for Y.
+function UI.bound_window_position(player_index, x, y, anchor_pivot_x, window_width)
+    local id = (player_index == 0) and "self" or "opponent"
+    local screen_w = UI.get_screen_dim("x")
+    local screen_h = UI.get_screen_dim("y")
+    local last = UI.last_window_size and UI.last_window_size[player_index] or nil
+    local height = (last and tonumber(last.y)) or UI.estimate_combo_window_height(player_index)
+    -- Prefer the last captured outer width (includes borders) for exact bounds;
+    -- fall back to the freshly-computed window_width on the first frame.
+    local width = (last and tonumber(last.x)) or math.max(0, math.floor((tonumber(window_width) or 0) + 0.5))
+
+    local bx = math.floor((tonumber(x) or 0) + 0.5)
+    local by = math.floor((tonumber(y) or 0) + 0.5)
+
+    if anchor_pivot_x == 1 then
+        local min_x = math.min(width, screen_w)
+        bx = Utils.clamp(bx, min_x, screen_w)
+    else
+        local max_x = math.max(0, screen_w - width)
+        bx = Utils.clamp(bx, 0, max_x)
+    end
+
+    local max_y = math.max(0, screen_h - height)
+    by = Utils.clamp(by, 0, max_y)
+
+    return bx, by
 end
 
 function UI.get_shared_bounded_position_y(value, defaults)
@@ -6395,7 +6553,12 @@ function UI.resolve_player_window_state(panel_label, player_index, own_state, op
 end
 
 function UI.render_windows()
-    if not Config.settings.toggle_all or GameObjects.is_paused() then return end
+    if not Config.settings.toggle_all then
+        UI.begin_fadeout(0)
+        UI.begin_fadeout(1)
+        return
+    end
+    if GameObjects.is_paused() then return end
     UI.right_click_this_frame = UI.was_key_down(RIGHT_CLICK)
 
     local _, defaults = UI.ensure_position_coords()
@@ -6404,6 +6567,9 @@ function UI.render_windows()
     local opponent_x = UI.get_position_coord("opponent", "x", defaults)
     local opponent_y = UI.get_position_coord("opponent", "y", defaults)
 
+    local p1_rendered = false
+    local p2_rendered = false
+
     if Config.settings.toggle_p1 then
         local p1_attack = ComboData.player_states[0]
         local p2_attack = ComboData.player_states[1]
@@ -6411,6 +6577,7 @@ function UI.render_windows()
 
         if p1_show then
             UI.render_player_combo_window(0, p1_title, self_x, self_y, 1, "toggle_p1", "toggle_minimal_view_p1", p1_state, p1_is_defense)
+            p1_rendered = true
         end
     end
     if Config.settings.toggle_p2 then
@@ -6420,8 +6587,12 @@ function UI.render_windows()
 
         if p2_show then
             UI.render_player_combo_window(1, p2_title, opponent_x, opponent_y, 0, "toggle_p2", "toggle_minimal_view_p2", p2_state, p2_is_defense)
+            p2_rendered = true
         end
     end
+
+    if not p1_rendered then UI.begin_fadeout(0) end
+    if not p2_rendered then UI.begin_fadeout(1) end
 end
 
 function UI.is_toggle_view_clicked()
@@ -6445,6 +6616,137 @@ end
 
 function UI.should_hide_combo_window(state)
     return Config.settings.combo_timer_duration > 0 and state.timer_remaining and state.timer_remaining <= 0
+end
+
+function UI.fadeout_alpha_for_frame(frame)
+    local n = UI.FADEOUT_FRAMES
+    if n <= 0 then return 0 end
+    local t = math.max(0, math.min(tonumber(frame) or 0, n)) / n
+    local v = 1 - (t * t)
+    if v < 0 then v = 0 end
+    if v > 1 then v = 1 end
+    return v
+end
+
+function UI.store_fadeout_snapshot(player_index, state, title, is_defense, x, y, anchor_pivot_x, window_width, minimal_setting)
+    local snap = UI.fadeout_snapshot[player_index]
+    if not snap then return end
+    snap.state = Utils.deep_copy(state)
+    snap.title = title
+    snap.is_defense = is_defense
+    snap.x = x
+    snap.y = y
+    snap.anchor = anchor_pivot_x
+    snap.width = window_width
+    snap.minimal = minimal_setting
+    snap.stamp = UI.fadeout_frame_counter
+    snap.snapshot_has_state = true
+end
+
+function UI.fadeout_active_count()
+    local n = 0
+    for i = 0, 1 do
+        if UI.fadeout[i] and UI.fadeout[i].active then n = n + 1 end
+    end
+    return n
+end
+
+function UI.begin_fadeout(player_index)
+    local snap = UI.fadeout_snapshot[player_index]
+    local slot = UI.fadeout[player_index]
+    if not snap or not slot then return end
+    if slot.active then return end
+    if not snap.state then return end
+    if not snap.snapshot_has_state then return end
+    if UI.fadeout_active_count() == 0 then
+        UI.fadeout_global_frame = 0
+    end
+    slot.snapshot = snap.state
+    slot.title = snap.title
+    slot.is_defense = snap.is_defense
+    slot.x = snap.x
+    slot.y = snap.y
+    slot.anchor = snap.anchor
+    slot.width = snap.width
+    slot.minimal = snap.minimal
+    slot.active = true
+end
+
+function UI.begin_fadeout_from_state(player_index, state, title, is_defense, x, y, anchor_pivot_x, window_width, minimal_setting)
+    local slot = UI.fadeout[player_index]
+    if not slot or slot.active then return end
+    if not state or not (state.started or state.finished) then return end
+    UI.store_fadeout_snapshot(player_index, state, title, is_defense, x, y, anchor_pivot_x, window_width, minimal_setting)
+    local snap = UI.fadeout_snapshot[player_index]
+    if UI.fadeout_active_count() == 0 then
+        UI.fadeout_global_frame = 0
+    end
+    slot.snapshot = snap.state
+    slot.title = snap.title
+    slot.is_defense = snap.is_defense
+    slot.x = snap.x
+    slot.y = snap.y
+    slot.anchor = snap.anchor
+    slot.width = snap.width
+    slot.minimal = snap.minimal
+    slot.active = true
+end
+
+function UI.cancel_fadeout(player_index)
+    local slot = UI.fadeout[player_index]
+    if not slot then return end
+    slot.active = false
+    slot.snapshot = nil
+end
+
+function UI.render_fadeout_window(player_index)
+    local slot = UI.fadeout[player_index]
+    if not slot or not slot.active or not slot.snapshot then return end
+    local alpha = UI.fadeout_alpha_for_frame(UI.fadeout_global_frame)
+    UI.fadeout_alpha_override = alpha
+    UI.draw_combo_window_frame(player_index, slot.title, slot.x, slot.y, slot.anchor, slot.width, slot.minimal, slot.snapshot, slot.is_defense)
+    UI.fadeout_alpha_override = nil
+end
+
+function UI.render_fadeouts()
+    local any_active = false
+    for i = 0, 1 do
+        local slot = UI.fadeout[i]
+        if slot and slot.active then
+            if not slot.snapshot then
+                slot.active = false
+            else
+                any_active = true
+            end
+        end
+    end
+    if not any_active then
+        UI.fadeout_global_frame = 0
+        return
+    end
+    -- All active panels share one global frame so P1/P2 fade in sync and end
+    -- on the same frame. Once the shared clock expires, retire every panel.
+    if UI.fadeout_global_frame >= UI.FADEOUT_FRAMES then
+        for i = 0, 1 do
+            if UI.fadeout[i] then
+                UI.fadeout[i].active = false
+                UI.fadeout[i].snapshot = nil
+            end
+            if UI.fadeout_snapshot[i] then
+                UI.fadeout_snapshot[i].state = nil
+                UI.fadeout_snapshot[i].snapshot_has_state = false
+            end
+        end
+        UI.fadeout_global_frame = 0
+        return
+    end
+    for i = 0, 1 do
+        local slot = UI.fadeout[i]
+        if slot and slot.active and slot.snapshot then
+            UI.render_fadeout_window(i)
+        end
+    end
+    UI.fadeout_global_frame = UI.fadeout_global_frame + 1
 end
 
 function UI.set_display_percent(setting_key, value, min_value, max_value)
@@ -7074,6 +7376,7 @@ re.on_draw_ui(function()
 end)
 
 re.on_frame(function()
+    UI.fadeout_frame_counter = UI.fadeout_frame_counter + 1
     local sPlayer, cPlayer, cTeam = GameObjects.get_objects()
     local in_battle = GameObjects.is_in_battle(cPlayer)
     local round_no = in_battle and GameObjects.get_round_no() or nil
@@ -7230,6 +7533,8 @@ re.on_frame(function()
         end
         UI.render_windows()
     end
+
+    UI.render_fadeouts()
 
     if ComboData.hook_load_fired then
         ComboData.snapshot_debug("on_frame_process_load")

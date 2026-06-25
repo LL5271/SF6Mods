@@ -24,7 +24,11 @@ local PARRY_ACTION_MIN = 480
 local PARRY_ACTION_MAX = 489
 local PARRY_ACT_ST = 39
 local POST_MATCH_CLEAR_FRAMES = 120
-local CARRY_POSITION_MAX = 765
+local CARRY_LEFT_FACING_MIN = -765
+local CARRY_LEFT_FACING_MAX = 695
+local CARRY_RIGHT_FACING_MIN = -695
+local CARRY_RIGHT_FACING_MAX = 765
+local CARRY_TOTAL_MAX = CARRY_RIGHT_FACING_MAX - CARRY_RIGHT_FACING_MIN
 local DEFAULT_STRING_GAP = 2
 local DEFAULT_IGNORE_FRAMEKILLS = true
 local BLOCKSTRING_TOOLTIP = "Non-blocking frames before a blockstring is considered complete."
@@ -69,8 +73,8 @@ local COLUMN_DEFS = {
     { id = "p1_super", label = "P1 Super", width = 88, unit_id = "super",  percent_max = 30000, color_max = 30000 },
     { id = "p2_drive", label = "P2 Drive", width = 92, unit_id = "drive",  percent_max = 60000, color_max = 60000 },
     { id = "p2_super", label = "P2 Super", width = 88, unit_id = "super",  percent_max = 30000, color_max = 30000, default_visible = false },
-    { id = "p1_carry", label = "P1 Carry", width = 59, percent_width = 63, unit_id = "carry", percent_max = 1530, color_max = 1530, default_visible = true },
-    { id = "p2_carry", label = "P2 Carry", width = 59, percent_width = 63, unit_id = "carry", percent_max = 1530, color_max = 1530, default_visible = false },
+    { id = "p1_carry", label = "P1 Carry", width = 59, percent_width = 63, unit_id = "carry", percent_max = CARRY_TOTAL_MAX, color_max = CARRY_TOTAL_MAX, default_visible = true },
+    { id = "p2_carry", label = "P2 Carry", width = 59, percent_width = 63, unit_id = "carry", percent_max = CARRY_TOTAL_MAX, color_max = CARRY_TOTAL_MAX, default_visible = false },
      { id = "gap",      label = "Spacing",      width = 100, percent_width = 68, unit_id = "gap",   percent_max = 490,  color_max = 490 },
     { id = "adv",      label = "Adv",      width = 42, color_max = 80 },
 }
@@ -5115,13 +5119,91 @@ function UI.format_percent_value(v, percent_max)
     return formatted
 end
 
-function UI.format_carry_percent_value(v, percent_max, carry_percent_mode)
+function UI.get_carry_bounds_for_facing(facing_right)
+    if facing_right == true then
+        return CARRY_RIGHT_FACING_MIN, CARRY_RIGHT_FACING_MAX
+    end
+
+    return CARRY_LEFT_FACING_MIN, CARRY_LEFT_FACING_MAX
+end
+
+function UI.clamp_carry_position_for_facing(pos, facing_right)
+    local min_pos, max_pos = UI.get_carry_bounds_for_facing(facing_right)
+    return Utils.clamp(tonumber(pos) or 0, min_pos, max_pos), min_pos, max_pos
+end
+
+function UI.get_carry_position_percent(pos, facing_right)
+    if pos == nil or facing_right == nil then
+        return nil
+    end
+
+    local clamped_pos, min_pos, max_pos = UI.clamp_carry_position_for_facing(pos, facing_right)
+    local percent
+    if clamped_pos >= 0 then
+        percent = (clamped_pos / math.max(1, max_pos)) * 100
+    else
+        percent = (clamped_pos / math.max(1, math.abs(min_pos))) * 100
+    end
+
+    return Utils.clamp(percent, -100, 100)
+end
+
+function UI.get_carry_position_percent_for_player(player, facing_right_override)
+    if not player or player.pos_x == nil then
+        return nil
+    end
+
+    local facing_right = facing_right_override
+    if facing_right == nil then
+        facing_right = player.dir
+    end
+
+    return UI.get_carry_position_percent(player.pos_x, facing_right)
+end
+
+function UI.get_carry_space_to_direction_wall(pos, facing_right_reference, move_right)
+    local clamped_pos, min_pos, max_pos = UI.clamp_carry_position_for_facing(pos, facing_right_reference)
+    if move_right then
+        return max_pos - clamped_pos
+    end
+
+    return clamped_pos - min_pos
+end
+
+function UI.get_player_carry_space_to_direction_wall(player, move_right, facing_right_reference)
+    if not player or player.pos_x == nil then
+        return nil
+    end
+
+    local facing_right = facing_right_reference
+    if facing_right == nil then
+        facing_right = player.dir
+    end
+
+    return UI.get_carry_space_to_direction_wall(player.pos_x, facing_right, move_right)
+end
+
+function UI.get_carry_finish_reference_facing(attacker_start_dir, attacker_finish_dir, force_side_switch)
+    if force_side_switch == true and attacker_start_dir ~= nil then
+        return not (attacker_start_dir == true)
+    end
+
+    if attacker_finish_dir ~= nil then
+        return attacker_finish_dir == true
+    end
+
+    return attacker_start_dir == true
+end
+
+function UI.format_carry_percent_value(v, percent_max, carry_percent_mode, carry_percent_override)
     if not percent_max or percent_max == 0 then return UI.format_raw_value(v) end
     if v == nil then return "-" end
 
-    local percent = (v / percent_max) * 100
-    if carry_percent_mode == "position" then
-        percent = Utils.clamp((v / CARRY_POSITION_MAX) * 100, -100, 100)
+    local percent
+    if carry_percent_override ~= nil then
+        percent = tonumber(carry_percent_override) or 0
+    else
+        percent = (v / percent_max) * 100
     end
 
     local formatted = string.format("%.0f%%", percent)
@@ -5153,7 +5235,7 @@ function UI.ko_suppress(state, value)
     return value
 end
 
-function UI.format_column_value(v, column, percent_max, carry_percent_mode)
+function UI.format_column_value(v, column, percent_max, carry_percent_mode, carry_percent_override)
     if column and column.unit_id == "drive" and Config.settings.reduce_drive and v ~= nil then
         v = v / 10
         if percent_max then percent_max = percent_max / 10 end
@@ -5170,14 +5252,14 @@ function UI.format_column_value(v, column, percent_max, carry_percent_mode)
 
     if column and column.unit_id and UI.get_unit_mode(column.unit_id) == "percent" then
         if column.unit_id == "carry" then
-            return UI.format_carry_percent_value(v, percent_max or column.percent_max, carry_percent_mode)
+            return UI.format_carry_percent_value(v, percent_max or column.percent_max, carry_percent_mode, carry_percent_override)
         end
         return UI.format_percent_value(v, percent_max or column.percent_max)
     end
     return UI.format_raw_value(v)
 end
 
-function UI.format_carry_display_value(v, column, percent_max, carry_percent_mode)
+function UI.format_carry_display_value(v, column, percent_max, carry_percent_mode, carry_percent_override)
     if v == nil then
         return "-"
     end
@@ -5186,7 +5268,7 @@ function UI.format_carry_display_value(v, column, percent_max, carry_percent_mod
         return "-"
     end
 
-    return UI.format_column_value(v, column, percent_max, carry_percent_mode)
+    return UI.format_column_value(v, column, percent_max, carry_percent_mode, carry_percent_override)
 end
 
 function UI.get_carry_facing_arrow(player)
@@ -5291,7 +5373,7 @@ function UI.get_percent_max_values(state)
         damage_max,
         60000, 30000,
         60000, 30000,
-        1530, 1530,
+        CARRY_TOTAL_MAX, CARRY_TOTAL_MAX,
         490,
         nil,
     }
@@ -5533,6 +5615,8 @@ function UI.get_carry_total_value(start_player, finish_player, attacker_start, a
 
     local attacker_start_dir = attacker_start and attacker_start.dir
     local attacker_finish_dir = attacker_finish and attacker_finish.dir
+    local start_facing_right = attacker_start_dir == true
+    local finish_facing_right = UI.get_carry_finish_reference_facing(attacker_start_dir, attacker_finish_dir, force_side_switch)
     local side_switched = force_side_switch == true
         or (
             attacker_start_dir ~= nil
@@ -5546,33 +5630,63 @@ function UI.get_carry_total_value(start_player, finish_player, attacker_start, a
         -- versus combo end so corner escapes and corner-to-corner carry stay
         -- large even when the defender's raw position barely changes.
         local _ = percent_max
-        local max_pos = math.max(1, tonumber(CARRY_POSITION_MAX) or 765)
-
-        local function space_to_facing_wall(pos, facing_right)
-            local clamped_pos = Utils.clamp(tonumber(pos) or 0, -max_pos, max_pos)
-            if facing_right then
-                return max_pos - clamped_pos
-            end
-            return clamped_pos + max_pos
+        if attacker_start_dir == nil then
+            return 0
         end
 
-        local start_facing_right = attacker_start_dir == true
-        local finish_facing_right
-        if attacker_finish_dir ~= nil and attacker_finish_dir ~= attacker_start_dir then
-            finish_facing_right = attacker_finish_dir == true
-        elseif force_side_switch == true and attacker_start_dir ~= nil then
-            finish_facing_right = not start_facing_right
-        else
-            finish_facing_right = attacker_finish_dir == true
-        end
-
-        local start_space = space_to_facing_wall(start_pos, start_facing_right)
-        local finish_space = space_to_facing_wall(finish_pos, finish_facing_right)
+        local start_space = UI.get_carry_space_to_direction_wall(start_pos, start_facing_right, start_facing_right == true)
+        local finish_space = UI.get_carry_space_to_direction_wall(finish_pos, finish_facing_right, finish_facing_right == true)
         return start_space - finish_space
     end
 
-    local direction_sign = attacker_start and attacker_start.dir and 1 or -1
+    start_pos = UI.clamp_carry_position_for_facing(start_pos, start_facing_right)
+    finish_pos = UI.clamp_carry_position_for_facing(finish_pos, start_facing_right)
+    local direction_sign = attacker_start_dir == true and 1 or -1
     return (finish_pos - start_pos) * direction_sign
+end
+
+function UI.get_carry_total_percent_value(start_player, finish_player, attacker_start, attacker_finish, force_side_switch)
+    local attacker_start_dir = attacker_start and attacker_start.dir
+    local attacker_finish_dir = attacker_finish and attacker_finish.dir
+    if attacker_start_dir == nil then
+        return nil
+    end
+
+    local side_switched = force_side_switch == true
+        or (
+            attacker_start_dir ~= nil
+            and attacker_finish_dir ~= nil
+            and attacker_start_dir ~= attacker_finish_dir
+        )
+
+    local start_space
+    local finish_space
+    if side_switched then
+        local start_facing_right = attacker_start_dir == true
+        local finish_facing_right = UI.get_carry_finish_reference_facing(attacker_start_dir, attacker_finish_dir, force_side_switch)
+
+        local start_pos = start_player and start_player.pos_x
+        local finish_pos = finish_player and finish_player.pos_x
+        if start_pos == nil or finish_pos == nil then
+            return nil
+        end
+        start_space = UI.get_carry_space_to_direction_wall(start_pos, start_facing_right, start_facing_right == true)
+        finish_space = UI.get_carry_space_to_direction_wall(finish_pos, finish_facing_right, finish_facing_right == true)
+    else
+        start_space = UI.get_player_carry_space_to_direction_wall(start_player, attacker_start_dir == true, attacker_start_dir == true)
+        finish_space = UI.get_player_carry_space_to_direction_wall(finish_player, attacker_start_dir == true, attacker_start_dir == true)
+    end
+
+    if start_space == nil or finish_space == nil then
+        return nil
+    end
+
+    if start_space <= 0 then
+        return 0
+    end
+
+    local progress = start_space - finish_space
+    return Utils.clamp((progress / start_space) * 100, -100, 100)
 end
 
 -- Keep old name as backward-compatible redirect
@@ -5621,6 +5735,20 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
     local hit_damage_start, hit_damage_finish, hit_damage_total = UI.get_hit_damage_breakdown(state, is_p1)
     local hit_damage_scaling = hit_damage_finish
     local throw_side_switch = UI.should_use_side_switch_carry(state, is_p1, start_p1, start_p2)
+    local finish_p1_for_carry = state.finish.p1 or {}
+    local finish_p2_for_carry = state.finish.p2 or {}
+    if state.ko_carry_finish_p1_x ~= nil then
+        finish_p1_for_carry = {
+            pos_x = state.ko_carry_finish_p1_x,
+            dir = state.finish.p1 and state.finish.p1.dir,
+        }
+    end
+    if state.ko_carry_finish_p2_x ~= nil then
+        finish_p2_for_carry = {
+            pos_x = state.ko_carry_finish_p2_x,
+            dir = state.finish.p2 and state.finish.p2.dir,
+        }
+    end
     local p1_carry_total
     local p2_carry_total
     if state.ko_carry_total_p1 ~= nil then
@@ -5634,6 +5762,16 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
     p1_carry_total, p2_carry_total = UI.apply_side_switch_carry_total_sign_rule(
         p1_carry_total, p2_carry_total, is_p1, attacker_start, attacker_finish
     )
+    -- Carry columns are intentionally swapped in the total row values:
+    --   p1_carry column displays p2_carry_total
+    --   p2_carry column displays p1_carry_total
+    -- Keep percent overrides aligned with the rendered column payload, not the
+    -- raw player-index names, so attacker/self carry and opponent carry both
+    -- normalize against the correct start/finish positions.
+    local carry_percent_overrides = {
+        p1_carry = UI.get_carry_total_percent_value(start_p2, finish_p2_for_carry, attacker_start, attacker_finish, throw_side_switch),
+        p2_carry = UI.get_carry_total_percent_value(start_p1, finish_p1_for_carry, attacker_start, attacker_finish, throw_side_switch),
+    }
 
     local combo_damage = UI.get_combo_damage_value(state, is_p1)
     if not state.is_blocked and not state.ended_in_ko then
@@ -5655,14 +5793,26 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
         -- Negate carry totals (defender being pushed back = negative from defender's perspective)
         p1_carry_total = -(p1_carry_total or 0)
         p2_carry_total = -(p2_carry_total or 0)
+        if carry_percent_overrides.p1_carry ~= nil then carry_percent_overrides.p1_carry = -carry_percent_overrides.p1_carry end
+        if carry_percent_overrides.p2_carry ~= nil then carry_percent_overrides.p2_carry = -carry_percent_overrides.p2_carry end
     end
 
     if not ((player_index == 0 and Config.settings.toggle_minimal_view_p1) or (player_index == 1 and Config.settings.toggle_minimal_view_p2)) then
+        local start_carry_facing_right = attacker_start and attacker_start.dir
+        local finish_carry_facing_right = UI.get_carry_finish_reference_facing(
+            attacker_start and attacker_start.dir,
+            attacker_finish and attacker_finish.dir,
+            throw_side_switch
+        )
         table.insert(rows, {
             font_size = UI.get_scaled_font_size(UI.medium_font),
             is_color = false,
             percent_max = percent_max_values,
             carry_percent_mode = "position",
+            carry_percent_overrides = {
+                p1_carry = UI.get_carry_position_percent_for_player(start_p2, start_carry_facing_right),
+                p2_carry = UI.get_carry_position_percent_for_player(start_p1, start_carry_facing_right),
+            },
             carry_direction_arrows = UI.get_carry_facing_arrows(start_p1, start_p2),
             blank_columns = { adv = true },
             cell_scaling = { hit_damage = hit_damage_scaling },
@@ -5679,6 +5829,10 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
             is_color = false,
             percent_max = percent_max_values,
             carry_percent_mode = "position",
+            carry_percent_overrides = {
+                p1_carry = UI.get_carry_position_percent_for_player(finish_p2_for_carry, finish_carry_facing_right),
+                p2_carry = UI.get_carry_position_percent_for_player(finish_p1_for_carry, finish_carry_facing_right),
+            },
             carry_direction_arrows = UI.get_carry_facing_arrows(state.finish.p1, state.finish.p2),
             blank_columns = { adv = true },
             display_modes = { hit_damage = "percent" },
@@ -5704,6 +5858,7 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
         font_size = UI.get_scaled_font_size(UI.large_font),
         is_color = true,
         percent_max = percent_max_values,
+        carry_percent_overrides = carry_percent_overrides,
         cell_scaling = { hit_damage = hit_damage_scaling },
         values = {
             hit_damage_total,
@@ -5748,7 +5903,7 @@ function UI.get_combo_window_width(state, player_index)
     return UI.get_combo_table_width_from_columns(visible_columns) + math.ceil(UI.window_padding_width * UI.get_column_width_scale())
 end
 
-function UI.process_columns(values, is_color, visible_columns, percent_max_values, state, carry_percent_mode, blank_columns, display_modes, cell_scaling, carry_direction_arrows, player_index, row_index)
+function UI.process_columns(values, is_color, visible_columns, percent_max_values, state, carry_percent_mode, blank_columns, display_modes, cell_scaling, carry_direction_arrows, carry_percent_overrides, player_index, row_index)
     local is_defense = player_index ~= nil and state ~= nil and state.attacker ~= player_index
     local display_values_texts = nil
     for display_index, column in ipairs(visible_columns) do
@@ -5760,6 +5915,7 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
         local v_numeric = tonumber(display_v) or 0
         local w = column.width
         local percent_max = percent_max_values and percent_max_values[column.index] or nil
+        local carry_percent_override = carry_percent_overrides and carry_percent_overrides[column.id] or nil
         local text
         if is_drive_burnout_entry then
             if display_modes and display_modes[column.id] == "percent" then
@@ -5772,7 +5928,7 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
         elseif blank_columns and blank_columns[column.id] then
             text = ""
         else
-            text = UI.format_column_value(display_v, column, percent_max, carry_percent_mode)
+            text = UI.format_column_value(display_v, column, percent_max, carry_percent_mode, carry_percent_override)
         end
         local is_p1_window = state and state.attacker == 0
         local is_opposing_drive = (is_p1_window and column.id == "p2_drive") or (not is_p1_window and column.id == "p1_drive")
@@ -5795,7 +5951,7 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
         end
 
         if is_carry and state then
-            text = UI.format_carry_display_value(v, column, percent_max, carry_percent_mode)
+            text = UI.format_carry_display_value(v, column, percent_max, carry_percent_mode, carry_percent_override)
             local carry_arrow = carry_direction_arrows and carry_direction_arrows[column.id] or nil
             if carry_arrow and text ~= "" and text ~= "-" then
                 text = text .. " " .. carry_arrow
@@ -5905,11 +6061,12 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
             local is_drive_burnout = UI.is_drive_burnout_entry_marker and UI.is_drive_burnout_entry_marker(all_v)
             local all_display_v = is_drive_burnout and UI.get_drive_burnout_entry_value(all_v) or all_v
             local all_percent_max = percent_max_values and percent_max_values[all_col.index] or nil
+            local all_carry_percent_override = carry_percent_overrides and carry_percent_overrides[all_col.id] or nil
             local all_text
             if display_modes and display_modes[all_col.id] == "percent" then
                 all_text = UI.format_percent_value(all_display_v, 100)
             else
-                all_text = UI.format_column_value(all_display_v, all_col, all_percent_max, carry_percent_mode)
+                all_text = UI.format_column_value(all_display_v, all_col, all_percent_max, carry_percent_mode, all_carry_percent_override)
             end
             all_values_texts = all_values_texts or {}
             table.insert(all_values_texts, all_col.id .. "=" .. all_text)
@@ -6018,7 +6175,7 @@ function UI.render_combo_window_table(state, player_index, is_defense)
         for row_index, row in ipairs(value_rows) do
             imgui.table_next_row()
             UI.get_font_size(row.font_size)
-            UI.process_columns(row.values, row.is_color == true, visible_columns, row.percent_max, state, row.carry_percent_mode, row.blank_columns, row.display_modes, row.cell_scaling, row.carry_direction_arrows, player_index, row_index)
+            UI.process_columns(row.values, row.is_color == true, visible_columns, row.percent_max, state, row.carry_percent_mode, row.blank_columns, row.display_modes, row.cell_scaling, row.carry_direction_arrows, row.carry_percent_overrides, player_index, row_index)
             imgui.pop_font()
         end
         imgui.end_table()

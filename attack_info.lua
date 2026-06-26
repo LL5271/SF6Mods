@@ -8,6 +8,7 @@ local RIGHT_CLICK = 0x02
 local F2_KEY = 0x71
 local CTRL_KEY = 0x11
 local KEY_4, KEY_5 = 0x34, 0x35
+local VERSION = 0.9
 
 local Config, Utils, GameObjects, ComboData, UI = {}, {}, {}, {}, {}
 local ADVANTAGE_SETTLE_FRAMES = 30

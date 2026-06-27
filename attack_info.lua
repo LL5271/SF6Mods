@@ -1,5 +1,9 @@
 -- Changelog:
 -- 0.92 (June 27, 2026)
+-- - Added colored labels to signify resource capped
+-- - Gradient improvements
+-- - Fixed lingering displays on postgame menu
+-- - Fixed round-ending throw defender panel getting stuck on stale self totals/damage
 -- - Fixed defender display getting stuck on previous combo
 -- - Minor changes to debugger (improved logging performance)
 -- 0.91 (June 26, 2026)
@@ -35,6 +39,7 @@ local PARRY_ACTION_MIN = 480
 local PARRY_ACTION_MAX = 489
 local PARRY_ACT_ST = 39
 local POST_MATCH_CLEAR_FRAMES = 120
+local ROUND_RESULT_LINGER_FRAMES = 300
 local CARRY_LEFT_FACING_MIN = -765
 local CARRY_LEFT_FACING_MAX = 695
 local CARRY_RIGHT_FACING_MIN = -695
@@ -48,6 +53,7 @@ local DEFAULT_TEXT_OPACITY = 100
 local DEFAULT_DISPLAY_SCALE = 100
 local DEFAULT_COMBO_TIMER_DURATION = 30
 local DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY = true
+local DEFAULT_COLOR_LABEL_WHEN_CAPPED = true
 local DEFAULT_CLEAR_ON_DAMAGE = false
 local DEFAULT_CLEAR_ON_BLOCK = false
 local DEFAULT_UPDATE_ON_DAMAGE = true
@@ -81,8 +87,8 @@ local COLUMN_DEFS = {
     { id = "hit_damage", label = "Damage", width = 76, default_visible = true },
     { id = "damage",   label = "Damage",   width = 76, unit_id = "damage", percent_max = 10000, color_max = 10000 },
     { id = "p1_drive", label = "P1 Drive", width = 92, unit_id = "drive",  percent_max = 60000, color_max = 60000 },
-    { id = "p1_super", label = "P1 Super", width = 88, unit_id = "super",  percent_max = 30000, color_max = 30000 },
     { id = "p2_drive", label = "P2 Drive", width = 92, unit_id = "drive",  percent_max = 60000, color_max = 60000 },
+    { id = "p1_super", label = "P1 Super", width = 88, unit_id = "super",  percent_max = 30000, color_max = 30000 },
     { id = "p2_super", label = "P2 Super", width = 88, unit_id = "super",  percent_max = 30000, color_max = 30000, default_visible = false },
     { id = "p1_carry", label = "P1 Carry", width = 59, percent_width = 63, unit_id = "carry", percent_max = CARRY_TOTAL_MAX, color_max = CARRY_TOTAL_MAX, default_visible = true },
     { id = "p2_carry", label = "P2 Carry", width = 59, percent_width = 63, unit_id = "carry", percent_max = CARRY_TOTAL_MAX, color_max = CARRY_TOTAL_MAX, default_visible = false },
@@ -125,6 +131,7 @@ Config.settings = {
     display_text_opacity = DEFAULT_TEXT_OPACITY,
     display_scale = DEFAULT_DISPLAY_SCALE,
     hide_builtin_attack_data_display = DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY,
+    color_label_when_capped = DEFAULT_COLOR_LABEL_WHEN_CAPPED,
     unit_display = {
         damage = DEFAULT_UNIT_MODES.damage,
         drive = DEFAULT_UNIT_MODES.drive,
@@ -262,6 +269,11 @@ function Config.ensure_display_settings()
 
     if Config.settings.hide_builtin_attack_data_display == nil then
         Config.settings.hide_builtin_attack_data_display = DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY
+        changed = true
+    end
+
+    if Config.settings.color_label_when_capped == nil then
+        Config.settings.color_label_when_capped = DEFAULT_COLOR_LABEL_WHEN_CAPPED
         changed = true
     end
 
@@ -528,6 +540,7 @@ function Config.display_defaults_selected()
         and (tonumber(Config.settings.display_scale) or DEFAULT_DISPLAY_SCALE) == DEFAULT_DISPLAY_SCALE
         and (tonumber(Config.settings.combo_timer_duration) or DEFAULT_COMBO_TIMER_DURATION) == DEFAULT_COMBO_TIMER_DURATION
         and Config.settings.hide_builtin_attack_data_display == DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY
+        and Config.settings.color_label_when_capped == DEFAULT_COLOR_LABEL_WHEN_CAPPED
 end
 function Config.reset_display_defaults()
     Config.settings.display_background_opacity = DEFAULT_BACKGROUND_OPACITY
@@ -535,6 +548,7 @@ function Config.reset_display_defaults()
     Config.settings.display_scale = DEFAULT_DISPLAY_SCALE
     Config.settings.combo_timer_duration = DEFAULT_COMBO_TIMER_DURATION
     Config.settings.hide_builtin_attack_data_display = DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY
+    Config.settings.color_label_when_capped = DEFAULT_COLOR_LABEL_WHEN_CAPPED
 end
 function Config.column_visibility_defaults_selected()
     for _, key in ipairs({ "column_visibility_p1", "column_visibility_p2" }) do
@@ -609,6 +623,49 @@ function Config.init()
             end, true)
         Utils.setup_hook("app.BattleManager", "BattleStart", nil,
             function() ComboData.default_state() end, true)
+        -- Round-result transitions should keep the display visible briefly,
+        -- then clear either on timeout or as soon as the next phase starts.
+        -- Use preserving hooks so the original flow return values are kept.
+        for _, method_name in ipairs({
+            "startRoundResult",
+            "startReplayRoundResult",
+            "startTeamVersusRoundResult",
+        }) do
+            Utils.setup_preserving_hook("app.battle.bBattleFlow", method_name,
+                function()
+                    ComboData.queue_round_result_linger(method_name)
+                end,
+                true)
+        end
+
+        -- Postgame/battle-result transitions should clear immediately.
+        for _, method_name in ipairs({
+            "startBattleResult",
+            "startLocalBattleResult",
+            "startMatchingBattleResult",
+            "startOnlineTeamBattleResult",
+            "startReplayBattleResult",
+            "startSpectateBattleResult",
+            "startTutorialResult",
+            "startComboTrialResult",
+            "startExamCpuBattleResult",
+            "startCabinetCpuBattleResult",
+            "startCharacterGuideResult",
+        }) do
+            Utils.setup_preserving_hook("app.battle.bBattleFlow", method_name,
+                function()
+                    ComboData.queue_result_screen_clear(method_name)
+                end,
+                true)
+        end
+        -- Runtime inspection showed the replay [PLAYER] WINS path living in
+        -- updateReplayResultMenu. Queue the clear from a return-preserving hook,
+        -- then perform the reset/fadeout safely on on_frame.
+        Utils.setup_preserving_hook("app.battle.bBattleFlow", "updateReplayResultMenu",
+            function()
+                ComboData.queue_result_screen_clear("updateReplayResultMenu")
+            end,
+            true)
         -- Hook SaveSnapShot and LoadSnapShot to save/restore Attack Info display values
         -- per snapshot slot. This preserves Carry/Gap/Drive values when loading a saved
         -- training state mid-combo.
@@ -658,6 +715,24 @@ function Utils.setup_hook(type_name, method_name, pre_func, post_func, ignore_ca
         local method = type_def:get_method(method_name)
         if method then sdk.hook(method, pre_func, post_func, false, ignore_caller == true) end
     end
+end
+
+function Utils.setup_preserving_hook(type_name, method_name, post_func, ignore_caller)
+    local type_def = sdk.find_type_definition(type_name)
+    if not type_def then return end
+
+    local method = type_def:get_method(method_name)
+    if not method then return end
+
+    sdk.hook(method,
+        function(args)
+            return sdk.PreHookResult.CALL_ORIGINAL
+        end,
+        function(retval)
+            if post_func then post_func(retval) end
+            return retval
+        end,
+        false, ignore_caller == true)
 end
 
 function Utils.parse_frame_value(value)
@@ -1077,7 +1152,69 @@ ComboData.runtime_state = {
     debug_log_queue = {},
     debug_log_flush_skip_counter = 0,
     debug_logging_was_enabled = false,
+    pending_result_screen_clear = false,
+    pending_result_screen_clear_reason = nil,
+    round_result_linger_frames = 0,
+    result_screen_suppressed = false,
 }
+
+function ComboData.queue_result_screen_clear(reason)
+    ComboData.runtime_state.pending_result_screen_clear = true
+    ComboData.runtime_state.pending_result_screen_clear_reason = reason or "unknown"
+    ComboData.runtime_state.round_result_linger_frames = 0
+    ComboData.runtime_state.result_screen_suppressed = true
+end
+
+function ComboData.queue_round_result_linger(reason)
+    local runtime_state = ComboData.runtime_state
+    runtime_state.pending_result_screen_clear = false
+    runtime_state.pending_result_screen_clear_reason = nil
+    runtime_state.result_screen_suppressed = false
+    runtime_state.round_result_linger_frames = math.max(
+        tonumber(runtime_state.round_result_linger_frames) or 0,
+        ROUND_RESULT_LINGER_FRAMES
+    )
+end
+
+function ComboData.is_result_screen_active()
+    return ComboData.runtime_state.result_screen_suppressed == true
+end
+
+function ComboData.tick_result_screen_active()
+    local runtime_state = ComboData.runtime_state
+    local frames = tonumber(runtime_state.round_result_linger_frames) or 0
+    if frames > 0 then
+        frames = frames - 1
+        runtime_state.round_result_linger_frames = frames
+        if frames <= 0 and runtime_state.result_screen_suppressed ~= true then
+            runtime_state.result_screen_suppressed = true
+            runtime_state.pending_result_screen_clear = true
+            runtime_state.pending_result_screen_clear_reason = "round_result_linger_timeout"
+        end
+    end
+end
+
+function ComboData.process_pending_result_screen_clear()
+    local runtime_state = ComboData.runtime_state
+    if runtime_state.pending_result_screen_clear ~= true then return end
+
+    runtime_state.pending_result_screen_clear = false
+    local reason = runtime_state.pending_result_screen_clear_reason or "unknown"
+    runtime_state.pending_result_screen_clear_reason = nil
+    runtime_state.result_screen_suppressed = true
+    runtime_state.round_result_linger_frames = 0
+    ComboData.debug_log("RESULT_SCREEN_CLEAR reason=" .. tostring(reason), "log_display_clear")
+    ComboData.default_state()
+    UI.clear_all_fadeouts()
+end
+
+function ComboData.reset_result_screen_state()
+    local runtime_state = ComboData.runtime_state
+    runtime_state.pending_result_screen_clear = false
+    runtime_state.pending_result_screen_clear_reason = nil
+    runtime_state.round_result_linger_frames = 0
+    runtime_state.result_screen_suppressed = false
+end
 
 function ComboData.debug_log(message, cat, force)
     if force ~= true and Config.settings.toggle_enable_debug_logging ~= true then return false end
@@ -1161,11 +1298,13 @@ function ComboData.sync_gameplay_state(in_battle, round_no)
 
     if runtime_state.was_in_battle ~= in_battle then
         ComboData.debug_log("ROUND_START in_battle=" .. tostring(in_battle) .. " round_no=" .. tostring(round_no), "log_start_finish_values")
+        ComboData.reset_result_screen_state()
         ComboData.default_state()
         UI.begin_fadeout(0)
         UI.begin_fadeout(1)
     elseif in_battle and runtime_state.last_round_no ~= nil and round_no ~= nil and round_no ~= runtime_state.last_round_no then
         ComboData.debug_log("ROUND_START round_no=" .. tostring(round_no) .. " (was " .. tostring(runtime_state.last_round_no) .. ")", "log_start_finish_values")
+        ComboData.reset_result_screen_state()
         ComboData.default_state()
         UI.begin_fadeout(0)
         UI.begin_fadeout(1)
@@ -3142,10 +3281,13 @@ function ComboData.clear_finished_display_box(player_index, reason)
 end
 
 function ComboData.clear_defender_display_box_for_incoming_attack(attacker_index, attack_kind)
-    if attack_kind ~= "hit" and attack_kind ~= "block" then return false end
+    -- Throws need the same defender-panel eviction as strikes. Without this,
+    -- a finished self-state can survive into a round-ending throw and the
+    -- defender window resolves to stale totals instead of Damage Taken.
+    if attack_kind ~= "hit" and attack_kind ~= "throw" and attack_kind ~= "block" then return false end
 
     local should_clear = Config.settings.toggle_clear_on_damage == true
-        or (attack_kind == "hit" and Config.settings.toggle_update_on_damage == true)
+        or ((attack_kind == "hit" or attack_kind == "throw") and Config.settings.toggle_update_on_damage == true)
     if attack_kind == "block" then
         should_clear = Config.settings.toggle_clear_on_block == true
             or Config.settings.toggle_update_on_block == true
@@ -3769,6 +3911,16 @@ function ComboData.update_state(p1, p2)
                     end
                     ComboData.update_combo_damage_lock(state, attacker_key, current_finish)
 
+                    -- For throws/attacks ending the round without game combo_damage,
+                    -- populate combo_damage_lock from hit_damage_lock scaled_damage
+                    -- so the Total column shows the throw damage correctly.
+                    if (combo_ended or round_ended or ko_pending) and (state.combo_damage_lock == nil or (tonumber(state.combo_damage_lock) or 0) <= 0) then
+                        local scaled = tonumber(state.hit_damage_lock and state.hit_damage_lock.scaled_damage) or 0
+                        if scaled > 0 then
+                            state.combo_damage_lock = scaled
+                        end
+                    end
+
                     if combo_ended or round_ended or ko_pending then
                         state.finished, state.started = true, false
                         state.ended_in_knockdown = ended_in_knockdown == true
@@ -3983,10 +4135,13 @@ UI.small_font = 17
 UI.font_cache = {}
 UI.gradient_max = {100, 10000, 60000, 30000, 60000, 30000, 1530, 1530, 490, 80}
 UI.hit_damage_scaling_color_smoothing_frames = 40
+UI.zero_fade_smoothing_frames = 25
 UI.hit_damage_scaling_color_state = UI.hit_damage_scaling_color_state or {}
 UI.hit_damage_scaling_color_active_key = UI.hit_damage_scaling_color_active_key or {}
 UI.gradient_color_state = UI.gradient_color_state or {}
 UI.gradient_color_active_key = UI.gradient_color_active_key or {}
+UI.label_color_state = UI.label_color_state or {}
+UI.label_color_smoothing_frames = 13
 UI.minimum_combo_window_width = 220
 UI.window_padding_width = 44
 UI.display_box_rounding = 10
@@ -4208,7 +4363,7 @@ function UI.yellow_to_red_rgb_color(v, max_val)
     return r, g, 0
 end
 
-function UI.smoothed_gradient_rgb_color(key, target_r, target_g, target_b, target_identity)
+function UI.smoothed_gradient_rgb_color(key, target_r, target_g, target_b, target_identity, fast_frames, carry_r, carry_g, carry_b)
     key = key or "default"
     target_r = Utils.clamp(math.floor((tonumber(target_r) or 0) + 0.5), 0, 255)
     target_g = Utils.clamp(math.floor((tonumber(target_g) or 0) + 0.5), 0, 255)
@@ -4216,17 +4371,21 @@ function UI.smoothed_gradient_rgb_color(key, target_r, target_g, target_b, targe
 
     local color_key = tostring(target_r) .. ":" .. tostring(target_g) .. ":" .. tostring(target_b)
     local target_key = target_identity and tostring(target_identity) or color_key
-    local smoothing_frames = math.max(1, tonumber(UI.hit_damage_scaling_color_smoothing_frames) or 40)
+    local smoothing_frames = math.max(1, tonumber(fast_frames) or tonumber(UI.hit_damage_scaling_color_smoothing_frames) or 40)
 
     local smooth = UI.gradient_color_state[key]
     if not smooth then
+        local has_carry = carry_r ~= nil
+        local start_r = has_carry and Utils.clamp(math.floor((tonumber(carry_r) or 0) + 0.5), 0, 255) or target_r
+        local start_g = has_carry and Utils.clamp(math.floor((tonumber(carry_g) or 0) + 0.5), 0, 255) or target_g
+        local start_b = has_carry and Utils.clamp(math.floor((tonumber(carry_b) or 0) + 0.5), 0, 255) or target_b
         smooth = {
-            r = target_r,
-            g = target_g,
-            b = target_b,
-            start_r = target_r,
-            start_g = target_g,
-            start_b = target_b,
+            r = start_r,
+            g = start_g,
+            b = start_b,
+            start_r = start_r,
+            start_g = start_g,
+            start_b = start_b,
             target_r = target_r,
             target_g = target_g,
             target_b = target_b,
@@ -4237,10 +4396,16 @@ function UI.smoothed_gradient_rgb_color(key, target_r, target_g, target_b, targe
             queued_target_b = nil,
             queued_target_key = nil,
             queued_target_color_key = nil,
-            frame = smoothing_frames,
+            frame = has_carry and 0 or smoothing_frames,
             fast_forward = false,
         }
         UI.gradient_color_state[key] = smooth
+        if has_carry then
+            local t = Utils.clamp(smooth.frame / smoothing_frames, 0, 1)
+            smooth.r = smooth.start_r + ((smooth.target_r - smooth.start_r) * t)
+            smooth.g = smooth.start_g + ((smooth.target_g - smooth.start_g) * t)
+            smooth.b = smooth.start_b + ((smooth.target_b - smooth.start_b) * t)
+        end
         return UI.rgb_to_hex_color(smooth.r, smooth.g, smooth.b)
     end
 
@@ -4289,7 +4454,12 @@ function UI.smoothed_gradient_rgb_color(key, target_r, target_g, target_b, targe
 
     is_active = (smooth.frame or smoothing_frames) < smoothing_frames
     if is_active then
-        local frame_step = smooth.fast_forward and 1.33 or 1
+        local base_step = smooth.fast_forward and 1.33 or 1
+        local dr = (smooth.target_r or 0) - (smooth.r or 0)
+        local dg = (smooth.target_g or 0) - (smooth.g or 0)
+        local db = (smooth.target_b or 0) - (smooth.b or 0)
+        local color_dist = math.sqrt(dr * dr + dg * dg + db * db)
+        local frame_step = base_step * (1 + (color_dist / 441.0) * 3)
         smooth.frame = math.min(smoothing_frames, (smooth.frame or 0) + frame_step)
         local t = Utils.clamp(smooth.frame / smoothing_frames, 0, 1)
         smooth.r = smooth.start_r + ((smooth.target_r - smooth.start_r) * t)
@@ -4343,17 +4513,80 @@ function UI.get_gradient_color_combo_key(state, column, kind)
     return active_scope, active_scope .. ":" .. combo_identity
 end
 
-function UI.smoothed_gradient_color_for_state(state, column, kind, target_r, target_g, target_b, target_identity)
+function UI.smoothed_gradient_color_for_state(state, column, kind, target_r, target_g, target_b, target_identity, fast_frames)
     local active_scope, combo_key = UI.get_gradient_color_combo_key(state, column, kind)
     local old_key = UI.gradient_color_active_key[active_scope]
+    local carry_r, carry_g, carry_b
     if old_key ~= combo_key then
-        if old_key then
+        if old_key and UI.gradient_color_state[old_key] then
+            local old = UI.gradient_color_state[old_key]
+            -- Carry over the current color ONLY when the previous state was a
+            -- zero-fade (white). This lets 0→non-zero values fade from white to
+            -- the target color instead of snapping. Normal combo-to-combo
+            -- transitions still snap (no carry) as intended.
+            if old.target_key and string.find(old.target_key, "_zero", 1, true) then
+                carry_r = old.r
+                carry_g = old.g
+                carry_b = old.b
+            end
             UI.gradient_color_state[old_key] = nil
         end
         UI.gradient_color_active_key[active_scope] = combo_key
     end
 
-    return UI.smoothed_gradient_rgb_color(combo_key, target_r, target_g, target_b, target_identity)
+    return UI.smoothed_gradient_rgb_color(combo_key, target_r, target_g, target_b, target_identity, fast_frames, carry_r, carry_g, carry_b)
+end
+
+function UI.smoothed_label_color(key, color_state)
+    key = key or "default"
+    color_state = color_state or "default"
+    local target_r, target_g, target_b
+    if color_state == "maxed" then
+        target_r, target_g, target_b = 0xD0, 0xFF, 0xD0
+    elseif color_state == "burnout" then
+        target_r, target_g, target_b = 0xFF, 0xD0, 0xD0
+    else
+        target_r, target_g, target_b = 0xFF, 0xFF, 0xFF
+    end
+
+    local smooth = UI.label_color_state[key]
+    local frames = UI.label_color_smoothing_frames
+    if not smooth then
+        smooth = {
+            r = 0xFF, g = 0xFF, b = 0xFF,
+            start_r = 0xFF, start_g = 0xFF, start_b = 0xFF,
+            target_r = target_r, target_g = target_g, target_b = target_b,
+            frame = frames,
+        }
+        UI.label_color_state[key] = smooth
+    end
+
+    if smooth.target_r ~= target_r or smooth.target_g ~= target_g or smooth.target_b ~= target_b then
+        smooth.start_r = smooth.r
+        smooth.start_g = smooth.g
+        smooth.start_b = smooth.b
+        smooth.target_r = target_r
+        smooth.target_g = target_g
+        smooth.target_b = target_b
+        smooth.frame = 0
+    end
+
+    if smooth.frame < frames then
+        smooth.frame = smooth.frame + 1
+        local t = Utils.clamp(smooth.frame / frames, 0, 1)
+        smooth.r = smooth.start_r + ((smooth.target_r - smooth.start_r) * t)
+        smooth.g = smooth.start_g + ((smooth.target_g - smooth.start_g) * t)
+        smooth.b = smooth.start_b + ((smooth.target_b - smooth.start_b) * t)
+    else
+        smooth.r = smooth.target_r
+        smooth.g = smooth.target_g
+        smooth.b = smooth.target_b
+    end
+
+    return UI.apply_opacity_to_color(
+        UI.rgb_to_hex_color(smooth.r, smooth.g, smooth.b),
+        UI.get_display_text_opacity()
+    )
 end
 function UI.smoothed_value_to_hex_color_for_state(state, column, v, max_val)
     local r, g, b = UI.value_to_rgb_color(v, max_val)
@@ -4413,11 +4646,16 @@ end
 
 function UI.opposing_drive_to_rgb_color(v)
     return UI.rgb_from_gradient_anchors(v, {
-        { -20000,   0, 255,   0 }, -- full green at -20000
-        { -10000, 176, 255,   0 }, -- soft green at -10000
+        -- Opponent Drive should reward larger spends/losses: lower values trend green,
+        -- while gains trend back through yellow into orange/red.
+        { -60000,   0, 255,   0 }, -- full green at -60000 / burnout
+        { -30000,  51, 255,   0 }, -- 80% green at -30000
+        { -10000, 176, 255,   0 }, -- partial green at -10000
         { 0,      255, 255,   0 }, -- yellow at 0
-        { 7500,   255, 128,   0 }, -- orange at +7500
-        { 15000,  255,   0,   0 }, -- full red at +15000
+        { 10000,  255, 255,   0 }, -- yellow at +10000
+        { 15000,  255, 165,   0 }, -- orange at +15000
+        { 20000,  255,  51,   0 }, -- mostly red at +20000
+        { 30000,  255,   0,   0 }, -- fully red at +30000
     })
 end
 
@@ -4425,9 +4663,12 @@ function UI.self_super_to_rgb_color(v)
     return UI.rgb_from_gradient_anchors(v, {
         { -30000, 255,   0,   0 }, -- fully red at -30000
         { 0,     255, 128,   0 }, -- orange at 0
-        { 3000,  255, 255,   0 }, -- yellow at +3000
-        { 5000,   64, 255,   0 }, -- mostly green at +5000
-        { 13000,   0, 255,   0 }, -- fully green at +13000
+        { 1000,  255, 255,   0 }, -- yellow at +1000
+        { 2500,  200, 255,   0 }, -- yellow and light green at +2500
+        { 5000,  160, 255,   0 }, -- slightly green at +5000
+        { 8000,   64, 255,   0 }, -- mostly green at +8000
+        { 10000,  32, 255,   0 }, -- almost fully green at +10000
+        { 15000,   0, 255,   0 }, -- fully green at +15000
     })
 end
 function UI.carry_total_to_rgb_color(v, max_value)
@@ -4453,6 +4694,23 @@ function UI.opposing_carry_total_to_rgb_color(v, max_value)
         { carry_max * 0.75,    0, 255,   0 }, -- full green at +75%
     })
 end
+
+-- Spacing/Gap gradient: white at 0, yellow at 100% (color_max).
+function UI.gap_to_rgb_color(v, max_value)
+    local gap_max = math.max(1, tonumber(max_value) or 490)
+    return UI.rgb_from_gradient_anchors(v, {
+        { 0,         255, 255, 255 }, -- white at 0
+        { gap_max * 0.62, 255, 255, 128 }, -- pale yellow at 62%
+        { gap_max,   255, 255,   0 }, -- full yellow at 100%
+    })
+end
+
+function UI.smoothed_gap_to_hex_color_for_state(state, column, v, max_value)
+    local gap_max = math.max(1, tonumber(max_value) or 490)
+    local r, g, b = UI.gap_to_rgb_color(v, gap_max)
+    local target_identity = UI.get_gradient_target_identity("gap", v, gap_max)
+    return UI.smoothed_gradient_color_for_state(state, column, "gap", r, g, b, target_identity)
+end
 function UI.smoothed_self_drive_to_hex_color_for_state(state, column, v)
     local r, g, b = UI.self_drive_to_rgb_color(v)
     local target_identity = UI.get_gradient_target_identity("self_drive", v, 60000)
@@ -4469,6 +4727,44 @@ function UI.smoothed_self_super_to_hex_color_for_state(state, column, v)
     local r, g, b = UI.self_super_to_rgb_color(v)
     local target_identity = UI.get_gradient_target_identity("self_super", v, 30000)
     return UI.smoothed_gradient_color_for_state(state, column, "self_super", r, g, b, target_identity)
+end
+
+-- Opponent Super: inverse of self Super. Opponent gaining meter is bad for this
+-- player (red), opponent losing meter is good (green).
+function UI.opposing_super_to_rgb_color(v)
+    return UI.rgb_from_gradient_anchors(v, {
+        { -30000,   0, 255,   0 }, -- maximum green at -30000
+        { -20000,  80, 255,   0 }, -- more green at -20000
+        { -10000, 160, 255,   0 }, -- mildly green at -10000
+        { -5000,  220, 255,   0 }, -- slightly green at -5000
+        { -3250,  255, 255,   0 }, -- yellow at -3250
+        { 0,      255, 255,   0 }, -- yellow at 0
+        { 3250,   255, 255,   0 }, -- yellow at +3250
+        { 6500,   255, 165,   0 }, -- orange at +6500
+        { 10000,  255,  51,   0 }, -- mostly red at +10000
+        { 15000,  255,   0,   0 }, -- fully red at +15000
+    })
+end
+
+function UI.smoothed_opposing_super_to_hex_color_for_state(state, column, v)
+    local r, g, b = UI.opposing_super_to_rgb_color(v)
+    local target_identity = UI.get_gradient_target_identity("opposing_super", v, 30000)
+    return UI.smoothed_gradient_color_for_state(state, column, "opposing_super", r, g, b, target_identity)
+end
+
+-- Fast fade-to-white for zero-valued Drive/Super/Damage totals. Reuses the
+-- currently active gradient state entry for this column scope so the smoother
+-- transitions from the previous colored value to white instead of snapping
+-- (the combo-key change from a combo reset would otherwise clear the old state
+-- before the zero-fade can read it).
+function UI.smoothed_zero_to_white_for_state(state, column, kind)
+    local active_scope = UI.get_gradient_color_combo_key(state, column, kind)
+    local active_key = UI.gradient_color_active_key[active_scope]
+    local target_identity = UI.get_gradient_target_identity(kind .. "_zero", 0, 0)
+    if active_key and UI.gradient_color_state[active_key] then
+        return UI.smoothed_gradient_rgb_color(active_key, 255, 255, 255, target_identity, UI.zero_fade_smoothing_frames)
+    end
+    return UI.smoothed_gradient_color_for_state(state, column, kind, 255, 255, 255, target_identity, UI.zero_fade_smoothing_frames)
 end
 function UI.smoothed_carry_total_to_hex_color_for_state(state, column, v, max_value)
     local carry_max = math.max(1, tonumber(max_value) or 1530)
@@ -4491,21 +4787,32 @@ function UI.hit_damage_scaling_color(scaling)
     return UI.rgb_to_hex_color(r, g, b)
 end
 
-function UI.smoothed_hit_damage_scaling_color(key, scaling)
+function UI.smoothed_hit_damage_scaling_color(key, scaling, override_r, override_g, override_b, fast_frames, carry_r, carry_g, carry_b)
     key = key or "default"
-    local target_r, target_g, target_b = UI.hit_damage_scaling_rgb(scaling)
+    local target_r, target_g, target_b
+    if override_r ~= nil then
+        target_r = Utils.clamp(math.floor((tonumber(override_r) or 0) + 0.5), 0, 255)
+        target_g = Utils.clamp(math.floor((tonumber(override_g) or 0) + 0.5), 0, 255)
+        target_b = Utils.clamp(math.floor((tonumber(override_b) or 0) + 0.5), 0, 255)
+    else
+        target_r, target_g, target_b = UI.hit_damage_scaling_rgb(scaling)
+    end
     local target_key = tostring(target_r) .. ":" .. tostring(target_g) .. ":" .. tostring(target_b)
-    local smoothing_frames = math.max(1, tonumber(UI.hit_damage_scaling_color_smoothing_frames) or 40)
+    local smoothing_frames = math.max(1, tonumber(fast_frames) or tonumber(UI.hit_damage_scaling_color_smoothing_frames) or 40)
 
     local smooth = UI.hit_damage_scaling_color_state[key]
     if not smooth then
+        local has_carry = carry_r ~= nil
+        local start_r = has_carry and Utils.clamp(math.floor((tonumber(carry_r) or 0) + 0.5), 0, 255) or target_r
+        local start_g = has_carry and Utils.clamp(math.floor((tonumber(carry_g) or 0) + 0.5), 0, 255) or target_g
+        local start_b = has_carry and Utils.clamp(math.floor((tonumber(carry_b) or 0) + 0.5), 0, 255) or target_b
         smooth = {
-            r = target_r,
-            g = target_g,
-            b = target_b,
-            start_r = target_r,
-            start_g = target_g,
-            start_b = target_b,
+            r = start_r,
+            g = start_g,
+            b = start_b,
+            start_r = start_r,
+            start_g = start_g,
+            start_b = start_b,
             target_r = target_r,
             target_g = target_g,
             target_b = target_b,
@@ -4514,10 +4821,16 @@ function UI.smoothed_hit_damage_scaling_color(key, scaling)
             queued_target_g = nil,
             queued_target_b = nil,
             queued_target_key = nil,
-            frame = smoothing_frames,
+            frame = has_carry and 0 or smoothing_frames,
             fast_forward = false,
         }
         UI.hit_damage_scaling_color_state[key] = smooth
+        if has_carry then
+            local t = Utils.clamp(smooth.frame / smoothing_frames, 0, 1)
+            smooth.r = smooth.start_r + ((smooth.target_r - smooth.start_r) * t)
+            smooth.g = smooth.start_g + ((smooth.target_g - smooth.start_g) * t)
+            smooth.b = smooth.start_b + ((smooth.target_b - smooth.start_b) * t)
+        end
         return UI.rgb_to_hex_color(smooth.r, smooth.g, smooth.b)
     end
 
@@ -4566,7 +4879,12 @@ function UI.smoothed_hit_damage_scaling_color(key, scaling)
 
     is_active = (smooth.frame or smoothing_frames) < smoothing_frames
     if is_active then
-        local frame_step = smooth.fast_forward and 1.33 or 1
+        local base_step = smooth.fast_forward and 1.33 or 1
+        local dr = (smooth.target_r or 0) - (smooth.r or 0)
+        local dg = (smooth.target_g or 0) - (smooth.g or 0)
+        local db = (smooth.target_b or 0) - (smooth.b or 0)
+        local color_dist = math.sqrt(dr * dr + dg * dg + db * db)
+        local frame_step = base_step * (1 + (color_dist / 441.0) * 3)
         smooth.frame = math.min(smoothing_frames, (smooth.frame or 0) + frame_step)
         local t = Utils.clamp(smooth.frame / smoothing_frames, 0, 1)
         smooth.r = smooth.start_r + ((smooth.target_r - smooth.start_r) * t)
@@ -4615,14 +4933,37 @@ end
 function UI.smoothed_hit_damage_scaling_color_for_state(state, scaling)
     local player_key, combo_key = UI.get_hit_damage_scaling_color_key(state)
     local old_key = UI.hit_damage_scaling_color_active_key[player_key]
+    local carry_r, carry_g, carry_b
     if old_key ~= combo_key then
-        if old_key then
+        if old_key and UI.hit_damage_scaling_color_state[old_key] then
+            local old = UI.hit_damage_scaling_color_state[old_key]
+            if old.target_key and string.find(old.target_key, "255:255:255", 1, true) then
+                carry_r = old.r
+                carry_g = old.g
+                carry_b = old.b
+            end
             UI.hit_damage_scaling_color_state[old_key] = nil
         end
         UI.hit_damage_scaling_color_active_key[player_key] = combo_key
     end
 
+    if carry_r ~= nil then
+        return UI.smoothed_hit_damage_scaling_color(combo_key, scaling, nil, nil, nil, nil, carry_r, carry_g, carry_b)
+    end
     return UI.smoothed_hit_damage_scaling_color(combo_key, scaling)
+end
+
+-- Fast fade-to-white for zero-valued hit_damage, reusing the active hit_damage
+-- scaling state entry so the transition starts from the previous colored value.
+function UI.smoothed_hit_damage_zero_to_white_for_state(state)
+    local player_key = "p" .. tostring(((state and state.attacker) or 0) + 1)
+    local active_key = UI.hit_damage_scaling_color_active_key[player_key]
+    if active_key and UI.hit_damage_scaling_color_state[active_key] then
+        return UI.smoothed_hit_damage_scaling_color(active_key, nil, 255, 255, 255, UI.zero_fade_smoothing_frames)
+    end
+    local _, combo_key = UI.get_hit_damage_scaling_color_key(state)
+    UI.hit_damage_scaling_color_active_key[player_key] = combo_key
+    return UI.smoothed_hit_damage_scaling_color(combo_key, nil, 255, 255, 255, UI.zero_fade_smoothing_frames)
 end
 
 function UI.value_to_hex_color(v, max_val)
@@ -5191,12 +5532,11 @@ function UI.format_column_value(v, column, percent_max, carry_percent_mode, carr
 end
 
 function UI.format_carry_display_value(v, column, percent_max, carry_percent_mode, carry_percent_override)
-    if v == nil then
-        return "-"
-    end
-
-    if v == 0 then
-        return "-"
+    if v == nil or v == 0 then
+        if column and column.unit_id and UI.get_unit_mode(column.unit_id) == "percent" then
+            return "0%"
+        end
+        return "0"
     end
 
     return UI.format_column_value(v, column, percent_max, carry_percent_mode, carry_percent_override)
@@ -5302,8 +5642,8 @@ function UI.get_percent_max_values(state)
     return {
         nil,
         damage_max,
-        60000, 30000,
-        60000, 30000,
+        60000, 60000,
+        30000, 30000,
         CARRY_TOTAL_MAX, CARRY_TOTAL_MAX,
         490,
         nil,
@@ -5361,7 +5701,7 @@ function UI.get_combo_damage_value(state, is_p1)
     local hp_current = tonumber(finish_def.hp_current) or hp_start
     local hp_delta = math.max(0, hp_start - hp_current)
     local total
-    if state.poison_was_active or hp_delta > combo_dmg then
+    if state.poison_was_active or (hp_delta > combo_dmg and not (locked_combo_damage_total > 0 and (state.hit_damage_lock_frozen or (state.finished and not state.started)))) then
         total = math.max(combo_dmg, hp_delta)
     elseif state and locked_combo_damage_total > 0 and (state.hit_damage_lock_frozen or (state.finished and not state.started)) then
         total = locked_combo_damage_total
@@ -5746,8 +6086,8 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
             values = {
                 hit_damage_start,
                 start_defender_hp,
-                start_p1.drive_adjusted or 0, start_p1.super or 0,
-                start_p2.drive_adjusted or 0, start_p2.super or 0,
+                start_p1.drive_adjusted or 0, start_p2.drive_adjusted or 0,
+                start_p1.super or 0, start_p2.super or 0,
                 start_p2.pos_x or 0, start_p1.pos_x or 0, UI.get_gap_value(start_p1.gap), 0
             }
         })
@@ -5767,8 +6107,8 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
             values = {
                 hit_damage_finish,
                 (is_p1 and state.finish.p2.hp_current or state.finish.p1.hp_current) or 0,
-                state.finish.p1.drive_adjusted or 0, state.finish.p1.super or 0,
-                state.finish.p2.drive_adjusted or 0, state.finish.p2.super or 0,
+                state.finish.p1.drive_adjusted or 0, state.finish.p2.drive_adjusted or 0,
+                state.finish.p1.super or 0, state.finish.p2.super or 0,
                 (state.ko_carry_finish_p2_x or state.finish.p2.pos_x or 0), (state.ko_carry_finish_p1_x or state.finish.p1.pos_x or 0), UI.ko_suppress(state, UI.get_gap_value(state.finish.p1.gap)), 0
             }
         })
@@ -5780,6 +6120,13 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
         if combo_damage ~= nil and combo_damage > 0 then combo_damage = -combo_damage end
         advantage = -advantage
     end
+
+    -- Burnout marker roles must be panel-perspective-aware. is_p1 is the attacker's
+    -- identity (shared by defender panels), so in P2's defender panel P1's drive
+    -- would be tagged "self" (red burnout) even though P1 is P2's opponent. Resolve
+    -- roles from the panel's player_index instead.
+    local p1_role = (player_index == 0) and "self" or "opponent"
+    local p2_role = (player_index == 0) and "opponent" or "self"
 
     table.insert(rows, {
         font_size = UI.get_scaled_font_size(UI.large_font),
@@ -5795,16 +6142,16 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
                 start_p1.drive_adjusted or 0,
                 state.finish.p1.incapacitated,
                 start_p1.incapacitated,
-                is_p1 and "self" or "opponent"
+                p1_role
             ),
-            (state.finish.p1.super or 0) - (start_p1.super or 0),
             UI.adjust_drive_total(
                 state.finish.p2.drive_adjusted or 0,
                 start_p2.drive_adjusted or 0,
                 state.finish.p2.incapacitated,
                 start_p2.incapacitated,
-                is_p1 and "opponent" or "self"
+                p2_role
             ),
+            (state.finish.p1.super or 0) - (start_p1.super or 0),
             (state.finish.p2.super or 0) - (start_p2.super or 0),
             p2_carry_total,
             p1_carry_total,
@@ -5858,8 +6205,12 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
             text = UI.format_column_value(display_v, column, percent_max, carry_percent_mode, carry_percent_override)
         end
         local is_p1_window = state and state.attacker == 0
-        local is_opposing_drive = (is_p1_window and column.id == "p2_drive") or (not is_p1_window and column.id == "p1_drive")
-        local is_opposing_super = (is_p1_window and column.id == "p2_super") or (not is_p1_window and column.id == "p1_super")
+        -- Opposing vs self must be resolved per-panel (player_index), not from the
+        -- shared attacker identity. Defender panels reuse the attacker's state, so
+        -- is_p1_window would otherwise flag the defender's OWN drive/super as
+        -- "opposing" and apply the wrong gradient (green for a self-spend).
+        local is_opposing_drive = (player_index == 0 and column.id == "p2_drive") or (player_index == 1 and column.id == "p1_drive")
+        local is_opposing_super = (player_index == 0 and column.id == "p2_super") or (player_index == 1 and column.id == "p1_super")
         local is_carry = column.id == "p1_carry" or column.id == "p2_carry"
         local is_opposing_carry = is_carry and ((is_p1_window and column.id == "p1_carry") or ((not is_p1_window) and column.id == "p2_carry"))
         local is_window_opponent_drive = (player_index == 0 and column.id == "p2_drive") or (player_index == 1 and column.id == "p1_drive")
@@ -5892,14 +6243,21 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
         end
 
         UI.center_text(text, w, function()
-                if is_gap then
+                if is_gap and not is_color then
                     UI.draw_text_with_black_stroke(text)
                 elseif is_dash_placeholder then
                     UI.draw_text_with_black_stroke(text)
-                elseif text ~= "" and is_color and not is_dash_placeholder and (is_drive_burnout_entry or display_v_numeric ~= 0 or is_opposing_drive or is_opposing_super or column.unit_id == "super" or is_carry or (column.id == "adv" and state and (state.is_blocked or not state.ended_in_knockdown))) then
+                elseif text ~= "" and is_color and not is_dash_placeholder and (is_drive_burnout_entry or display_v_numeric ~= 0 or (column.unit_id == "drive" or column.unit_id == "super" or column.id == "hit_damage" or column.id == "damage" or is_gap) and display_v_numeric == 0 or (column.id == "adv" and state and (state.is_blocked or not state.ended_in_knockdown))) then
                     local color
                     if is_drive_burnout_entry then
                         color = is_drive_burnout_opponent_entry and UI.rgb_to_hex_color(0, 255, 0) or UI.rgb_to_hex_color(255, 0, 0)
+                    elseif display_v_numeric == 0 and (column.unit_id == "drive" or column.unit_id == "super" or column.id == "hit_damage" or column.id == "damage") then
+                        if column.id == "hit_damage" then
+                            color = UI.smoothed_hit_damage_zero_to_white_for_state(state)
+                        else
+                            local zero_kind = is_opposing_drive and "opposing_drive" or (column.unit_id == "drive" and "self_drive") or (is_opposing_super and "opposing_super") or (column.unit_id == "super" and "self_super") or "value"
+                            color = UI.smoothed_zero_to_white_for_state(state, column, zero_kind)
+                        end
                     elseif column.id == "adv" and state and state.is_blocked then
                         color = UI.advantage_block_color(display_v_numeric)
                     elseif column.id == "adv" and state and not state.ended_in_knockdown then
@@ -5928,49 +6286,30 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
                         else
                             color = UI.smoothed_value_to_hex_color_for_state(state, column, v_numeric, column.color_max)
                         end
-                    elseif is_defense and is_window_opponent_drive then
-                        -- Magnitude of opponent drive usage: yellow at +1, orange at 10000, red at 20000, deep red at 30000
-                        local abs_val = math.abs(v_numeric)
-                        local dr, dg, db = UI.rgb_from_gradient_anchors(abs_val, {
-                            { 1,      255, 255,   0 },  -- yellow at ~0
-                            { 10000,  255, 165,   0 },  -- orange at 10000
-                            { 20000,  255,   0,   0 },  -- red at 20000
-                            { 30000,  180,   0,   0 },  -- deep red at 30000
-                        })
-                        color = UI.rgb_to_hex_color(dr, dg, db)
-                    elseif is_defense and is_window_opponent_super then
-                        -- Magnitude of opponent super gauge change: yellow at +1, orange at 4000, red at 8000, deep red at 12000
-                        local abs_val = math.abs(v_numeric)
-                        local sr, sg, sb = UI.rgb_from_gradient_anchors(abs_val, {
-                            { 1,      255, 255,   0 },  -- yellow at ~0
-                            { 4000,   255, 165,   0 },  -- orange at 4000
-                            { 8000,   255,   0,   0 },  -- red at 8000
-                            { 12000,  180,   0,   0 },  -- deep red at 12000
-                        })
-                        color = UI.rgb_to_hex_color(sr, sg, sb)
+                    -- Defender-panel opponent drive/super intentionally falls through to the
+                    -- sign-aware is_opposing_drive / is_opposing_super gradients below, so a
+                    -- large opponent Drive/Super LOSS renders green (good for this player) and
+                    -- a gain renders red -- the inverse of the self gradients. The old magnitude-
+                    -- based defense overrides (abs_val -> red) were removed because they painted
+                    -- opponent losses red, contradicting the per-perspective coloring.
                     elseif is_opposing_drive then
                         color = UI.smoothed_opposing_drive_to_hex_color_for_state(state, column, v_numeric)
                     elseif column.unit_id == "drive" then
                         color = UI.smoothed_self_drive_to_hex_color_for_state(state, column, v_numeric)
                     elseif is_opposing_super then
-                        color = UI.smoothed_yellow_to_red_hex_color_for_state(state, column, v_numeric, column.color_max)
+                        color = UI.smoothed_opposing_super_to_hex_color_for_state(state, column, v_numeric)
                     elseif column.unit_id == "super" then
                         color = UI.smoothed_self_super_to_hex_color_for_state(state, column, v_numeric)
                     elseif is_carry and is_defense then
-                        -- Yellow at ~0, orange at 25%, red at 50%, deep red at 90%+
-                        local abs_val = math.abs(v_numeric)
                         local cmax = math.max(1, tonumber(percent_max or column.color_max) or 1530)
-                        local car_r, car_g, car_b = UI.rgb_from_gradient_anchors(abs_val, {
-                            { 1,            255, 255,   0 },  -- yellow at ~0%
-                            { 0.25 * cmax,  255, 165,   0 },  -- orange at 25%
-                            { 0.50 * cmax,  255,   0,   0 },  -- red at 50%
-                            { 0.90 * cmax,  180,   0,   0 },  -- deep red at 90%
-                        })
+                        local car_r, car_g, car_b = UI.carry_total_to_rgb_color(v_numeric, cmax)
                         color = UI.rgb_to_hex_color(car_r, car_g, car_b)
                     elseif is_opposing_carry then
                         color = UI.smoothed_opposing_carry_total_to_hex_color_for_state(state, column, v_numeric, percent_max or column.color_max)
                     elseif is_carry then
                         color = UI.smoothed_carry_total_to_hex_color_for_state(state, column, v_numeric, percent_max or column.color_max)
+                    elseif is_gap then
+                        color = UI.smoothed_gap_to_hex_color_for_state(state, column, v_numeric, percent_max or column.color_max)
                     else
                         color = UI.value_to_hex_color(v_numeric, column.color_max)
                     end
@@ -6041,6 +6380,28 @@ function UI.render_combo_window_table(state, player_index, is_defense)
             imgui.table_set_column_index(display_index - 1)
             local label = UI.get_combo_column_label(column, visible_columns)
             local label_color = nil
+            local label_color_state = "default"
+            if column.unit_id == "drive" or column.unit_id == "super" then
+                local label_player_idx = column.id:sub(1, 2) == "p1" and 0 or 1
+                local label_prev = label_player_idx == 0 and ComboData.p1_prev or ComboData.p2_prev
+                local label_max = column.unit_id == "drive" and 60000 or 30000
+                if label_prev and column.unit_id == "drive" and label_prev.incapacitated == true then
+                    label_color_state = "burnout"
+                elseif label_prev and column.unit_id == "drive" and tonumber(label_prev.drive_adjusted) and label_prev.drive_adjusted >= label_max then
+                    label_color_state = "maxed"
+                elseif label_prev and column.unit_id == "super" and tonumber(label_prev.super) and label_prev.super >= label_max then
+                    label_color_state = "maxed"
+                end
+            elseif column.unit_id == "carry" then
+                local carry_prev = column.id == "p1_carry" and ComboData.p2_prev or ComboData.p1_prev
+                if carry_prev and tonumber(carry_prev.pos_x) and math.abs(carry_prev.pos_x) >= 760 then
+                    label_color_state = "maxed"
+                end
+            end
+            if (column.unit_id == "drive" or column.unit_id == "super" or column.unit_id == "carry")
+                and Config.settings.color_label_when_capped ~= false then
+                label_color = UI.smoothed_label_color(column.id, label_color_state)
+            end
             UI.center_text(label, column.width, function()
                 local cursor_before = imgui.get_cursor_screen_pos()
                 local text_size = imgui.calc_text_size(label)
@@ -6073,17 +6434,19 @@ function UI.render_combo_window_table(state, player_index, is_defense)
                                   or 0
                         local draw_cd_value = cd_value
                         local draw_cd_peak = cd_peak
+                        local cd_indefinite = false
                         if cd_pending and (not draw_cd_value or draw_cd_value <= 0) then
                             local pending_peak = math.max(cd_pending_peak, cd_pending_frames)
                             draw_cd_value = math.max(0, cd_pending_frames) + 120
                             draw_cd_peak = math.max(1, pending_peak + 120)
+                            cd_indefinite = true
                         elseif draw_cd_value and draw_cd_value > 0 then
                             if cd_pending_peak_final and cd_pending_peak_final > 0 then
                                 draw_cd_peak = cd_pending_peak_final
                             end
                         end
                         local draw_list = UI.get_active_draw_list()
-                        if draw_list and draw_cd_value and draw_cd_value > 0 and draw_cd_peak and draw_cd_peak > 0 then
+                        if draw_list and draw_cd_value and draw_cd_value > 0 and draw_cd_peak and draw_cd_peak > 2 and not cd_indefinite then
                             local scale = UI.get_column_width_scale()
                             local circle_radius = math.max(1, math.floor(8 * scale + 0.5))
                             local space_width = imgui.calc_text_size(" ")
@@ -6783,6 +7146,21 @@ function UI.cancel_fadeout(player_index)
     slot.snapshot = nil
 end
 
+function UI.clear_all_fadeouts()
+    for i = 0, 1 do
+        if UI.fadeout[i] then
+            UI.fadeout[i].active = false
+            UI.fadeout[i].snapshot = nil
+        end
+        if UI.fadeout_snapshot[i] then
+            UI.fadeout_snapshot[i].state = nil
+            UI.fadeout_snapshot[i].snapshot_has_state = false
+        end
+    end
+    UI.fadeout_global_frame = 0
+    UI.fadeout_alpha_override = nil
+end
+
 function UI.render_fadeout_window(player_index)
     local slot = UI.fadeout[player_index]
     if not slot or not slot.active or not slot.snapshot then return end
@@ -6848,6 +7226,7 @@ function UI.render_display_settings()
                 Config.settings.display_scale = DEFAULT_DISPLAY_SCALE
                 Config.settings.combo_timer_duration = DEFAULT_COMBO_TIMER_DURATION
                 Config.settings.hide_builtin_attack_data_display = DEFAULT_HIDE_BUILTIN_ATTACK_DATA_DISPLAY
+                Config.settings.color_label_when_capped = DEFAULT_COLOR_LABEL_WHEN_CAPPED
                 UI.mark_for_save()
             end)
         elseif UI.confirm_active.display_defaults then
@@ -6859,6 +7238,15 @@ function UI.render_display_settings()
         changed, Config.settings.hide_builtin_attack_data_display = imgui.checkbox("##hide_builtin_attack_data_display", Config.settings.hide_builtin_attack_data_display ~= false)
         if changed then
             ComboData.debug_log("SETTING_CHANGED hide_builtin_attack_data_display=" .. tostring(Config.settings.hide_builtin_attack_data_display), "log_settings_changed")
+            UI.mark_for_save()
+        end
+
+        imgui.text("Color label when resource capped")
+        imgui.same_line()
+        local capped_changed, capped_checked = imgui.checkbox("##color_label_when_capped", Config.settings.color_label_when_capped ~= false)
+        if capped_changed then
+            Config.settings.color_label_when_capped = capped_checked == true
+            ComboData.debug_log("SETTING_CHANGED color_label_when_capped=" .. tostring(Config.settings.color_label_when_capped), "log_settings_changed")
             UI.mark_for_save()
         end
 
@@ -7623,15 +8011,22 @@ re.on_frame(function()
             end
         end
 
+        ComboData.process_pending_result_screen_clear()
+
         if p2_cd > 0 and ComboData.drive_cooldown_legitimate[1] == true then
             if p2_cd > ComboData.drive_cooldown_peak[1] then
                 ComboData.drive_cooldown_peak[1] = p2_cd
             end
         end
-        UI.render_windows()
+        if not ComboData.is_result_screen_active() then
+            UI.render_windows()
+        end
+    else
+        ComboData.process_pending_result_screen_clear()
     end
 
     UI.render_fadeouts()
+    ComboData.tick_result_screen_active()
 
     if ComboData.hook_load_fired then
         ComboData.snapshot_debug("on_frame_process_load")

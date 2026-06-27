@@ -1,14 +1,24 @@
+-- Changelog:
+-- 0.92 (June 27, 2026)
+-- - Fixed defender display getting stuck on previous combo
+-- - Minor changes to debugger (improved logging performance)
+-- 0.91 (June 26, 2026)
+-- - Fixed issue with carry calculations on right half of stage
+-- - Fixed position percentage bounding
+
 local MOD_NAME = "Attack Info"
+local VERSION = 0.92
+local NEXUS_URL = "https://www.nexusmods.com/streetfighter6/mods/3637"
+
 local CONFIG_PATH = "attack_info.json"
+local DEBUG_PATH = "attack_info_debug.log"
 local SNAPSHOT_DATA_PATH = "attack_info_snapshots.json"
-local LUA_PROBE_PATH = "attack_info_lua_probe.json"
 local SAVE_DELAY = 0.5
 local LEFT_CLICK = 0x01
 local RIGHT_CLICK = 0x02
 local F2_KEY = 0x71
 local CTRL_KEY = 0x11
 local KEY_4, KEY_5 = 0x34, 0x35
-local VERSION = 0.9
 
 local Config, Utils, GameObjects, ComboData, UI = {}, {}, {}, {}, {}
 local ADVANTAGE_SETTLE_FRAMES = 30
@@ -18,7 +28,7 @@ local PENDING_START_TTL_FRAMES = 12
 local THROW_CONNECT_MIN_ACTION_FRAME = 8
 local THROW_SIDE_SWITCH_CONFIRM_FRAMES = 20
 local DRIVE_IMPACT_RESOURCE_COST = 10000
-local DRIVE_RUSH_RESOURCE_COST = 20000
+local DRIVE_RUSH_RESOURCE_COST = 5000
 local DRIVE_IMPACT_ACTION_MIN = 850
 local DRIVE_IMPACT_ACTION_MAX = 859
 local PARRY_ACTION_MIN = 480
@@ -676,11 +686,6 @@ GameObjects.TrainingManager = nil
 GameObjects.PauseManager    = nil
 GameObjects.bFlowManager    = nil
 GameObjects.sSetting        = nil
-GameObjects.lua_probe_frame = 0
-GameObjects.lua_probe_last_write_frame = 0
-GameObjects.lua_probe_last_log_frame = 0
-GameObjects.lua_probe_logged_active = false
-
 local _gBattle           = sdk.find_type_definition("gBattle")
 GameObjects.PlayerField  = _gBattle:get_field("Player")
 GameObjects.TeamField    = _gBattle:get_field("Team")
@@ -985,97 +990,6 @@ function GameObjects.map_player_data(cPlayer, cTeam)
     return data_vals[0], data_vals[1]
 end
 
-function GameObjects.to_lua_probe_player(data, index)
-    data = data or {}
-    return {
-        Index = index,
-        HpCurrent = tonumber(data.hp_current) or 0,
-        HpMax = tonumber(data.hp_max) or 0,
-        DirectionRight = data.dir == true,
-        Incapacitated = data.incapacitated == true,
-        DriveAdjusted = tonumber(data.drive_adjusted) or 0,
-        DriveCooldown = tonumber(data.drive_cooldown) or 0,
-        Super = tonumber(data.super) or 0,
-        ComboCount = tonumber(data.combo_count) or 0,
-        GuardComboCount = tonumber(data.guard_combo_count) or 0,
-        GuardTime = tonumber(data.guard_time) or 0,
-        DeathCount = tonumber(data.death_count) or 0,
-        ComboDamage = tonumber(data.combo_damage) or 0,
-        CurrentHitDamage = tonumber(data.current_hit_damage) or 0,
-        ComboScaleNow = tonumber(data.combo_scale_now) or 100,
-        DownCount = tonumber(data.down_count) or 0,
-        SpArmor = data.sp_armor == true,
-        ArmorNow = tonumber(data.armor_now) or 0,
-        ArmorMax = tonumber(data.armor_max) or 0,
-        PosX = tonumber(data.pos_x) or 0,
-        Gap = tonumber(data.gap) or 0,
-        ActionId = tonumber(data.action_id) or 0,
-        ActionFrame = tonumber(data.action_frame) or 0,
-        AttackName = data.attack_name or "unknown",
-        ActState = tostring(data.act_st or ""),
-        Stance = tonumber(data.stance) or 0,
-        IsPoisoned = data.is_poisoned == true,
-        TrainingDrivePointLock = data.training_drive_point_lock == true,
-        TrainingDriveTarget = tonumber(data.training_drive_target) or 0,
-        TrainingDriveConfiguredTimer = tonumber(data.training_drive_configured_timer) or 0,
-        TrainingDriveRuntimeTimer = tonumber(data.training_drive_runtime_timer) or 0,
-    }
-end
-
-function GameObjects.lua_probe_log(message)
-    if log and log.info then
-        pcall(log.info, message)
-    end
-end
-
-function GameObjects.update_lua_probe(p1, p2)
-    if Config.settings.enable_lua_probe ~= true then
-        GameObjects.lua_probe_logged_active = false
-        return
-    end
-
-    GameObjects.lua_probe_frame = GameObjects.lua_probe_frame + 1
-    local log_interval = math.max(0, math.floor(tonumber(Config.settings.lua_probe_log_interval_frames) or 0))
-    local write_interval = math.max(0, math.floor(tonumber(Config.settings.lua_probe_write_interval_frames) or 0))
-    local should_log = log_interval > 0 and GameObjects.lua_probe_frame - GameObjects.lua_probe_last_log_frame >= log_interval
-    local should_write = write_interval > 0 and GameObjects.lua_probe_frame - GameObjects.lua_probe_last_write_frame >= write_interval
-    if should_log or should_write then
-        local snapshot = {
-            Frame = GameObjects.lua_probe_frame,
-            P1 = GameObjects.to_lua_probe_player(p1, 0),
-            P2 = GameObjects.to_lua_probe_player(p2, 1),
-        }
-
-        if should_log then
-            GameObjects.lua_probe_log(string.format(
-                "[AttackInfoLuaProbe] sample frame=%d p1_hp=%d p2_hp=%d p1_combo=%d p2_combo=%d p1_cd=%d p2_cd=%d p1_lock=%s p2_lock=%s p1_target=%d p2_target=%d",
-                snapshot.Frame,
-                snapshot.P1.HpCurrent,
-                snapshot.P2.HpCurrent,
-                snapshot.P1.ComboCount,
-                snapshot.P2.ComboCount,
-                snapshot.P1.DriveCooldown,
-                snapshot.P2.DriveCooldown,
-                tostring(snapshot.P1.TrainingDrivePointLock),
-                tostring(snapshot.P2.TrainingDrivePointLock),
-                snapshot.P1.TrainingDriveTarget,
-                snapshot.P2.TrainingDriveTarget
-            ))
-            GameObjects.lua_probe_last_log_frame = GameObjects.lua_probe_frame
-        end
-
-        if should_write then
-            pcall(json.dump_file, LUA_PROBE_PATH, snapshot)
-            GameObjects.lua_probe_last_write_frame = GameObjects.lua_probe_frame
-        end
-    end
-
-    if not GameObjects.lua_probe_logged_active then
-        GameObjects.lua_probe_log("[AttackInfoLuaProbe] Probe active; C# sidecar comparison only, no Attack Info behavior changed.")
-        GameObjects.lua_probe_logged_active = true
-    end
-end
-
 function GameObjects.is_paused()
     if not GameObjects.PauseManager then return false end
     local pause_type_bit = GameObjects.PauseManager:get_field("_CurrentPauseTypeBit")
@@ -1160,6 +1074,9 @@ ComboData.runtime_state = {
     ko_logged_frame = -999,
     display_values_logged_hashes = {},
     drive_cooldown_debug_last = { [0] = nil, [1] = nil },
+    debug_log_queue = {},
+    debug_log_flush_skip_counter = 0,
+    debug_logging_was_enabled = false,
 }
 
 function ComboData.debug_log(message, cat, force)
@@ -1170,16 +1087,26 @@ function ComboData.debug_log(message, cat, force)
             return false
         end
     end
-    local ok = pcall(function()
-        local file = io.open("attack_info_debug.log", "a")
+    ComboData.runtime_state.frame_count = (ComboData.runtime_state.frame_count or 0) + 1
+    local fc = ComboData.runtime_state.frame_count
+    table.insert(ComboData.runtime_state.debug_log_queue,
+        os.date("%Y-%m-%dT%H:%M:%S") .. " [" .. tostring(fc) .. "] " .. tostring(message) .. "\n")
+    return true
+end
+
+function ComboData.debug_log_flush()
+    local queue = ComboData.runtime_state.debug_log_queue
+    if not queue or #queue == 0 then return end
+    pcall(function()
+        local file = io.open(DEBUG_PATH, "a")
         if file then
-            ComboData.runtime_state.frame_count = (ComboData.runtime_state.frame_count or 0) + 1
-            local fc = ComboData.runtime_state.frame_count
-            file:write(os.date("%Y-%m-%dT%H:%M:%S"), " [", tostring(fc), "] ", tostring(message), "\n")
+            for _, line in ipairs(queue) do
+                file:write(line)
+            end
             file:close()
         end
     end)
-    return ok
+    ComboData.runtime_state.debug_log_queue = {}
 end
 
 function ComboData.debug_log_state(prefix, state, cat)
@@ -3192,7 +3119,14 @@ function ComboData.clear_finished_display_box(player_index, reason)
 
     -- If the combo timer is still running, do not destroy the finished state;
     -- let the timer handle cleanup when it expires (guard for combo_timer_duration > 0).
-    if state.timer_remaining and state.timer_remaining > 0 then return false end
+    -- When a new attack triggers the clear (reason="damage"/"block"), the stale
+    -- state must be removed regardless of the timer so the defender's display
+    -- shows the incoming attack's data instead of an old attacker combo.
+    if state.timer_remaining and state.timer_remaining > 0 then
+        if reason ~= "damage" and reason ~= "block" then
+            return false
+        end
+    end
 
     state.finished = false
     state.timer_remaining = nil
@@ -5139,12 +5073,8 @@ function UI.get_carry_position_percent(pos, facing_right)
     end
 
     local clamped_pos, min_pos, max_pos = UI.clamp_carry_position_for_facing(pos, facing_right)
-    local percent
-    if clamped_pos >= 0 then
-        percent = (clamped_pos / math.max(1, max_pos)) * 100
-    else
-        percent = (clamped_pos / math.max(1, math.abs(min_pos))) * 100
-    end
+    local divisor = math.max(1, math.min(math.abs(min_pos), math.abs(max_pos)))
+    local percent = (clamped_pos / divisor) * 100
 
     return Utils.clamp(percent, -100, 100)
 end
@@ -5682,12 +5612,8 @@ function UI.get_carry_total_percent_value(start_player, finish_player, attacker_
         return nil
     end
 
-    if start_space <= 0 then
-        return 0
-    end
-
     local progress = start_space - finish_space
-    return Utils.clamp((progress / start_space) * 100, -100, 100)
+    return Utils.clamp((progress / CARRY_TOTAL_MAX) * 100, -100, 100)
 end
 
 -- Keep old name as backward-compatible redirect
@@ -7184,7 +7110,7 @@ function UI.render_position_settings()
         imgui.tree_pop()
     end
 end
-function UI.resolve_debug_log_path()
+function UI.resolve_debug_DEBUG_PATH()
     local function resolve(level)
         local source = debug.getinfo(level, "S").source or ""
         if source:sub(1, 1) == "@" then
@@ -7196,9 +7122,9 @@ function UI.resolve_debug_log_path()
         return reframework_dir .. "data/attack_info_debug.log"
     end
 
-    local log_path = resolve(1)
-    if log_path:match("^[a-zA-Z]:") or log_path:sub(1, 1) == "/" then
-        return log_path
+    local DEBUG_PATH = resolve(1)
+    if DEBUG_PATH:match("^[a-zA-Z]:") or DEBUG_PATH:sub(1, 1) == "/" then
+        return DEBUG_PATH
     end
     return resolve(2)
 end
@@ -7246,9 +7172,9 @@ function UI.render_debug_settings()
             UI.mark_for_save()
         end
 
-        if imgui.button("Copy Path##debug_log_path") then
-            local log_path = UI.resolve_debug_log_path()
-            sdk.copy_to_clipboard(log_path)
+        if imgui.button("Copy Path##debug_DEBUG_PATH") then
+            local DEBUG_PATH = UI.resolve_debug_DEBUG_PATH()
+            sdk.copy_to_clipboard(DEBUG_PATH)
             UI.tooltip_msg = MOD_NAME .. ': Log path copied to clipboard'
             UI.tooltip_timer = 40
         end
@@ -7556,13 +7482,26 @@ re.on_frame(function()
         ComboData.hook_save_payload = nil
         ComboData.save_snapshot(nil, save_payload)
     end
+    -- Debug log flush: write queued lines to disk once every 30 frames.
+    -- When logging is unchecked, drain remaining queue immediately.
+    local logging_enabled = Config.settings.toggle_enable_debug_logging == true
+    if ComboData.runtime_state.debug_logging_was_enabled and not logging_enabled then
+        ComboData.debug_log_flush()
+    end
+    ComboData.runtime_state.debug_logging_was_enabled = logging_enabled
+    local skip = ComboData.runtime_state.debug_log_flush_skip_counter
+    ComboData.runtime_state.debug_log_flush_skip_counter = skip + 1
+    if ComboData.runtime_state.debug_log_flush_skip_counter >= 30 then
+        ComboData.debug_log_flush()
+        ComboData.runtime_state.debug_log_flush_skip_counter = 0
+    end
+
     -- Use the combat visibility gate instead of prev_no_push_bit, which is 0
     -- in story-training and other modes even during active gameplay. The gate
     -- now requires a live action engine so retained postmatch objects do not
     -- render stale combat boxes.
     if in_battle then
         local p1, p2 = GameObjects.map_player_data(cPlayer, cTeam)
-        GameObjects.update_lua_probe(p1, p2)
 
         if ComboData.hook_load_fired then
             ComboData.snapshot_debug("on_frame_process_load")

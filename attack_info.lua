@@ -1,8 +1,10 @@
 -- Changelog:
 -- 0.92 (June 27, 2026)
+-- - Bugfixes for attacks starting with Super Art (still needs work), Drive Impact
 -- - Added colored labels to signify resource cap
 -- - Gradient improvements
--- - Fixed Super Art handling (initial spend should always be reflected in display)
+-- - Fixed Super Art initial cost not being applied to combo when super activation doesn't immediately connect
+-- - Fixed Drive Impact initial cost not applied to combo when baselines cleared by other player's sequence start
 -- - Fixed lingering displays on postgame menu
 -- - Fixed round-ending throw defender panel getting stuck on stale self totals/damage
 -- - Fixed defender display getting stuck on previous combo
@@ -2812,7 +2814,23 @@ function ComboData.update_resource_baselines(p1, p2)
     -- Treat throw startup as live too; throws can spend Drive before combo_count
     -- increments, and letting refill logic keep seeding baselines there hides the
     -- throw's own resource snapshot.
-    if sequence_started or sequence_settling or throw_sequence_started then
+    if sequence_started then
+        -- Only clear baselines for the player(s) whose sequence just started.
+        -- This preserves the other player's pre-attack resource state when their
+        -- own combo hasn't started yet (e.g., Drive Impact pre-cost preserved).
+        for i = 0, 1 do
+            local state = ComboData.player_states and ComboData.player_states[i]
+            if state and state.started == true then
+                ComboData.resource_baselines[i] = nil
+                if ComboData.resource_precombo_baselines then
+                    ComboData.resource_precombo_baselines[i] = nil
+                end
+            end
+        end
+        return
+    end
+
+    if sequence_settling or throw_sequence_started then
         ComboData.clear_all_resource_baselines()
         return
     end
@@ -4338,10 +4356,10 @@ function UI.rgb_to_hex_color(r, g, b)
 end
 function UI.value_to_rgb_color(v, max_val)
     -- Total Damage gradient anchors:
-    -- red at 0, yellow at 1500, soft green at 3000, full green at 7000.
+    -- orange at 0, yellow at 1500, soft green at 3000, full green at 7000.
     local value = tonumber(v) or 0
     return UI.rgb_from_gradient_anchors(value, {
-        { 0,    255,   0,   0 }, -- red at 0
+        { 0,    255, 128,   0 }, -- orange at 0
         { 1500, 255, 255,   0 }, -- yellow at 1500
         { 3000, 176, 255,   0 }, -- soft green at 3000
         { 7000,   0, 255,   0 }, -- full green at 7000
@@ -6285,12 +6303,13 @@ function UI.process_columns(values, is_color, visible_columns, percent_max_value
                         end
                     elseif column.id == "damage" then
                         if is_defense and v_numeric < 0 then
-                            -- Yellow at -1, orange at -2000, red at -7000
+                            -- Inverse of the positive gradient: orange at 0, orange-red at 1500, red at 3000, full red at 7000
                             local abs_val = math.abs(v_numeric)
                             local dmg_r, dmg_g, dmg_b = UI.rgb_from_gradient_anchors(abs_val, {
-                                { 1,    255, 255,   0 },  -- yellow at -1
-                                { 2000, 255, 165,   0 },  -- orange at -2000
-                                { 7000, 255,   0,   0 },  -- red at -7000
+                                { 0,    255, 128,   0 },  -- orange at 0 (mirrors positive 0)
+                                { 1500, 255,  64,   0 },  -- orange-red at 1500 (mirrors positive yellow)
+                                { 3000, 255,  32,   0 },  -- red at 3000 (mirrors positive soft green)
+                                { 7000, 255,   0,   0 },  -- full red at 7000 (mirrors positive full green)
                             })
                             color = UI.rgb_to_hex_color(dmg_r, dmg_g, dmg_b)
                         else

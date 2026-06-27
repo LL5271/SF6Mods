@@ -1,7 +1,8 @@
 -- Changelog:
 -- 0.92 (June 27, 2026)
--- - Added colored labels to signify resource capped
+-- - Added colored labels to signify resource cap
 -- - Gradient improvements
+-- - Fixed Super Art handling (initial spend should always be reflected in display)
 -- - Fixed lingering displays on postgame menu
 -- - Fixed round-ending throw defender panel getting stuck on stale self totals/damage
 -- - Fixed defender display getting stuck on previous combo
@@ -2789,6 +2790,10 @@ function ComboData.touch_precombo_resource_baseline(player_idx, prev, current)
     if prev.super ~= nil and (existing.super == nil or prev.super < existing.super) then
         existing.super = prev.super
     end
+    -- Also track highest Super (pre-cost) for super activation cost detection
+    if prev.super ~= nil and (existing.super_max == nil or prev.super > existing.super_max) then
+        existing.super_max = prev.super
+    end
 
     existing.resource_age = 0
     existing.resource_ttl = PRECOMBO_RESOURCE_BASELINE_FRAMES
@@ -2876,7 +2881,7 @@ function ComboData.copy_start_resources_from_baseline(start_player, baseline)
 
     local current_start_super = tonumber(start_player.super)
     local baseline_super = tonumber(baseline.super)
-    if baseline_super ~= nil and (current_start_super == nil or baseline_super < current_start_super) then
+    if baseline_super ~= nil and (current_start_super == nil or baseline_super ~= current_start_super) then
         start_player.super = baseline_super
         changed = true
     end
@@ -2900,8 +2905,13 @@ function ComboData.merge_start_resources_from_recent_baseline(start_player, rece
 
     local current_start_super = tonumber(start_player.super)
     local recent_super = tonumber(recent.super)
-    if recent_super ~= nil and (current_start_super == nil or recent_super < current_start_super) then
-        start_player.super = recent_super
+    local baseline_super = recent_super
+    -- If the tracked lowest super matches current start, try the highest (pre-cost)
+    if baseline_super ~= nil and current_start_super ~= nil and baseline_super == current_start_super and recent.super_max ~= nil then
+        baseline_super = recent.super_max
+    end
+    if baseline_super ~= nil and (current_start_super == nil or baseline_super ~= current_start_super) then
+        start_player.super = baseline_super
         changed = true
     end
 

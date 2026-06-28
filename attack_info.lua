@@ -3,14 +3,17 @@
 -- 
 -- Changelog:
 -- 0.94 (June 28, 2026)
+-- - Fixed debugger issue that was causing unconditional write operations
 -- - Added toggle options for game modes (Training, Replay, Trials, Arcade, WT, Versus)
+-- - Hides displays in Tutorial mode
+-- - Fixed issue where displays could flicker right before a scene change
+-- - Moved snapshot handling to managed storage
 -- 0.93 (June 28, 2026)
 -- - Added REFramework stable v1.5.9.1 compatibility
 -- - * New path for action-engine reads and legacy ImGui rendering
 -- - * Legacy font loading and rendering fallbacks
 -- - * Still not 1:1 with newer buiild functionality, but close enough
 -- - Fixed issue where display would update indefinitely after some blockstring situations
--- - Hidden the display in Tutorial mode
 -- 0.92 (June 27, 2026)
 -- - Bugfixes for attacks starting with Super Art (still needs work), Drive Impact
 -- - Added colored labels to signify resource cap
@@ -30,7 +33,6 @@ local VERSION = 0.94
 
 local CONFIG_PATH = "attack_info.json"
 local DEBUG_PATH = "attack_info_debug.log"
-local SNAPSHOT_DATA_PATH = "attack_info_snapshots.json"
 local SAVE_DELAY = 0.5
 local LEFT_CLICK = 0x01
 local RIGHT_CLICK = 0x02
@@ -180,6 +182,7 @@ Config.settings = {
     position_match_vertical = true,
     combo_end_mode = DEFAULT_COMBO_END_MODE,
     toggle_enable_debug_logging = false,
+    toggle_enable_snapshot_debug_logging = false,
     toggle_enable_drive_cooldown_debug = true,
     log_attacker_display = true,
     log_defender_display = true,
@@ -231,7 +234,11 @@ function Config.loaded_settings_missing_defaults(loaded_settings)
         end
     end
 
-    if loaded_settings.log_attacker_display == nil or loaded_settings.log_defender_display == nil or loaded_settings.log_start_finish_values == nil or loaded_settings.log_settings_changed == nil or loaded_settings.log_display_update == nil or loaded_settings.log_display_clear == nil then
+    if loaded_settings.toggle_enable_snapshot_debug_logging == nil
+        or loaded_settings.log_attacker_display == nil or loaded_settings.log_defender_display == nil
+        or loaded_settings.log_start_finish_values == nil or loaded_settings.log_settings_changed == nil
+        or loaded_settings.log_display_update == nil or loaded_settings.log_display_clear == nil
+    then
         return true
     end
 
@@ -421,7 +428,12 @@ function Config.ensure_defaults(force_save)
     end
     if Config.settings.toggle_enable_debug_logging == nil then
     Config.settings.toggle_enable_debug_logging = false
+    Config.settings.toggle_enable_snapshot_debug_logging = false
     Config.settings.toggle_enable_drive_cooldown_debug = true
+        changed = true
+    end
+    if Config.settings.toggle_enable_snapshot_debug_logging == nil then
+        Config.settings.toggle_enable_snapshot_debug_logging = false
         changed = true
     end
     if Config.settings.toggle_enable_drive_cooldown_debug == nil then
@@ -490,6 +502,7 @@ function Config.reset_attack_info_defaults()
     local _, defaults = UI.ensure_position_coords()
     Config.reset_position_defaults(defaults)
     Config.settings.toggle_enable_debug_logging = false
+    Config.settings.toggle_enable_snapshot_debug_logging = false
     Config.settings.toggle_enable_drive_cooldown_debug = true
     Config.settings.log_attacker_display = true
     Config.settings.log_defender_display = true
@@ -563,6 +576,7 @@ function Config.attack_info_defaults_selected()
     local _, defaults = UI.ensure_position_coords()
     if not Config.position_defaults_selected(defaults) then return false end
     if Config.settings.toggle_enable_debug_logging ~= false then return false end
+    if Config.settings.toggle_enable_snapshot_debug_logging ~= false then return false end
     if Config.settings.toggle_enable_drive_cooldown_debug ~= true then return false end
     if Config.settings.log_attacker_display ~= true then return false end
     if Config.settings.log_defender_display ~= true then return false end
@@ -683,10 +697,9 @@ function Config.init()
                 ComboData.default_state()
                 -- Training mode (re)start means the previous session's snapshot
                 -- payloads are stale (different characters/stage/state). Clear
-                -- both the in-memory snapshots and the on-disk file so that any
-                -- subsequent training snapshot load starts with a clean Attack
-                -- Info slate.
-                ComboData.clear_snapshot_file()
+                -- the in-memory snapshot cache so that any subsequent training
+                -- snapshot load starts with a clean Attack Info slate.
+                ComboData.clear_snapshot_cache()
             end, true)
         Utils.setup_hook("app.BattleManager", "BattleStart", nil,
             function() ComboData.default_state() end, true)
@@ -741,12 +754,7 @@ function Config.init()
         local other_setting_td = sdk.find_type_definition("app.training.tf_OtherSetting")
         ComboData.install_snapshot_hooks(other_setting_td)
         ComboData.default_state()
-        -- Load existing snapshot data from disk
-        local saved = json.load_file(SNAPSHOT_DATA_PATH)
-        if saved then
-            ComboData.snapshots = saved
-        end
-        ComboData.snapshot_debug("Config.init completed loaded_snapshot_data=" .. tostring(saved ~= nil))
+        ComboData.snapshot_debug("Config.init completed snapshot_cache_initialized=" .. tostring(type(ComboData.snapshots) == "table"))
         Config.load()
         Config.initialized = true
     end
@@ -959,6 +967,12 @@ function GameObjects.get_main_flow_id()
     return ok and flow_id or 0
 end
 
+function GameObjects.is_flow_transitioning()
+    if not GameObjects.bFlowManager then return false end
+    local transitioning = Utils.try_call_method(GameObjects.bFlowManager, "get_IsTransitioning")
+    return transitioning == true
+end
+
 function GameObjects.is_training_mode()
     local mode = GameObjects.get_training_game_mode_id()
     return mode == 2 or mode == 10 or mode == 18 or GameObjects.get_main_flow_id() == 79
@@ -992,8 +1006,9 @@ function GameObjects.is_world_tour_battle_active()
 end
 
 function GameObjects.is_versus_mode()
-    local mode = GameObjects.get_training_game_mode_id()
-    return mode == 3 or mode == 19 or mode == 22 or mode == 26 or mode == 28 or mode == 29
+    local mode = GameObjects.get_game_mode_id()
+    -- Local Extreme Battle reports EGameMode.DEATHMATCH (8).
+    return mode == 3 or mode == 4 or mode == 8 or mode == 19 or mode == 22 or mode == 26 or mode == 28 or mode == 29
 end
 
 function GameObjects.is_display_mode_enabled()
@@ -1335,8 +1350,9 @@ function ComboData.default_state()
     ComboData.pending_load_slot = nil
     ComboData.snapshot_load_guard_frames = nil
     ComboData.snapshot_load_restored_state = nil
-    ComboData.last_snapshot_slot_key = nil
-    ComboData.snapshots = {}
+    if type(ComboData.snapshots) ~= "table" then
+        ComboData.snapshots = {}
+    end
     ComboData.runtime_state.match_clear_frames = 0
     ComboData.runtime_state.last_global_combo_id = 0
     ComboData.runtime_state.display_values_logged_hashes = {}
@@ -1429,7 +1445,7 @@ function ComboData.reset_result_screen_state()
 end
 
 function ComboData.debug_log(message, cat, force)
-    if force ~= true and Config.settings.toggle_enable_debug_logging ~= true then return false end
+    if Config.settings.toggle_enable_debug_logging ~= true then return false end
     if force ~= true and cat and Config.settings[cat] == false then
         local linger = ComboData.runtime_state.log_linger_until or 0
         if cat ~= "log_attacker_display" and cat ~= "log_defender_display" or os.time() >= linger then
@@ -1581,10 +1597,16 @@ function ComboData.update_post_match_timer(p1, p2)
 end
 
 function ComboData.snapshot_debug(message)
+    if Config.settings.toggle_enable_debug_logging ~= true then
+        return false
+    end
+    if Config.settings.toggle_enable_snapshot_debug_logging ~= true then
+        return false
+    end
     local ok = pcall(function()
-        local file = io.open("attack_info_snapshot_debug.log", "a")
+        local file = io.open(DEBUG_PATH, "a")
         if file then
-            file:write(os.date("%Y-%m-%dT%H:%M:%S"), " ", tostring(message), "\n")
+            file:write(os.date("%Y-%m-%dT%H:%M:%S"), " [snapshot] ", tostring(message), "\n")
             file:close()
         end
     end)
@@ -1594,6 +1616,47 @@ end
 function ComboData.snapshot_payload_version(payload)
     if type(payload) ~= "table" then return "nil" end
     return tostring(payload.version)
+end
+
+function ComboData.ensure_snapshot_cache()
+    if type(ComboData.snapshots) == "table" then
+        return ComboData.snapshots
+    end
+
+    local loaded = nil
+    pcall(function()
+        if ComboData.snapshot_store_managed then
+            local raw = ComboData.snapshot_store_managed:call("ToString()")
+            if type(raw) == "string" and raw ~= "" then
+                loaded = json.load_string(raw)
+            end
+        end
+    end)
+
+    ComboData.snapshots = type(loaded) == "table" and loaded or {}
+    return ComboData.snapshots
+end
+
+function ComboData.update_snapshot_store_managed()
+    local snapshots = ComboData.ensure_snapshot_cache()
+    local ok_json, raw = pcall(function()
+        return json.dump_string(snapshots)
+    end)
+    if not ok_json or type(raw) ~= "string" then
+        ComboData.snapshot_store_managed = nil
+        return false, raw
+    end
+
+    local ok_string, managed = pcall(function()
+        return sdk.create_managed_string(raw)
+    end)
+    if not ok_string or managed == nil then
+        ComboData.snapshot_store_managed = nil
+        return false, managed
+    end
+
+    ComboData.snapshot_store_managed = managed
+    return true, nil
 end
 
 function ComboData.snapshot_capture_payload(reason)
@@ -1920,16 +1983,10 @@ function ComboData.live_combat_detected(p1, p2)
     return false
 end
 
-function ComboData.clear_snapshot_file()
-    -- Remove the persisted snapshot data file so stale Attack Info state from a
-    -- previous training session is not restored when a training snapshot is later
-    -- loaded. Call this only on TrainingManager.BattleStart (character change /
-    -- training restart), not on generic BattleManager.BattleStart (arcade rounds).
-    pcall(function()
-        os.remove(SNAPSHOT_DATA_PATH)
-    end)
+function ComboData.clear_snapshot_cache()
     ComboData.snapshots = {}
     ComboData.last_snapshot_slot_key = nil
+    ComboData.snapshot_store_managed = nil
 end
 
 function ComboData.clear_snapshot_load_guard_if_done()
@@ -2110,25 +2167,21 @@ function ComboData.save_snapshot(slot_id, state_override)
     local slot_key, key_source = ComboData.choose_snapshot_save_key(actual_slot_id)
     local payload = state_override or ComboData.get_serializable_state()
 
-    if type(ComboData.snapshots) ~= "table" then
-        ComboData.snapshots = {}
-    end
+    local snapshots = ComboData.ensure_snapshot_cache()
 
-    ComboData.snapshots[slot_key] = payload
-    ComboData.snapshots.__last_slot_key = slot_key
+    snapshots[slot_key] = payload
+    snapshots.__last_slot_key = slot_key
     ComboData.last_snapshot_slot_key = slot_key
 
-    local ok_dump, dump_err = pcall(function()
-        json.dump_file(SNAPSHOT_DATA_PATH, ComboData.snapshots)
-    end)
+    local store_ok, store_err = ComboData.update_snapshot_store_managed()
 
     ComboData.snapshot_debug(
         "save_snapshot slot_key=" .. tostring(slot_key)
         .. " key_source=" .. tostring(key_source)
         .. " actual_slot_id=" .. tostring(actual_slot_id)
         .. " payload_version=" .. ComboData.snapshot_payload_version(payload)
-        .. " dump_ok=" .. tostring(ok_dump)
-        .. " dump_err=" .. tostring(dump_err)
+        .. " store_ok=" .. tostring(store_ok)
+        .. " store_err=" .. tostring(store_err)
     )
 
     return actual_slot_id or slot_key
@@ -2140,7 +2193,7 @@ function ComboData.load_snapshot(slot_id, live_p1, live_p2)
         actual_slot_id = ComboData.resolve_snapshot_slot_id("load")
     end
 
-    local saved = json.load_file(SNAPSHOT_DATA_PATH) or ComboData.snapshots or {}
+    local saved = ComboData.ensure_snapshot_cache()
     local slot_key, key_source = ComboData.choose_snapshot_load_key(saved, actual_slot_id)
 
     local restored_serialized_state = false
@@ -3267,8 +3320,7 @@ function ComboData.debug_log_drive_cooldown(player_index, phase, prev, current, 
             .. " any_sequence_started=" .. tostring(ComboData.any_sequence_started())
             .. " cd_total_peak=" .. tostring(ComboData.drive_cooldown_total_peak[player_index] or 0)
             .. " note=" .. tostring(note),
-        "log_display_update",
-        true
+        "toggle_enable_drive_cooldown_debug"
     )
 end
 
@@ -3388,8 +3440,7 @@ function ComboData.update_drive_cooldown_pending(player_idx, prev, current)
                     .. " pending_frames=" .. tostring(pending_frames)
                     .. " total_peak=" .. tostring(ComboData.drive_cooldown_total_peak[player_idx])
                     .. " pending_peak_final=" .. tostring(ComboData.drive_cooldown_pending_peak_final[player_idx]),
-                "log_display_update",
-                true
+                "toggle_enable_drive_cooldown_debug"
             )
             end
         end
@@ -3431,8 +3482,7 @@ function ComboData.update_drive_cooldown_pending(player_idx, prev, current)
                     .. " pending_frames=" .. tostring(pending_frames)
                     .. " pending_peak=" .. tostring(ComboData.drive_cooldown_pending_peak[player_idx])
                     .. " total_peak=" .. tostring(ComboData.drive_cooldown_total_peak[player_idx]),
-                "log_display_update",
-                true
+                "toggle_enable_drive_cooldown_debug"
             )
         end
         return
@@ -7393,6 +7443,10 @@ function UI.render_windows()
         UI.begin_fadeout(1)
         return
     end
+    if GameObjects.is_flow_transitioning() then
+        UI.clear_all_fadeouts()
+        return
+    end
     if GameObjects.is_paused() then return end
     UI.right_click_this_frame = UI.was_key_down(RIGHT_CLICK)
 
@@ -7991,6 +8045,7 @@ function UI.render_debug_settings()
 
         if imgui.tree_node("Log Options") then
             local logcats = {
+                { key = "toggle_enable_snapshot_debug_logging", label = "Log Snapshot Debug" },
                 { key = "log_attacker_display", label = "Log Attacker Display" },
                 { key = "log_defender_display", label = "Log Defender Display" },
                 { key = "log_start_finish_values", label = "Log Start/Finish Values" },

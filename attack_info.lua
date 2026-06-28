@@ -1,4 +1,13 @@
+-- Attack Info 0.93
+-- https://www.nexusmods.com/streetfighter6/mods/3637
+-- 
 -- Changelog:
+-- 0.93 (June 28, 2026)
+-- - Added REFramework stable v1.5.9.1 compatibility
+-- - * New path for action-engine reads and legacy ImGui rendering
+-- - * Legacy font loading and rendering fallbacks
+-- - * Still not 1:1 with newer buiild functionality, but close enough
+-- - Fixed issue where display would update indefinitely after some blockstring situations
 -- 0.92 (June 27, 2026)
 -- - Bugfixes for attacks starting with Super Art (still needs work), Drive Impact
 -- - Added colored labels to signify resource cap
@@ -14,8 +23,7 @@
 -- - Fixed position percentage bounding
 
 local MOD_NAME = "Attack Info"
-local VERSION = 0.92
-local NEXUS_URL = "https://www.nexusmods.com/streetfighter6/mods/3637"
+local VERSION = 0.93
 
 local CONFIG_PATH = "attack_info.json"
 local DEBUG_PATH = "attack_info_debug.log"
@@ -755,6 +763,29 @@ function Utils.read_sfix(value)
     return tonumber(value) or 0
 end
 
+function Utils.try_call_method(obj, method_name)
+    if obj == nil or type(method_name) ~= "string" then return nil end
+
+    local ok, value = pcall(function()
+        if type(obj) == "userdata" and obj.get_type_definition then
+            local type_def = obj:get_type_definition()
+            local method = type_def and type_def:get_method(method_name) or nil
+            if method ~= nil then
+                return method:call(obj)
+            end
+        end
+
+        if type(obj) == "userdata" and obj.call then
+            return obj:call(method_name)
+        end
+
+        return nil
+    end)
+
+    if ok then return value end
+    return nil
+end
+
 -------------------------
 -- GameObjects
 -------------------------
@@ -934,18 +965,18 @@ end
 -- Netplay postmatch can keep mcPlayer/mpActParam objects alive after combat has
 -- ended, so mpActParam alone is not a safe combat-rendering gate.
 function GameObjects.has_active_action_engine(player)
-    if not player or not player.mpActParam then return false end
+    if not player then return false end
 
     local ok_action_part, action_part = pcall(function()
-        return player.mpActParam.ActionPart
+        return player.mpActParam and player.mpActParam.ActionPart or nil
     end)
     if not ok_action_part or not action_part then return false end
 
-    local ok_engine, engine = pcall(function()
-        return action_part._Engine
-    end)
+    local exists = Utils.try_call_method(action_part, "IsExistActionEngine")
+    if exists == false then return false end
 
-    return ok_engine and engine ~= nil
+    local engine = Utils.try_call_method(action_part, "get_ActionEngine")
+    return engine ~= nil
 end
 
 function GameObjects.resolve_attack_name(action_id, action_frame)
@@ -959,6 +990,20 @@ function GameObjects.resolve_attack_name(action_id, action_frame)
     end
 
     return attack_name
+end
+
+function GameObjects.get_action_engine(player)
+    if not player then return nil end
+
+    local ok_action_part, action_part = pcall(function()
+        return player.mpActParam and player.mpActParam.ActionPart or nil
+    end)
+    if not ok_action_part or not action_part then return nil end
+
+    local exists = Utils.try_call_method(action_part, "IsExistActionEngine")
+    if exists == false then return nil end
+
+    return Utils.try_call_method(action_part, "get_ActionEngine")
 end
 
 function GameObjects.is_in_battle(cPlayer)
@@ -1027,18 +1072,15 @@ function GameObjects.map_player_data(cPlayer, cTeam)
         data.action_id = 0
         data.action_frame = 0
         data.action_total_frames = 0
-        if player.mpActParam and player.mpActParam.ActionPart then
-            local engine = player.mpActParam.ActionPart._Engine
-            if engine then
-                data.action_id = Utils.read_sfix(engine:get_ActionID())
-                data.action_frame = Utils.read_sfix(engine:get_ActionFrame())
-                local ok_margin, margin_frame = pcall(function()
-                    return engine:get_MarginFrame()
-                end)
-                if ok_margin then
-                    data.action_total_frames = Utils.read_sfix(margin_frame)
-                end
+        local engine = GameObjects.get_action_engine(player)
+        if engine then
+            data.action_id = Utils.read_sfix(Utils.try_call_method(engine, "get_ActionID"))
+            data.action_frame = Utils.read_sfix(Utils.try_call_method(engine, "get_ActionFrame"))
+            local total_frames = Utils.try_call_method(engine, "get_ActionFrameNum")
+            if total_frames == nil then
+                total_frames = Utils.try_call_method(engine, "get_MarginFrame")
             end
+            data.action_total_frames = Utils.read_sfix(total_frames)
         end
         data.attack_name = GameObjects.resolve_attack_name(data.action_id, data.action_frame)
         data.act_st = Utils.read_sfix(player.act_st)
@@ -2691,12 +2733,17 @@ function ComboData.resolve_end_mode(end_mode, state, atk, def)
         return end_mode
     end
 
+    if state and state.is_blocked then
+        -- For blocked sequences, Latest should stop on defender recovery.
+        -- Otherwise forward walk states keep the blockstring alive after the
+        -- blockstun has already ended.
+        return "defender_recovery"
+    end
+
     local attacker_recovered = false
     local defender_recovered = ComboData.is_defender_recovered(def)
 
-    if state and state.is_blocked then
-        attacker_recovered = atk and atk.act_st == 0
-    elseif state and state.is_throw then
+    if state and state.is_throw then
         attacker_recovered = atk and atk.act_st ~= 37
     else
         attacker_recovered = atk and ((atk.combo_count or 0) == 0 or ComboData.is_neutral_recovery_state(atk))
@@ -4173,6 +4220,7 @@ UI.label_color_smoothing_frames = 13
 UI.minimum_combo_window_width = 220
 UI.window_padding_width = 44
 UI.display_box_rounding = 10
+UI.legacy_font_file = "NotoSansSC-Bold.otf"
 UI.stroke_item_id = 0
 UI.FADEOUT_FRAMES = 4
 UI.fadeout_alpha_override = nil
@@ -4208,6 +4256,10 @@ function UI.get_active_draw_list()
         draw_list = imgui.get_foreground_draw_list()
     end
     return draw_list
+end
+
+function UI.has_legacy_draw_api()
+    return type(draw) == "table" and draw.text ~= nil
 end
 
 function UI.was_key_down(i)
@@ -4280,6 +4332,99 @@ function UI.get_display_scale()
     return Utils.clamp(scale, 50, 150) / 100
 end
 
+function UI.uses_legacy_font_api()
+    return imgui.push_font_size == nil
+end
+
+function UI.get_legacy_font_boost()
+    if not UI.uses_legacy_font_api() then return 1 end
+
+    return 1.35
+end
+
+function UI.get_legacy_width_boost()
+    if not UI.uses_legacy_font_api() then return 1 end
+
+    return 0.94
+end
+
+function UI.get_legacy_percent_width_padding()
+    if not UI.uses_legacy_font_api() then return 0 end
+    return math.ceil(24 * UI.get_display_scale())
+end
+
+function UI.get_legacy_column_width_adjustment(column)
+    if not UI.uses_legacy_font_api() or not column then return 0 end
+
+    local is_percent = column.unit_id and UI.get_unit_mode(column.unit_id) == "percent"
+    if column.id == "hit_damage" then return 7 end
+    if column.id == "damage" then return 8 end
+    if column.unit_id == "super" then return 10 end
+    if column.unit_id == "drive" then return 12 end
+    if column.id == "adv" then return 5 end
+    if column.id == "gap" then return is_percent and -12 or -7 end
+    if column.id == "p1_carry" or column.id == "p2_carry" then
+        return is_percent and -16 or -8
+    end
+
+    return 0
+end
+
+function UI.is_legacy_plain_text_render(text)
+    return UI.uses_legacy_font_api() and type(text) == "string"
+        and (
+            text:find("%%", 1, true) ~= nil
+            or text:find("％", 1, true) ~= nil
+        )
+end
+
+function UI.get_percent_symbol()
+    return "%"
+end
+
+function UI.escape_imgui_text(text)
+    text = tostring(text or "")
+    return text:gsub("%%", "%%%%")
+end
+
+function UI.draw_legacy_percent_text(text, color)
+    if not UI.is_legacy_plain_text_render(text) then return false end
+
+    local text_color = color or UI.apply_opacity_to_color(0xFFFFFFFF, UI.get_display_text_opacity())
+    imgui.text_colored(UI.escape_imgui_text(text), text_color)
+    return true
+end
+
+function UI.draw_text_segment_with_black_stroke(text, color)
+    local draw_list = UI.get_active_draw_list()
+    local screen_pos = imgui.get_cursor_screen_pos()
+    local text_size = imgui.calc_text_size(text)
+    local text_color = color or UI.apply_opacity_to_color(0xFFFFFFFF, UI.get_display_text_opacity())
+
+    if UI.draw_legacy_percent_text(text, text_color) then
+        return true
+    end
+
+    if draw_list == nil and UI.draw_legacy_text_stroke(screen_pos, text) then
+        imgui.text_colored(UI.escape_imgui_text(text), text_color)
+        return true
+    end
+    if UI.draw_stroked_text_to_draw_list(draw_list, screen_pos, text, color) then
+        UI.reserve_drawn_item("attack_info_stroke", text_size)
+        return true
+    end
+
+    imgui.text_colored(UI.escape_imgui_text(text), text_color)
+    return true
+end
+
+function UI.get_font_load_path()
+    if UI.uses_legacy_font_api() then
+        return UI.legacy_font_file
+    end
+    return nil
+end
+
 function UI.get_display_box_rounding()
     return math.max(0, math.floor(((tonumber(UI.display_box_rounding) or 10) * UI.get_display_scale()) + 0.5))
 end
@@ -4289,17 +4434,24 @@ function UI.get_imgui_style_var(name)
     if type(style_vars) == "table" and style_vars[name] ~= nil then
         return style_vars[name]
     end
+    local fallback = {
+        WindowRounding = 3,
+        WindowBorderSize = 4,
+    }
+    if fallback[name] ~= nil then
+        return fallback[name]
+    end
     return imgui["ImGuiStyleVar_" .. tostring(name)]
 end
 
 function UI.get_scaled_font_size(size)
-    return math.max(1, math.floor((size * UI.get_display_scale()) + 0.5))
+    return math.max(1, math.floor((size * UI.get_display_scale() * UI.get_legacy_font_boost()) + 0.5))
 end
 
 function UI.get_font_size(size)
     size = math.max(1, math.floor((tonumber(size) or UI.small_font) + 0.5))
     if not UI.font_cache[size] then
-        UI.font_cache[size] = imgui.load_font(nil, size)
+        UI.font_cache[size] = imgui.load_font(UI.get_font_load_path(), size)
     end
     return imgui.push_font(UI.font_cache[size])
 end
@@ -5083,31 +5235,30 @@ function UI.advantage_hit_color(v)
 end
 
 function UI.draw_stroked_text_to_draw_list(draw_list, screen_pos, text, color)
-    if not draw_list or not screen_pos then return false end
+    if not screen_pos then return false end
 
     local stroke_color = UI.apply_opacity_to_color(0xFF000000, UI.get_display_text_opacity())
     local text_color = color or UI.apply_opacity_to_color(0xFFFFFFFF, UI.get_display_text_opacity())
     -- Match the previous Background Opacity 0% stroke thickness at all background opacities.
-    local thickness = 1.5
+    local thickness = UI.has_legacy_draw_api() and 2.0 or 1.5
+    local x_base = screen_pos.x or screen_pos[1] or 0
+    local y_base = screen_pos.y or screen_pos[2] or 0
+    local t = math.floor(thickness + 0.5)
+    local d = math.floor(t * 0.7071 + 0.5)
+
+    -- Fixed symmetric pattern: 8 cardinal+diagonal for t=1, 16 points for t=2
+    local offsets = {
+        {-t, 0}, {t, 0}, {0, -t}, {0, t},
+        {-d, -d}, {d, -d}, {-d, d}, {d, d},
+    }
+    if t >= 2 then
+        offsets[#offsets+1] = {-t, -1}; offsets[#offsets+1] = {t, -1}
+        offsets[#offsets+1] = {-t, 1};  offsets[#offsets+1] = {t, 1}
+        offsets[#offsets+1] = {-1, -t}; offsets[#offsets+1] = {1, -t}
+        offsets[#offsets+1] = {-1, t};  offsets[#offsets+1] = {1, t}
+    end
 
     if draw_list and (draw_list.add_text or draw_list.AddText) then
-        local x_base = screen_pos.x or screen_pos[1] or 0
-        local y_base = screen_pos.y or screen_pos[2] or 0
-        local t = math.floor(thickness + 0.5)
-        local d = math.floor(t * 0.7071 + 0.5)
-
-        -- Fixed symmetric pattern: 8 cardinal+diagonal for t=1, 16 points for t=2
-        local offsets = {
-            {-t, 0}, {t, 0}, {0, -t}, {0, t},
-            {-d, -d}, {d, -d}, {-d, d}, {d, d},
-        }
-        if t >= 2 then
-            offsets[#offsets+1] = {-t, -1}; offsets[#offsets+1] = {t, -1}
-            offsets[#offsets+1] = {-t, 1};  offsets[#offsets+1] = {t, 1}
-            offsets[#offsets+1] = {-1, -t}; offsets[#offsets+1] = {1, -t}
-            offsets[#offsets+1] = {-1, t};  offsets[#offsets+1] = {1, t}
-        end
-
         local function add_at(px, py, clr)
             if draw_list.add_text then
                 draw_list:add_text(Vector2f.new(px, py), clr, text)
@@ -5127,6 +5278,35 @@ function UI.draw_stroked_text_to_draw_list(draw_list, screen_pos, text, color)
     return false
 end
 
+function UI.draw_legacy_text_stroke(screen_pos, text)
+    if not UI.has_legacy_draw_api() or not screen_pos then return false end
+    if UI.is_legacy_plain_text_render(text) then return false end
+
+    local x_base = screen_pos.x or screen_pos[1] or 0
+    local y_base = screen_pos.y or screen_pos[2] or 0
+    local thickness = 2.0
+    local t = math.floor(thickness + 0.5)
+    local d = math.floor(t * 0.7071 + 0.5)
+    local stroke_color = 0xFF000000
+    local offsets = {
+        {-t, 0}, {t, 0}, {0, -t}, {0, t},
+        {-d, -d}, {d, -d}, {-d, d}, {d, d},
+    }
+
+    if t >= 2 then
+        offsets[#offsets+1] = {-t, -1}; offsets[#offsets+1] = {t, -1}
+        offsets[#offsets+1] = {-t, 1};  offsets[#offsets+1] = {t, 1}
+        offsets[#offsets+1] = {-1, -t}; offsets[#offsets+1] = {1, -t}
+        offsets[#offsets+1] = {-1, t};  offsets[#offsets+1] = {1, t}
+    end
+
+    for _, off in ipairs(offsets) do
+        draw.text(text, x_base + off[1], y_base + off[2], stroke_color)
+    end
+
+    return true
+end
+
 function UI.reserve_drawn_item(id_prefix, size)
     if imgui.invisible_button then
         UI.stroke_item_id = UI.stroke_item_id + 1
@@ -5136,7 +5316,7 @@ function UI.reserve_drawn_item(id_prefix, size)
     end
 end
 function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, peak, scale)
-    if not draw_list or not cooldown or cooldown <= 0 then return end
+    if (not draw_list and not UI.has_legacy_draw_api()) or not cooldown or cooldown <= 0 then return end
     if not peak or peak <= 0 then return end
     local fraction = Utils.clamp(cooldown / peak, 0, 1)
     if fraction <= 0 then return end
@@ -5173,6 +5353,17 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
         return (math.floor(Utils.clamp(foreground_opacity, 0, 1) * 255 + 0.5) << 24) + rgb
     end
 
+    local solid_color = compute_solid_color()
+
+    if not draw_list then
+        if type(draw) == "table" and draw.filled_circle and draw.outline_circle then
+            draw.filled_circle(cx, cy, inner_radius, inner_bg_color, num_segments)
+            draw.filled_circle(cx, cy, inner_radius, solid_color, num_segments)
+            draw.outline_circle(cx, cy, radius, ring_color, num_segments)
+        end
+        return
+    end
+
     local function draw_full_circle(color)
         draw_list:path_clear()
         for i = 0, num_segments - 1 do
@@ -5190,7 +5381,6 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
     -- For arcs > 180°, split into two convex halves to satisfy PathFillConvex.
     local elapsed_count = math.floor((1 - fraction) * num_segments + 0.5)
     if elapsed_count < num_segments then
-        local solid_color = compute_solid_color()
         local first_seg = elapsed_count
         local last_seg = num_segments - 1
         local total_segs = last_seg - first_seg + 1
@@ -5228,16 +5418,7 @@ function UI.draw_drive_cooldown_indicator(draw_list, cx, cy, radius, cooldown, p
     draw_list:path_stroke(ring_color, 1, stroke_width)
 end
 function UI.draw_text_with_black_stroke(text, color)
-    local draw_list = UI.get_active_draw_list()
-    local screen_pos = imgui.get_cursor_screen_pos()
-    local text_size = imgui.calc_text_size(text)
-    if UI.draw_stroked_text_to_draw_list(draw_list, screen_pos, text, color) then
-        UI.reserve_drawn_item("attack_info_stroke", text_size)
-        return
-    end
-
-    local text_color = color or UI.apply_opacity_to_color(0xFFFFFFFF, UI.get_display_text_opacity())
-    imgui.text_colored(text, text_color)
+    UI.draw_text_segment_with_black_stroke(text, color)
 end
 
 function UI.get_visibility_key(player_index)
@@ -5327,6 +5508,10 @@ function UI.get_visible_columns(player_index)
         if column.percent_width and column.unit_id and UI.get_unit_mode(column.unit_id) == "percent" then
             base_width = column.percent_width
         end
+        if column.unit_id and UI.get_unit_mode(column.unit_id) == "percent" then
+            base_width = base_width + UI.get_legacy_percent_width_padding()
+        end
+        base_width = math.max(24, base_width + UI.get_legacy_column_width_adjustment(column))
 
         local label = column.label
         if UI.get_player_scoped_combo_column_label then
@@ -5403,7 +5588,7 @@ function UI.get_column_width_scale()
     if imgui.get_default_font_size then
         default_font_scale = (imgui.get_default_font_size() or UI.small_font) / UI.small_font
     end
-    return UI.get_display_scale() * math.max(default_font_scale, 1)
+    return UI.get_display_scale() * math.max(default_font_scale, 1) * UI.get_legacy_width_boost()
 end
 
 function UI.get_unit_mode(unit_id)
@@ -5416,9 +5601,10 @@ end
 function UI.format_percent_value(v, percent_max)
     if not percent_max or percent_max == 0 then return UI.format_raw_value(v) end
     if v == nil then return "-" end
-    local formatted = string.format("%.0f%%", (v / percent_max) * 100)
-    if formatted == "-0%" then
-        return "0%"
+    local percent_symbol = UI.get_percent_symbol()
+    local formatted = string.format("%.0f", (v / percent_max) * 100) .. percent_symbol
+    if formatted == "-0" .. percent_symbol then
+        return "0" .. percent_symbol
     end
     return formatted
 end
@@ -5506,9 +5692,10 @@ function UI.format_carry_percent_value(v, percent_max, carry_percent_mode, carry
         percent = (v / percent_max) * 100
     end
 
-    local formatted = string.format("%.0f%%", percent)
-    if formatted == "-0%" then
-        return "0%"
+    local percent_symbol = UI.get_percent_symbol()
+    local formatted = string.format("%.0f", percent) .. percent_symbol
+    if formatted == "-0" .. percent_symbol then
+        return "0" .. percent_symbol
     end
     return formatted
 end
@@ -6475,7 +6662,7 @@ function UI.render_combo_window_table(state, player_index, is_defense)
                             end
                         end
                         local draw_list = UI.get_active_draw_list()
-                        if draw_list and draw_cd_value and draw_cd_value > 0 and draw_cd_peak and draw_cd_peak > 2 and not cd_indefinite then
+                        if (draw_list or UI.has_legacy_draw_api()) and draw_cd_value and draw_cd_value > 0 and draw_cd_peak and draw_cd_peak > 2 and not cd_indefinite then
                             local scale = UI.get_column_width_scale()
                             local circle_radius = math.max(1, math.floor(8 * scale + 0.5))
                             local space_width = imgui.calc_text_size(" ")

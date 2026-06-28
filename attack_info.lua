@@ -1,13 +1,16 @@
--- Attack Info 0.93
+-- Attack Info 0.94
 -- https://www.nexusmods.com/streetfighter6/mods/3637
 -- 
 -- Changelog:
+-- 0.94 (June 28, 2026)
+-- - Added toggle options for game modes (Training, Replay, Trials, Arcade, WT, Versus)
 -- 0.93 (June 28, 2026)
 -- - Added REFramework stable v1.5.9.1 compatibility
 -- - * New path for action-engine reads and legacy ImGui rendering
 -- - * Legacy font loading and rendering fallbacks
 -- - * Still not 1:1 with newer buiild functionality, but close enough
 -- - Fixed issue where display would update indefinitely after some blockstring situations
+-- - Hidden the display in Tutorial mode
 -- 0.92 (June 27, 2026)
 -- - Bugfixes for attacks starting with Super Art (still needs work), Drive Impact
 -- - Added colored labels to signify resource cap
@@ -23,7 +26,7 @@
 -- - Fixed position percentage bounding
 
 local MOD_NAME = "Attack Info"
-local VERSION = 0.93
+local VERSION = 0.94
 
 local CONFIG_PATH = "attack_info.json"
 local DEBUG_PATH = "attack_info_debug.log"
@@ -111,6 +114,15 @@ local POSITION_DEFS = {
     { id = "opponent", label = "P2" },
 }
 
+local MODE_DEFS = {
+    { key = "toggle_mode_training", label = "Training", tooltip = "Training and Avatar Training", default = true },
+    { key = "toggle_mode_replay", label = "Replay", tooltip = "All replay modes", default = true },
+    { key = "toggle_mode_trials", label = "Trials", tooltip = "Combo Trials", default = true },
+    { key = "toggle_mode_arcade", label = "Arcade", tooltip = "Story and Avatar Arcade modes", default = false },
+    { key = "toggle_mode_world_tour", label = "World Tour", tooltip = "World Tour", default = false },
+    { key = "toggle_mode_versus", label = "Versus", tooltip = "One on One, Team Battle, and local Extreme Battle", default = false },
+}
+
 -------------------------
 -- Config
 -------------------------
@@ -176,6 +188,12 @@ Config.settings = {
     log_display_update = true,
     log_display_clear = true,
     position_mode = "percent",
+    toggle_mode_training = true,
+    toggle_mode_replay = true,
+    toggle_mode_trials = true,
+    toggle_mode_arcade = false,
+    toggle_mode_world_tour = false,
+    toggle_mode_versus = false,
 }
 
 function Config.loaded_settings_missing_defaults(loaded_settings)
@@ -205,6 +223,12 @@ function Config.loaded_settings_missing_defaults(loaded_settings)
 
     if loaded_settings.combo_end_mode == nil then
         return true
+    end
+
+    for _, mode_def in ipairs(MODE_DEFS) do
+        if loaded_settings[mode_def.key] == nil then
+            return true
+        end
     end
 
     if loaded_settings.log_attacker_display == nil or loaded_settings.log_defender_display == nil or loaded_settings.log_start_finish_values == nil or loaded_settings.log_settings_changed == nil or loaded_settings.log_display_update == nil or loaded_settings.log_display_clear == nil then
@@ -314,6 +338,19 @@ function Config.ensure_unit_settings()
     return changed
 end
 
+function Config.ensure_mode_settings()
+    local changed = false
+
+    for _, mode_def in ipairs(MODE_DEFS) do
+        if Config.settings[mode_def.key] == nil then
+            Config.settings[mode_def.key] = mode_def.default == true
+            changed = true
+        end
+    end
+
+    return changed
+end
+
 function Config.ensure_position_settings()
     local changed = false
     if type(Config.settings.position_coords) ~= "table" then
@@ -356,6 +393,7 @@ function Config.ensure_defaults(force_save)
     changed = Config.ensure_column_visibility() or changed
     changed = Config.ensure_display_settings() or changed
     changed = Config.ensure_unit_settings() or changed
+    changed = Config.ensure_mode_settings() or changed
     if Config.settings.toggle_mirror_column_order == nil then
         Config.settings.toggle_mirror_column_order = true
         changed = true
@@ -432,6 +470,12 @@ function Config.reset_unit_defaults()
     Config.settings.reduce_super = false
 end
 
+function Config.reset_mode_defaults()
+    for _, mode_def in ipairs(MODE_DEFS) do
+        Config.settings[mode_def.key] = mode_def.default == true
+    end
+end
+
 function Config.reset_attack_info_defaults()
     Config.settings.toggle_all = true
     Config.settings.toggle_p1 = true
@@ -441,6 +485,7 @@ function Config.reset_attack_info_defaults()
     Config.reset_updating_defaults()
     Config.reset_display_defaults()
     Config.reset_unit_defaults()
+    Config.reset_mode_defaults()
     Config.reset_column_visibility_defaults()
     local _, defaults = UI.ensure_position_coords()
     Config.reset_position_defaults(defaults)
@@ -494,6 +539,16 @@ function Config.unit_defaults_selected()
     return true
 end
 
+function Config.mode_defaults_selected()
+    for _, mode_def in ipairs(MODE_DEFS) do
+        if Config.settings[mode_def.key] ~= mode_def.default then
+            return false
+        end
+    end
+
+    return true
+end
+
 function Config.attack_info_defaults_selected()
     if Config.settings.toggle_all ~= true then return false end
     if Config.settings.toggle_p1 ~= true then return false end
@@ -503,6 +558,7 @@ function Config.attack_info_defaults_selected()
     if not Config.updating_defaults_selected() then return false end
     if not Config.display_defaults_selected() then return false end
     if not Config.unit_defaults_selected() then return false end
+    if not Config.mode_defaults_selected() then return false end
     if not Config.column_visibility_defaults_selected() then return false end
     local _, defaults = UI.ensure_position_coords()
     if not Config.position_defaults_selected(defaults) then return false end
@@ -794,6 +850,7 @@ end
 GameObjects.TrainingManager = nil
 GameObjects.PauseManager    = nil
 GameObjects.bFlowManager    = nil
+GameObjects.WTBattleManager = nil
 GameObjects.sSetting        = nil
 local _gBattle           = sdk.find_type_definition("gBattle")
 GameObjects.PlayerField  = _gBattle:get_field("Player")
@@ -824,6 +881,9 @@ function GameObjects.refresh_singletons()
     end
     if not GameObjects.bFlowManager then
         GameObjects.bFlowManager = sdk.get_managed_singleton("app.bFlowManager")
+    end
+    if not GameObjects.WTBattleManager then
+        GameObjects.WTBattleManager = sdk.get_managed_singleton("app.worldtour.WTBattleManager")
     end
 end
 
@@ -867,6 +927,102 @@ function GameObjects.get_game_mode_id()
     return 0
 end
 
+function GameObjects.is_tutorial_mode()
+    return GameObjects.get_game_mode_id() == 5
+end
+
+function GameObjects.get_training_game_mode_id()
+    if GameObjects.TrainingManager then
+        local ok, mode = pcall(function() return GameObjects.TrainingManager:get_field("GameMode") end)
+        if ok and mode and mode ~= 0 then return mode end
+    end
+    local flow_mode = GameObjects.get_flow_game_mode_id()
+    if flow_mode == 2 then
+        return 0
+    end
+    if GameObjects.sSetting then
+        local ok, mode = pcall(function() return GameObjects.sSetting:get_field("GameMode") end)
+        if ok and mode and mode ~= 0 then return mode end
+    end
+    return 0
+end
+
+function GameObjects.get_flow_game_mode_id()
+    if not GameObjects.bFlowManager then return 0 end
+    local ok, mode = pcall(function() return GameObjects.bFlowManager:get_GameMode() end)
+    return ok and mode or 0
+end
+
+function GameObjects.get_main_flow_id()
+    if not GameObjects.bFlowManager then return 0 end
+    local ok, flow_id = pcall(function() return GameObjects.bFlowManager:get_MainFlowID() end)
+    return ok and flow_id or 0
+end
+
+function GameObjects.is_training_mode()
+    local mode = GameObjects.get_training_game_mode_id()
+    return mode == 2 or mode == 10 or mode == 18 or GameObjects.get_main_flow_id() == 79
+end
+
+function GameObjects.is_replay_mode()
+    local mode = GameObjects.get_training_game_mode_id()
+    return mode == 24 or mode == 13 or mode == 23 or mode == 25
+end
+
+function GameObjects.is_trials_mode()
+    return GameObjects.get_training_game_mode_id() == 6
+end
+
+function GameObjects.is_arcade_mode()
+    local mode = GameObjects.get_training_game_mode_id()
+    return mode == 1 or mode == 9 or mode == 11 or mode == 12 or mode == 13 or mode == 27
+        or GameObjects.get_main_flow_id() == 65
+end
+
+function GameObjects.is_world_tour_mode()
+    return GameObjects.get_flow_game_mode_id() == 2
+end
+
+function GameObjects.is_world_tour_battle_active()
+    if not GameObjects.WTBattleManager then return false end
+    if Utils.try_call_method(GameObjects.WTBattleManager, "get_IsBattle") == true then
+        return true
+    end
+    return Utils.try_call_method(GameObjects.WTBattleManager, "get_IsEngage") == true
+end
+
+function GameObjects.is_versus_mode()
+    local mode = GameObjects.get_training_game_mode_id()
+    return mode == 3 or mode == 19 or mode == 22 or mode == 26 or mode == 28 or mode == 29
+end
+
+function GameObjects.is_display_mode_enabled()
+    if GameObjects.is_tutorial_mode() then
+        return false
+    end
+
+    if GameObjects.is_training_mode() then
+        return Config.settings.toggle_mode_training == true
+    end
+    if GameObjects.is_replay_mode() then
+        return Config.settings.toggle_mode_replay == true
+    end
+    if GameObjects.is_trials_mode() then
+        return Config.settings.toggle_mode_trials == true
+    end
+    if GameObjects.is_world_tour_mode() then
+        return Config.settings.toggle_mode_world_tour == true
+    end
+    if GameObjects.is_arcade_mode() then
+        return Config.settings.toggle_mode_arcade == true
+    end
+    if GameObjects.is_versus_mode() then
+        return Config.settings.toggle_mode_versus == true
+    end
+
+    return true
+end
+
 function GameObjects.get_training_drive_refill_settings(player_index)
     if not GameObjects.TrainingManager then return nil end
 
@@ -899,6 +1055,9 @@ function GameObjects.is_avatar_battle_mode()
     if ZERO_UNPAUSED_MODES[mode] then
         return true
     end
+    if GameObjects.is_world_tour_battle_active() then
+        return true
+    end
     if GameObjects.bFlowManager then
         local ok, flow_id = pcall(function() return GameObjects.bFlowManager:get_MainFlowID() end)
         if ok and flow_id and ZERO_UNPAUSED_SCENES[flow_id] then
@@ -909,6 +1068,8 @@ function GameObjects.is_avatar_battle_mode()
 end
 
 function GameObjects.update_builtin_attack_data_display()
+    if not GameObjects.is_display_mode_enabled() then return end
+
     local hide_builtin_attack_data_display = Config.settings.hide_builtin_attack_data_display == true
     if not GameObjects.TrainingManager then return end
 
@@ -1114,6 +1275,12 @@ function GameObjects.is_paused()
     if not GameObjects.PauseManager then return false end
     local pause_type_bit = GameObjects.PauseManager:get_field("_CurrentPauseTypeBit")
     local mode = GameObjects.get_game_mode_id()
+
+    -- Live World Tour battles use pause_type_bit=0 while gameplay is active.
+    -- Non-zero values indicate the WT pause/menu overlay path is active.
+    if GameObjects.is_world_tour_battle_active() then
+        return pause_type_bit ~= 0
+    end
 
     -- Certain scenes (like 79 = eAvatarRoomTraining, 86 = eBattleHubAvatarBattleIn, etc.)
     -- do not have a battle overlay active, so bit=0 means "unpaused" rather
@@ -7221,6 +7388,11 @@ function UI.render_windows()
         UI.begin_fadeout(1)
         return
     end
+    if not GameObjects.is_display_mode_enabled() then
+        UI.begin_fadeout(0)
+        UI.begin_fadeout(1)
+        return
+    end
     if GameObjects.is_paused() then return end
     UI.right_click_this_frame = UI.was_key_down(RIGHT_CLICK)
 
@@ -7589,6 +7761,31 @@ function UI.render_unit_settings()
         reduce_super_changed, Config.settings.reduce_super = imgui.checkbox("Super##reduce_super", Config.settings.reduce_super)
         if reduce_super_changed then
             UI.mark_for_save()
+        end
+
+        imgui.tree_pop()
+    end
+end
+
+function UI.render_mode_settings()
+    if imgui.tree_node("Modes") then
+        if not Config.mode_defaults_selected() then
+            imgui.same_line()
+            UI.confirm_button("mode_defaults", "Defaults", "mode_defaults", function()
+                Config.reset_mode_defaults()
+                UI.mark_for_save()
+            end)
+        elseif UI.confirm_active.mode_defaults then
+            UI.confirm_active.mode_defaults = nil
+        end
+
+        for _, mode_def in ipairs(MODE_DEFS) do
+            local changed
+            changed, Config.settings[mode_def.key] = imgui.checkbox(mode_def.label .. "##" .. mode_def.key, Config.settings[mode_def.key] == true)
+            if changed then
+                UI.mark_for_save()
+            end
+            UI.set_hover_tooltip(mode_def.tooltip)
         end
 
         imgui.tree_pop()
@@ -8047,6 +8244,7 @@ function UI.render_settings()
             end
 
             UI.render_position_settings()
+            UI.render_mode_settings()
             UI.render_debug_settings()
         end
         imgui.tree_pop()
@@ -8067,13 +8265,18 @@ re.on_frame(function()
     UI.fadeout_frame_counter = UI.fadeout_frame_counter + 1
     local sPlayer, cPlayer, cTeam = GameObjects.get_objects()
     local in_battle = GameObjects.is_in_battle(cPlayer)
+    local display_mode_enabled = GameObjects.is_display_mode_enabled()
     local round_no = in_battle and GameObjects.get_round_no() or nil
     UI.handle_hotkeys()
     UI.update_combo_timers()
-    GameObjects.update_builtin_attack_data_display()
+    if display_mode_enabled then
+        GameObjects.update_builtin_attack_data_display()
+    end
     UI.tooltip_handler()
     UI.save_handler()
-    UI.draw_action_notify()
+    if display_mode_enabled then
+        UI.draw_action_notify()
+    end
     ComboData.sync_gameplay_state(in_battle, round_no)
 
     -- Handle snapshot save/load hooks (processed on_frame for safety, per
@@ -8234,7 +8437,7 @@ re.on_frame(function()
                 ComboData.drive_cooldown_peak[1] = p2_cd
             end
         end
-        if not ComboData.is_result_screen_active() then
+        if not ComboData.is_result_screen_active() and display_mode_enabled then
             UI.render_windows()
         end
     else

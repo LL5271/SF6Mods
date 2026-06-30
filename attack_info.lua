@@ -2,42 +2,45 @@
 -- https://www.nexusmods.com/streetfighter6/mods/3637
 -- 
 -- Changelog:
--- 0.95 (x x, 2026)
+-- 0.95 (June 30)
 -- - Fixed AKI poison DoT-related calculation issues
--- - Fixed blocked Drive Impact wall-splat start/end handling [VERIFY]
--- - Fixed blank save-slot loads mutating the display [VERIFY]
+-- - Fixed blocked Drive Impact wall-splat start/end handling
 -- - Various Drive Cooldown indicator improvements
 -- - Drive Impact startup now shows a hidden display on startup, not contact
--- - Fixed long command throws tallying values after HOLD release [INCOMPLETE]
--- - Fixed OD command throw Drive spend baselines
--- 0.94 (June 28, 2026)
+-- - Fixed command throw calculation bugs
+-- - Fixed some OD Drive spend baselines
+--
+-- 0.94 (June 28)
 -- - Fixed debugger issue that was causing unconditional write operations
 -- - Added toggle options for game modes (Training, Replay, Trials, Arcade, WT, Versus)
 -- - Hides displays in Tutorial mode
 -- - Fixed issue where displays could flicker right before a scene change
 -- - Moved snapshot handling to managed storage
--- 0.93 (June 28, 2026)
+--
+-- 0.93 (June 28)
 -- - Added REFramework stable v1.5.9.1 compatibility
 -- - * New path for action-engine reads and legacy ImGui rendering
 -- - * Legacy font loading and rendering fallbacks
 -- - * Still not 1:1 with newer buiild functionality, but close enough
 -- - Fixed issue where display would update indefinitely after some blockstring situations
--- 0.92 (June 27, 2026)
+--
+-- 0.92 (June 27)
 -- - Bugfixes for attacks starting with Super Art (still needs work), Drive Impact
 -- - Added colored labels to signify resource cap
 -- - Gradient improvements
 -- - Fixed Super Art initial cost not being applied to combo when super activation doesn't immediately connect
--- - Fixed Drive Impact initial cost not applied to combo when baselines cleared by other player's sequence start
+-- - Fixed Drive Impact initial cost bug when baselines cleared by other player's sequence start
 -- - Fixed lingering displays on postgame menu
 -- - Fixed round-ending throw defender panel getting stuck on stale self totals/damage
 -- - Fixed defender display getting stuck on previous combo
 -- - Minor changes to debugger (improved logging performance)
+--
 -- 0.91 (June 26, 2026)
 -- - Fixed issue with carry calculations on right half of stage
 -- - Fixed position percentage bounding
 
 local MOD_NAME = "Attack Info"
-local VERSION = 0.94
+local VERSION = 0.95
 
 local CONFIG_PATH = "attack_info.json"
 local DEBUG_PATH = "attack_info_debug.log"

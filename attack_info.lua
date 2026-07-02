@@ -4585,6 +4585,25 @@ function ComboData.update_state(p1, p2)
     
                 local previous_finish = state.finish
                 local current_finish = { p1 = Utils.deep_copy(p1), p2 = Utils.deep_copy(p2) }
+                -- Suppress Training Mode Drive Gauge refill interference during
+                -- active combos.  Natural drive behavior during combos is
+                -- monotonic decrease, so any increase must be from refill.
+                -- Clamp each player's drive to the previous frame's value.
+                for pi = 0, 1 do
+                    local refill = GameObjects.get_training_drive_refill_settings(pi)
+                    if refill and refill.point_lock then
+                        local pk = pi == 0 and "p1" or "p2"
+                        local prev = previous_finish and previous_finish[pk]
+                        local curr = current_finish[pk]
+                        if prev and curr then
+                            local prev_drive = tonumber(prev.drive_adjusted)
+                            local curr_drive = tonumber(curr.drive_adjusted)
+                            if prev_drive and curr_drive then
+                                curr.drive_adjusted = math.min(curr_drive, prev_drive)
+                            end
+                        end
+                    end
+                end
                 local attacker_key = i == 0 and "p1" or "p2"
                 local start_def = (i == 0 and state.start.p2 or state.start.p1) or {}
                 local ended_in_knockdown = def and (def.down_count or 0) ~= (start_def.down_count or 0)

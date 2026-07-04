@@ -1,7 +1,28 @@
--- Attack Info 0.94
+-- Attack Info 0.96
 -- https://www.nexusmods.com/streetfighter6/mods/3637
--- 
--- Changelog:
+--
+-- --
+--
+-- TODO
+--
+-- Fix fadeout effect (use native flow fade?)
+-- Don't clear displays when loading empty Training Mode save state
+-- Fix throws triggering full display clear
+-- Fix Drive Cooldown widgets flashing briefly when Refill setting is enabled
+-- Add 120% scaling display and color effect for CH/PC
+-- Fix WT scaling display (shows as flat 100%, broken in recent updage)
+--
+-- --
+--
+-- Changelog
+--
+-- 0.96 (July 4)
+-- - Fixing combo calculations where DI is involved
+-- - Current issues:
+--   - Second hit scaling when applying multiple attacks vs. armor is wrong
+--   - (First attack is correct)
+--   - Armored attack absorbing, then hitting should start combo for armored
+--
 -- 0.95 (June 30)
 -- - Fixed AKI poison DoT-related calculation issues
 -- - Fixed blocked Drive Impact wall-splat start/end handling
@@ -40,7 +61,7 @@
 -- - Fixed position percentage bounding
 
 local MOD_NAME = "Attack Info"
-local VERSION = 0.95
+local VERSION = 0.96
 
 local CONFIG_PATH = "attack_info.json"
 local DEBUG_PATH = "attack_info_debug.log"
@@ -1217,6 +1238,7 @@ function GameObjects.map_player_data(cPlayer, cTeam)
     local data_vals = {}
     for player_index = 0, 1 do
         local player = cPlayer[player_index]
+        local opponent_player = cPlayer and cPlayer[player_index == 0 and 1 or 0] or nil
         local training_drive = GameObjects.get_training_drive_refill_settings(player_index)
         -- if not player then
         --     data_vals[player_index] = { hp_current = 0, hp_max = 0, combo_count = 0, incapacitated = false }
@@ -1247,18 +1269,25 @@ function GameObjects.map_player_data(cPlayer, cTeam)
         data.death_count = team and team.mDeathCount or 0
         data.combo_damage = team and team.mComboDamage or 0
         data.current_hit_damage = 0
+        data.current_hit_damage_raw = 0
         data.combo_scale_now = 100
+        data.combo_scale_buff = 0
+        data.combo_sp_rate = 0
         if player.pDmgHitDT then
             data.current_hit_damage = tonumber(player.pDmgHitDT.DmgValue) or 0
+            data.current_hit_damage_raw = tonumber(player.pDmgHitDT.DmgValue0) or 0
         end
         data.is_poisoned = false
         if player.damage_cond then
             local ok, poisoned = pcall(function() return player.damage_cond:call("is_poison()") end)
             if ok then data.is_poisoned = poisoned == true end
         end
-        if player.combo_scale then
-            data.combo_scale_now = tonumber(player.combo_scale.now) or 100
+        local combo_scale_source = opponent_player and opponent_player.combo_scale or player.combo_scale
+        if combo_scale_source then
+            data.combo_scale_now = tonumber(combo_scale_source.now) or 100
+            data.combo_scale_buff = tonumber(combo_scale_source.buff) or 0
         end
+        data.combo_sp_rate = tonumber(opponent_player and opponent_player.combo_sp_rate or player.combo_sp_rate) or 0
         data.down_count = team and team.mDownCount or 0
         data.sp_armor = false
         local ok_sp_armor, sp_armor_val = pcall(function() return player.sp_armor end)
@@ -1364,8 +1393,8 @@ end
 
 function ComboData.default_state()
     ComboData.player_states = {
-        [0] = { started = false, finished = false, attacker = 0, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, drive_impact_startup_display = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, throw_side_switch_frames = 0, throw_side_switch_last_action_frame = nil, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, hit_start_hp = nil, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil, drive_rush_cooldown_block = false, drive_rush_cooldown_released = false },
-        [1] = { started = false, finished = false, attacker = 1, hit_start_hp = nil, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, drive_impact_startup_display = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, throw_side_switch_frames = 0, throw_side_switch_last_action_frame = nil, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil, drive_rush_cooldown_block = false, drive_rush_cooldown_released = false },
+        [0] = { started = false, finished = false, attacker = 0, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, drive_impact_startup_display = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, throw_side_switch_frames = 0, throw_side_switch_last_action_frame = nil, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, hit_start_hp = nil, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil, drive_rush_cooldown_block = false, drive_rush_cooldown_released = false, started_against_defender_armor = false, armor_origin_start = nil, armor_origin_start_hp_lock = nil },
+        [1] = { started = false, finished = false, attacker = 1, hit_start_hp = nil, is_blocked = false, is_trade_sequence = false, is_drive_impact_sequence = false, drive_impact_startup_display = false, pending_start_drive_impact_sequence = false, pending_poison_was_active = false, ended_in_knockdown = false, ended_in_ko = false, start = {}, finish = {}, prev_finish = nil, pending_start = nil, pending_start_hp_lock = nil, pending_start_ttl = nil, timer_remaining = nil, advantage_settle_remaining = 0, block_end_grace_remaining = 0, defender_recovery_grace_remaining = 0, throw_end_wait_for_exit = false, throw_side_switch_frames = 0, throw_side_switch_last_action_frame = nil, advantage_lock = nil, hit_damage_lock = nil, hit_damage_lock_frozen = false, combo_damage_lock = nil, start_hp_lock = nil, knockdown_drive_settle = false, knockdown_drive_settle_frames = nil, clear_start_advantage = false, poison_was_active = false, last_seen_combo_id = 0, ko_carry_finish_p1_x = nil, ko_carry_finish_p2_x = nil, ko_carry_total_p1 = nil, ko_carry_total_p2 = nil, drive_rush_cooldown_block = false, drive_rush_cooldown_released = false, started_against_defender_armor = false, armor_origin_start = nil, armor_origin_start_hp_lock = nil },
     }
     ComboData.p1_prev, ComboData.p2_prev = {}, {}
     ComboData.resource_baselines = { [0] = nil, [1] = nil }
@@ -1392,6 +1421,7 @@ function ComboData.default_state()
     ComboData.runtime_state.display_values_logged_hashes = {}
     ComboData.throw_carry_baseline = nil
     ComboData.drive_impact_start_snapshots = { [0] = nil, [1] = nil }
+    ComboData.drive_impact_armor_origin_snapshots = { [0] = nil, [1] = nil }
     ComboData.parry_tracker = { [0] = nil, [1] = nil }
     ComboData.drive_cooldown_peak = { [0] = 0, [1] = 0 }
     ComboData.drive_cooldown_legitimate = { [0] = nil, [1] = nil }
@@ -2117,6 +2147,9 @@ function ComboData.clear_player_sequence_state_for_snapshot_load(player_index)
     state.poison_was_active = false
     state.drive_rush_cooldown_block = false
     state.drive_rush_cooldown_released = false
+    state.started_against_defender_armor = false
+    state.armor_origin_start = nil
+    state.armor_origin_start_hp_lock = nil
     state.clear_hidden_reason = "snapshot_load"
     state.last_seen_combo_id = 0
     if ComboData.parry_tracker then
@@ -2124,6 +2157,9 @@ function ComboData.clear_player_sequence_state_for_snapshot_load(player_index)
     end
     if ComboData.drive_impact_start_snapshots then
         ComboData.drive_impact_start_snapshots[player_index] = nil
+    end
+    if ComboData.drive_impact_armor_origin_snapshots then
+        ComboData.drive_impact_armor_origin_snapshots[player_index] = nil
     end
 end
 
@@ -2574,23 +2610,36 @@ function ComboData.capture_drive_impact_start_snapshot(player_index)
     if not ComboData.drive_impact_start_snapshots then
         ComboData.drive_impact_start_snapshots = { [0] = nil, [1] = nil }
     end
+    if not ComboData.drive_impact_armor_origin_snapshots then
+        ComboData.drive_impact_armor_origin_snapshots = { [0] = nil, [1] = nil }
+    end
 
-    ComboData.drive_impact_start_snapshots[player_index] = {
+    local snapshot = {
         p1 = Utils.deep_copy(ComboData.p1_prev),
         p2 = Utils.deep_copy(ComboData.p2_prev),
         ttl = 120,
     }
+    ComboData.drive_impact_start_snapshots[player_index] = Utils.deep_copy(snapshot)
+    ComboData.drive_impact_armor_origin_snapshots[player_index] = Utils.deep_copy(snapshot)
+    local defender = player_index == 0 and snapshot.p2 or snapshot.p1
+    ComboData.debug_log("DI_SNAPSHOT_CAPTURE p" .. tostring(player_index)
+        .. " p1_drive=" .. tostring(snapshot.p1 and snapshot.p1.drive_adjusted)
+        .. " p2_drive=" .. tostring(snapshot.p2 and snapshot.p2.drive_adjusted)
+        .. " defender_drive=" .. tostring(defender and defender.drive_adjusted), "log_display_update")
 end
 
 function ComboData.tick_drive_impact_start_snapshot(player_index)
-    if not ComboData.drive_impact_start_snapshots then return end
-
-    local snapshot = ComboData.drive_impact_start_snapshots[player_index]
-    if not snapshot then return end
-
-    snapshot.ttl = (tonumber(snapshot.ttl) or 0) - 1
-    if snapshot.ttl <= 0 then
-        ComboData.drive_impact_start_snapshots[player_index] = nil
+    for _, table_name in ipairs({ "drive_impact_start_snapshots", "drive_impact_armor_origin_snapshots" }) do
+        local snapshots = ComboData[table_name]
+        if snapshots then
+            local snapshot = snapshots[player_index]
+            if snapshot then
+                snapshot.ttl = (tonumber(snapshot.ttl) or 0) - 1
+                if snapshot.ttl <= 0 then
+                    snapshots[player_index] = nil
+                end
+            end
+        end
     end
 end
 
@@ -2609,6 +2658,9 @@ function ComboData.apply_drive_impact_start_snapshot(state, attacker_idx)
         start_defender.current_hit_damage = 0
     end
     ComboData.drive_impact_start_snapshots[attacker_idx] = nil
+    ComboData.debug_log("DI_SNAPSHOT_APPLY p" .. tostring(attacker_idx)
+        .. " start_p1_drive=" .. tostring(state.start.p1 and state.start.p1.drive_adjusted)
+        .. " start_p2_drive=" .. tostring(state.start.p2 and state.start.p2.drive_adjusted), "log_display_update")
     return true
 end
 
@@ -2833,6 +2885,45 @@ function ComboData.expire_pending_start_if_stale(state, attack_kind, precombo_op
     end
 end
 
+function ComboData.capture_pending_start_snapshot(state, attacker_idx, def_prev, p1_prev, p2_prev, atk, def)
+    if not state then return false end
+
+    if not state.pending_start then
+        state.pending_start = { p1 = Utils.deep_copy(p1_prev), p2 = Utils.deep_copy(p2_prev) }
+    end
+
+    local pending_defender = attacker_idx == 0 and state.pending_start.p2 or state.pending_start.p1
+    local pending_hp = tonumber(def_prev and def_prev.hp_current) or 0
+    if pending_defender and pending_hp > (tonumber(pending_defender.hp_current) or 0) then
+        pending_defender.hp_current = pending_hp
+    end
+    if pending_defender and def_prev and def_prev.is_poisoned then
+        pending_defender.is_poisoned = true
+    end
+    if (def and def.is_poisoned) or (def_prev and def_prev.is_poisoned) then
+        state.pending_poison_was_active = true
+    end
+    state.pending_start_hp_lock = math.max(
+        tonumber(state.pending_start_hp_lock) or 0,
+        tonumber(pending_defender and pending_defender.hp_current) or 0,
+        pending_hp
+    )
+
+    local pending_attacker = attacker_idx == 0 and state.pending_start.p1 or state.pending_start.p2
+    if ComboData.is_drive_impact_state(pending_attacker) or ComboData.is_drive_impact_state(atk) then
+        state.pending_start_drive_impact_sequence = true
+    end
+    if pending_attacker and atk then
+        local current_super = tonumber(atk.super)
+        local pending_super = tonumber(pending_attacker.super)
+        if current_super ~= nil and (pending_super == nil or current_super < pending_super) then
+            pending_attacker.super = atk.super
+        end
+    end
+
+    return true
+end
+
 function ComboData.update_block_end_grace(state, def, def_prev)
     local string_gap = Config.get_string_gap()
     if ComboData.is_block_snapshot_active(def) then
@@ -2939,21 +3030,41 @@ function ComboData.get_hit_damage_snapshot(state, attacker_key, current_finish, 
     local start_defender = state.start and ((attacker_key == "p1" and state.start.p2) or state.start.p1) or nil
     local finish_defender = current_finish and ((attacker_key == "p1" and current_finish.p2) or current_finish.p1) or nil
     local finish_attacker = current_finish and current_finish[attacker_key] or nil
+    local combo_damage_delta = math.max(
+        0,
+        (tonumber(finish_attacker and finish_attacker.combo_damage) or 0)
+            - (tonumber(state and state.combo_damage_lock) or 0)
+    )
+    local defender_hp_delta = math.max(
+        0,
+        (tonumber(start_defender and start_defender.hp_current) or 0)
+            - (tonumber(finish_defender and finish_defender.hp_current) or 0)
+    )
+    local armor_damage_contact = state
+        and state.started_against_defender_armor == true
+        and defender_hp_delta > 0
 
     if state and state.is_blocked then
-        local chip_damage = (start_defender and start_defender.hp_current or 0) - (finish_defender and finish_defender.hp_current or 0)
-        chip_damage = math.max(0, tonumber(chip_damage) or 0)
+        local chip_damage = defender_hp_delta
         return chip_damage, chip_damage > 0 and 100 or nil, chip_damage
     end
 
-    local start_raw_damage = tonumber(start_defender and start_defender.current_hit_damage) or 0
-    local current_raw_damage = math.max(
+    local start_applied_damage = tonumber(start_defender and start_defender.current_hit_damage) or 0
+    local current_applied_damage = math.max(
         tonumber(finish_defender and finish_defender.current_hit_damage) or 0,
         tonumber(finish_attacker and finish_attacker.current_hit_damage) or 0
     )
+    local start_raw_damage = tonumber(start_defender and start_defender.current_hit_damage_raw) or start_applied_damage
+    local current_raw_damage = math.max(
+        tonumber(finish_defender and finish_defender.current_hit_damage_raw) or 0,
+        tonumber(finish_attacker and finish_attacker.current_hit_damage_raw) or 0
+    )
     local raw_damage = start_raw_damage
+    local applied_damage = start_applied_damage
     local scaling = finish_defender and finish_defender.combo_scale_now or 100
+    local applied_damage_authoritative = false
     local current_raw_damage_is_live = current_raw_damage > 0 and current_raw_damage ~= start_raw_damage
+    local current_applied_damage_is_live = current_applied_damage > 0 and current_applied_damage ~= start_applied_damage
 
     -- pDmgHitDT.DmgValue can remain populated from the previously displayed hit
     -- in the pre-hit start snapshot. Prefer a non-zero live finish-frame value
@@ -2961,12 +3072,44 @@ function ComboData.get_hit_damage_snapshot(state, attacker_key, current_finish, 
     -- stale Source/Scaled Damage-Per-Hit values. KO still forces live data so
     -- the provisional KO path can wait for, or derive, the real hit damage.
     if prefer_current_hit_damage then
-        raw_damage = current_raw_damage
+        applied_damage = current_applied_damage
+        if current_raw_damage > 0 then
+            raw_damage = current_raw_damage
+        end
+    elseif current_applied_damage_is_live then
+        applied_damage = current_applied_damage
+        if current_raw_damage > 0 then
+            raw_damage = current_raw_damage
+        end
+    elseif applied_damage <= 0 then
+        applied_damage = current_applied_damage
+        if current_raw_damage > 0 then
+            raw_damage = current_raw_damage
+        end
     elseif current_raw_damage_is_live then
         raw_damage = current_raw_damage
     elseif raw_damage <= 0 then
-        raw_damage = current_raw_damage
+        raw_damage = current_raw_damage > 0 and current_raw_damage or applied_damage
     end
+
+    if combo_damage_delta > 0 then
+        applied_damage = combo_damage_delta
+        applied_damage_authoritative = true
+        local combo_raw_candidate = math.max(current_raw_damage, current_applied_damage, start_raw_damage, start_applied_damage)
+        if combo_raw_candidate > 0 then
+            raw_damage = combo_raw_candidate
+        end
+    elseif armor_damage_contact then
+        if raw_damage <= 0 then
+            raw_damage = math.max(start_applied_damage, current_applied_damage)
+        end
+        applied_damage = defender_hp_delta
+        applied_damage_authoritative = true
+    elseif applied_damage <= 0 and defender_hp_delta > 0 then
+        applied_damage = defender_hp_delta
+        applied_damage_authoritative = true
+    end
+
     -- Avatar battle mode: per-hit damage from HP delta.
     -- pDmgHitDT.DmgValue reflects base move damage and does not include
     -- World Tour/avatar stat/buff modifiers. Use the defender's HP change
@@ -2975,23 +3118,37 @@ function ComboData.get_hit_damage_snapshot(state, attacker_key, current_finish, 
     -- to 100 so scaled_damage (which = raw * scaling / 100) stays correct.
     if GameObjects.is_avatar_battle_mode() and state and state.hit_start_hp ~= nil and not state.is_blocked then
         local defender_current = tonumber(finish_defender and finish_defender.hp_current) or 0
-        local hp_delta = state.hit_start_hp - defender_current
-        if hp_delta > 0 then
-            raw_damage = hp_delta
+        local avatar_hp_delta = state.hit_start_hp - defender_current
+        if avatar_hp_delta > 0 then
+            raw_damage = avatar_hp_delta
+            applied_damage = avatar_hp_delta
             scaling = 100
+            applied_damage_authoritative = true
+        end
+    end
+
+    raw_damage = tonumber(raw_damage) or 0
+    applied_damage = tonumber(applied_damage) or 0
+
+    if applied_damage_authoritative and raw_damage > 0 and applied_damage > 0 then
+        local effective_scaling = math.floor((applied_damage * 100) / raw_damage)
+        if effective_scaling > 0 then
+            scaling = effective_scaling
         end
     end
 
     scaling = tonumber(scaling) or 100
 
-    if raw_damage <= 0 then
-        -- First-hit KO may expose scaling before DmgValue/current_hit_damage is populated.
-        -- Keep the scaling visible, but do not synthesize a raw start value here;
-        -- update_hit_damage_lock may hold a provisional value until the real hit damage arrives.
-        return raw_damage, scaling, 0
+    if raw_damage <= 0 or applied_damage <= 0 then
+        -- Do not display scaling until a real damage value exists to anchor it.
+        return raw_damage, nil, 0
     end
 
-    return raw_damage, scaling, math.max(0, math.floor((raw_damage * scaling) / 100))
+    local scaled_damage = applied_damage_authoritative
+        and math.max(0, applied_damage)
+        or math.max(0, math.floor((raw_damage * scaling) / 100))
+
+    return raw_damage, scaling, scaled_damage
 end
 
 function ComboData.is_pending_ko(atk, def, def_prev)
@@ -3567,7 +3724,12 @@ function ComboData.update_resource_baselines(p1, p2)
             if state and state.started == true then
                 ComboData.resource_baselines[i] = nil
                 if ComboData.resource_precombo_baselines then
-                    ComboData.resource_precombo_baselines[i] = nil
+                    -- Keep the recent precombo baseline alive during active DI
+                    -- sequences so a later armor interaction/punish can still use
+                    -- the defender's pre-spend meter as the true combo start.
+                    if not state.drive_impact_startup_display and not state.is_drive_impact_sequence then
+                        ComboData.resource_precombo_baselines[i] = nil
+                    end
                 end
             end
         end
@@ -3649,6 +3811,52 @@ function ComboData.copy_start_resources_from_baseline(start_player, baseline)
     end
 
     return changed
+end
+
+function ComboData.copy_start_values_from_snapshot_player(start_player, snapshot_player)
+    if not start_player or not snapshot_player then return false end
+
+    local changed = false
+    for _, field in ipairs({ "hp_current", "drive_adjusted", "incapacitated", "super" }) do
+        if snapshot_player[field] ~= nil and start_player[field] ~= snapshot_player[field] then
+            start_player[field] = Utils.deep_copy(snapshot_player[field])
+            changed = true
+        end
+    end
+
+    return changed
+end
+
+function ComboData.apply_armor_origin_start_snapshot(state, defender_idx)
+    local snapshots = ComboData.drive_impact_armor_origin_snapshots
+    if not state or not snapshots then return false end
+
+    local snapshot = snapshots[defender_idx]
+    if not snapshot or not state.start then return false end
+
+    local changed = false
+    changed = ComboData.copy_start_values_from_snapshot_player(state.start.p1, snapshot.p1) or changed
+    changed = ComboData.copy_start_values_from_snapshot_player(state.start.p2, snapshot.p2) or changed
+
+    local start_defender = defender_idx == 0 and state.start.p1 or state.start.p2
+    if start_defender then
+        local snapshot_hp = tonumber(defender_idx == 0 and snapshot.p1 and snapshot.p1.hp_current or snapshot.p2 and snapshot.p2.hp_current)
+        if snapshot_hp and snapshot_hp > 0 then
+            state.start_hp_lock = snapshot_hp
+            start_defender.hp_current = snapshot_hp
+            changed = true
+        end
+    end
+
+    return changed
+end
+
+function ComboData.get_drive_impact_armor_origin_snapshot(player_idx)
+    local snapshots = ComboData.drive_impact_armor_origin_snapshots
+    if not snapshots then return nil end
+    local snapshot = snapshots[player_idx]
+    if not snapshot then return nil end
+    return player_idx == 0 and snapshot.p1 or snapshot.p2
 end
 
 function ComboData.merge_start_resources_from_recent_baseline(start_player, recent)
@@ -4091,6 +4299,24 @@ function ComboData.clear_recent_resource_baselines()
     end
 end
 
+function ComboData.clear_recent_resource_baseline(player_idx)
+    if not ComboData.resource_precombo_baselines then return end
+    ComboData.resource_precombo_baselines[player_idx] = nil
+end
+
+function ComboData.should_preserve_recent_resource_baseline_after_restore(player_idx, current)
+    local state = ComboData.player_states and ComboData.player_states[player_idx] or nil
+    if state and (state.drive_impact_startup_display == true or state.is_drive_impact_sequence == true) then
+        return true
+    end
+
+    return ComboData.is_drive_impact_state(current)
+end
+
+function ComboData.sequence_started_against_defender_armor(def, def_prev)
+    return (def and def.sp_armor == true) or (def_prev and def_prev.sp_armor == true)
+end
+
 function ComboData.clear_all_resource_baselines()
     ComboData.resource_baselines = { [0] = nil, [1] = nil }
     ComboData.clear_recent_resource_baselines()
@@ -4352,39 +4578,7 @@ function ComboData.update_state(p1, p2)
             and def_prev.hp_current
             and (attack_kind or precombo_opener_damage)
         then
-            if not state.pending_start then
-                state.pending_start = { p1 = Utils.deep_copy(ComboData.p1_prev), p2 = Utils.deep_copy(ComboData.p2_prev) }
-            end
-
-            local pending_defender = i == 0 and state.pending_start.p2 or state.pending_start.p1
-            local pending_hp = tonumber(def_prev and def_prev.hp_current) or 0
-            if pending_defender and pending_hp > (tonumber(pending_defender.hp_current) or 0) then
-                pending_defender.hp_current = pending_hp
-            end
-            if pending_defender and def_prev and def_prev.is_poisoned then
-                pending_defender.is_poisoned = true
-            end
-            if (def and def.is_poisoned) or (def_prev and def_prev.is_poisoned) then
-                state.pending_poison_was_active = true
-            end
-            state.pending_start_hp_lock = math.max(
-                tonumber(state.pending_start_hp_lock) or 0,
-                tonumber(pending_defender and pending_defender.hp_current) or 0,
-                pending_hp
-            )
-
-            local pending_attacker = i == 0 and state.pending_start.p1 or state.pending_start.p2
-            local current_attacker = i == 0 and p1 or p2
-            if ComboData.is_drive_impact_state(pending_attacker) or ComboData.is_drive_impact_state(current_attacker) then
-                state.pending_start_drive_impact_sequence = true
-            end
-            if pending_attacker and current_attacker then
-                local current_super = tonumber(current_attacker.super)
-                local pending_super = tonumber(pending_attacker.super)
-                if current_super ~= nil and (pending_super == nil or current_super < pending_super) then
-                    pending_attacker.super = current_attacker.super
-                end
-            end
+            ComboData.capture_pending_start_snapshot(state, i, def_prev, ComboData.p1_prev, ComboData.p2_prev, atk, def)
         end
 
         if not attack_kind then
@@ -4423,6 +4617,8 @@ function ComboData.update_state(p1, p2)
             )
             local pending_start = state.pending_start
             local pending_start_hp_lock = state.pending_start_hp_lock
+            local carry_armor_origin_start = state.finished == true and Utils.deep_copy(state.armor_origin_start) or nil
+            local carry_armor_origin_start_hp_lock = state.finished == true and state.armor_origin_start_hp_lock or nil
             local preserve_ko_start_snapshot = state.ko_start_snapshot_locked == true or state.ko_start_hp_locked == true
             local saved_start = preserve_ko_start_snapshot and Utils.deep_copy(state.start) or nil
             local saved_start_hp_lock = preserve_ko_start_snapshot and state.start_hp_lock or nil
@@ -4552,9 +4748,52 @@ function ComboData.update_state(p1, p2)
                 true,
                 defender_recent_age
             )
-            if attacker_resources_restored or defender_resources_restored then
-                ComboData.clear_recent_resource_baselines()
+            local armor_origin_snapshot_present = ComboData.get_drive_impact_armor_origin_snapshot(defender_idx) ~= nil
+            local started_against_defender_armor = (attack_kind == "hit"
+                and ComboData.sequence_started_against_defender_armor(def, def_prev))
+                or (attack_kind == "throw"
+                    and armor_origin_snapshot_present
+                    and ((tonumber(def and def.drive_cooldown) or 0) ~= 0
+                        or (tonumber(def_prev and def_prev.drive_cooldown) or 0) ~= 0))
+            if started_against_defender_armor then
+                defender_resources_restored = ComboData.apply_armor_origin_start_snapshot(state, defender_idx) or defender_resources_restored
             end
+            if carry_armor_origin_start then
+                state.start = Utils.deep_copy(carry_armor_origin_start)
+                if carry_armor_origin_start_hp_lock ~= nil then
+                    state.start_hp_lock = carry_armor_origin_start_hp_lock
+                end
+                defender_resources_restored = true
+            end
+            if attacker_resources_restored then
+                if not ComboData.should_preserve_recent_resource_baseline_after_restore(i, atk) then
+                    ComboData.clear_recent_resource_baseline(i)
+                end
+            end
+            if defender_resources_restored then
+                if not ComboData.should_preserve_recent_resource_baseline_after_restore(defender_idx, def) then
+                    ComboData.clear_recent_resource_baseline(defender_idx)
+                end
+            end
+            state.started_against_defender_armor = started_against_defender_armor
+            if started_against_defender_armor then
+                state.armor_origin_start = Utils.deep_copy(state.start)
+                state.armor_origin_start_hp_lock = state.start_hp_lock
+            else
+                state.armor_origin_start = nil
+                state.armor_origin_start_hp_lock = nil
+            end
+            ComboData.debug_log("START_RESOURCE_SOURCES p" .. tostring(i)
+                .. " atk_restored=" .. tostring(attacker_resources_restored)
+                .. " def_restored=" .. tostring(defender_resources_restored)
+                .. " started_vs_armor=" .. tostring(started_against_defender_armor)
+                .. " attack_kind=" .. tostring(attack_kind)
+                .. " def_is_di=" .. tostring(ComboData.is_drive_impact_state(def))
+                .. " armor_snap_present=" .. tostring(armor_origin_snapshot_present)
+                .. " start_p1_drive=" .. tostring(state.start.p1 and state.start.p1.drive_adjusted)
+                .. " start_p2_drive=" .. tostring(state.start.p2 and state.start.p2.drive_adjusted)
+                .. " live_def_drive=" .. tostring(def and def.drive_adjusted)
+                .. " pending_start_hp_lock=" .. tostring(pending_start_hp_lock), "log_display_update")
 
             if preserve_ko_start_snapshot then
                 if saved_start then state.start = saved_start end
@@ -4579,6 +4818,18 @@ function ComboData.update_state(p1, p2)
                 -- and resetting start would lose the original Drive/Super/Carry baselines.
                 if combo_id_changed then
                     state.last_seen_combo_id = current_global_combo_id
+                end
+
+                -- DI armor-to-punish routes can land the next combo's first HP hit
+                -- while the previous sequence still owns this state. Capture the
+                -- pre-hit frame now so the later restart uses that HP snapshot
+                -- instead of the already-damaged frame one tick later.
+                if not state.is_blocked
+                    and not state.is_throw
+                    and (tonumber(atk and atk.combo_count) or 0) <= 0
+                    and precombo_opener_damage
+                then
+                    ComboData.capture_pending_start_snapshot(state, i, def_prev, ComboData.p1_prev, ComboData.p2_prev, atk, def)
                 end
 
                 ComboData.update_drive_rush_cooldown_block(state, i, atk, atk_prev)
@@ -4899,20 +5150,7 @@ function ComboData.update_state(p1, p2)
                         -- values now from p1_prev/p2_prev (still from the pre-attack frame)
                         -- so the next combo's pending_start gets correct baselines.
                         if attack_kind and not poison_tick_only and not state.pending_start then
-                            state.pending_start = { p1 = Utils.deep_copy(ComboData.p1_prev), p2 = Utils.deep_copy(ComboData.p2_prev) }
-                            local pending_defender = i == 0 and state.pending_start.p2 or state.pending_start.p1
-                            local pending_hp = tonumber(def_prev and def_prev.hp_current) or 0
-                            if pending_defender and pending_hp > (tonumber(pending_defender.hp_current) or 0) then
-                                pending_defender.hp_current = pending_hp
-                            end
-                            if pending_defender and def_prev and def_prev.is_poisoned then
-                                pending_defender.is_poisoned = true
-                            end
-                            state.pending_start_hp_lock = math.max(
-                                tonumber(state.pending_start_hp_lock) or 0,
-                                tonumber(pending_defender and pending_defender.hp_current) or 0,
-                                pending_hp
-                            )
+                            ComboData.capture_pending_start_snapshot(state, i, def_prev, ComboData.p1_prev, ComboData.p2_prev, atk, def)
                         end
                     end
                 -- On KO, freeze DPH lock, cap combo damage at starting HP,
@@ -5023,6 +5261,15 @@ function ComboData.update_state(p1, p2)
                         current.combo_damage = previous.combo_damage
                         current.current_hit_damage = previous.current_hit_damage
                         current.combo_scale_now = previous.combo_scale_now
+
+                        -- Post-combo settle should never let recovered/refilled
+                        -- Drive overwrite the combo's last real endpoint.
+                        local current_drive = tonumber(current.drive_adjusted)
+                        local previous_drive = tonumber(previous.drive_adjusted)
+                        if current_drive ~= nil and previous_drive ~= nil and current_drive > previous_drive then
+                            current.drive_adjusted = previous.drive_adjusted
+                            current.incapacitated = previous.incapacitated
+                        end
                     end
                 end
             end

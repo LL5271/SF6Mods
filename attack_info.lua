@@ -17,6 +17,10 @@
 -- Changelog
 --
 -- 0.96 (July 4)
+-- - Fixed stale armor_origin_start being carried from a finished combo into
+--   the next combo's start values, causing "stale values after knockdown"
+--   bug. armor_origin_start is now cleared at COMBO_END and the stale
+--   carry_armor_origin_start overwrite block has been removed.
 -- - Fixing combo calculations where DI is involved
 -- - Current issues:
 --   - Second hit scaling when applying multiple attacks vs. armor is wrong
@@ -4617,8 +4621,6 @@ function ComboData.update_state(p1, p2)
             )
             local pending_start = state.pending_start
             local pending_start_hp_lock = state.pending_start_hp_lock
-            local carry_armor_origin_start = state.finished == true and Utils.deep_copy(state.armor_origin_start) or nil
-            local carry_armor_origin_start_hp_lock = state.finished == true and state.armor_origin_start_hp_lock or nil
             local preserve_ko_start_snapshot = state.ko_start_snapshot_locked == true or state.ko_start_hp_locked == true
             local saved_start = preserve_ko_start_snapshot and Utils.deep_copy(state.start) or nil
             local saved_start_hp_lock = preserve_ko_start_snapshot and state.start_hp_lock or nil
@@ -4757,13 +4759,6 @@ function ComboData.update_state(p1, p2)
                         or (tonumber(def_prev and def_prev.drive_cooldown) or 0) ~= 0))
             if started_against_defender_armor then
                 defender_resources_restored = ComboData.apply_armor_origin_start_snapshot(state, defender_idx) or defender_resources_restored
-            end
-            if carry_armor_origin_start then
-                state.start = Utils.deep_copy(carry_armor_origin_start)
-                if carry_armor_origin_start_hp_lock ~= nil then
-                    state.start_hp_lock = carry_armor_origin_start_hp_lock
-                end
-                defender_resources_restored = true
             end
             if attacker_resources_restored then
                 if not ComboData.should_preserve_recent_resource_baseline_after_restore(i, atk) then
@@ -5124,6 +5119,8 @@ function ComboData.update_state(p1, p2)
                             state.timer_remaining = Config.settings.combo_timer_duration * 60
                         end
                         ComboData.clear_all_resource_baselines()
+                        state.armor_origin_start = nil
+                        state.armor_origin_start_hp_lock = nil
                         if state.is_blocked then
                         ComboData.debug_log("BLOCK_END p" .. tostring(i)
                             .. " guard_time=" .. tostring(def and def.guard_time)

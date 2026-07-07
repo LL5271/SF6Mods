@@ -22,6 +22,9 @@
 --   bug. armor_origin_start is now cleared at COMBO_END and the stale
 --   carry_armor_origin_start overwrite block has been removed.
 -- - Fixing combo calculations where DI is involved
+-- - Fixed damage scaling showing as a negative value (e.g. "-70%") for the
+--   defending player's panel — hit_damage_finish is the scaling percentage,
+--   not a damage amount, so it should remain positive regardless of perspective.
 -- - Current issues:
 --   - Second hit scaling when applying multiple attacks vs. armor is wrong
 --   - (First attack is correct)
@@ -7412,9 +7415,12 @@ function UI.get_combo_value_rows(state, player_index, is_defense)
     end
 
     -- Negate damage values in defense mode
+    -- hit_damage_finish is the scaling percentage — keep it positive for both
+    -- perspectives (scaling is always a positive percentage regardless of who
+    -- is taking damage). hit_damage_scaling (copy captured before negation)
+    -- stays positive for color purposes.
     if is_defense then
         if hit_damage_start ~= nil and hit_damage_start > 0 then hit_damage_start = -hit_damage_start end
-        if hit_damage_finish ~= nil and hit_damage_finish > 0 then hit_damage_finish = -hit_damage_finish end
         if hit_damage_total ~= nil and hit_damage_total > 0 then hit_damage_total = -hit_damage_total end
         -- hit_damage_scaling stays positive for color purposes
         -- Negate carry totals (defender being pushed back = negative from defender's perspective)

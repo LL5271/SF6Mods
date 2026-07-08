@@ -16,7 +16,9 @@
 --
 -- Changelog
 --
--- 0.96 (July 4)
+-- 0.96 (x)
+-- - Fixed negative damage scaling values on defender display
+-- - Sped up display fadeout (was 4f, now 1f)
 -- - Fixed stale armor_origin_start being carried from a finished combo into
 --   the next combo's start values, causing "stale values after knockdown"
 --   bug. armor_origin_start is now cleared at COMBO_END and the stale
@@ -5335,7 +5337,7 @@ UI.window_padding_width = 44
 UI.display_box_rounding = 10
 UI.legacy_font_file = "NotoSansSC-Bold.otf"
 UI.stroke_item_id = 0
-UI.FADEOUT_FRAMES = 4
+UI.FADEOUT_FRAMES = 1
 UI.fadeout_alpha_override = nil
 UI.fadeout_frame_counter = 0
 UI.fadeout_global_frame = 0
@@ -8990,7 +8992,7 @@ function UI.render_debug_settings()
 
         if imgui.tree_node("Log Options") then
             local logcats = {
-                { key = "toggle_enable_snapshot_debug_logging", label = "Log Snapshot Debug" },
+                { key = "toggle_enable_snapshot_debug_logging", label = "Log Snapshots" },
                 { key = "log_attacker_display", label = "Log Attacker Display" },
                 { key = "log_defender_display", label = "Log Defender Display" },
                 { key = "log_start_finish_values", label = "Log Start/Finish Values" },

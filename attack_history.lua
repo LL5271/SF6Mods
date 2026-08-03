@@ -219,7 +219,10 @@ GameData.char_id_table = {
     [28] = "Mai",
     [29] = "Elena",
     [25] = "Sagat",
-    [30] = "CViper"
+    [30] = "CViper",
+    [31] = "Alex",
+    [32] = "Ingrid",
+    [33] = "Yasmine"
 }
 
 GameData.TrainingManager = sdk.get_managed_singleton("app.training.TrainingManager")

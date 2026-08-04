@@ -572,6 +572,9 @@ local SAVE_DELAY = 0.5
 local initialized, changed, p1_hit_dt, p2_hit_dt, training_manager, pause_manager, display_data
 local config, p1, p2 = {}, {}, {}
 local save_pending, save_timer = false, 0
+-- Widest content row measured so far (pixels); the Battle Data window sizes
+-- itself to this so no text is clipped. Starts at the old fixed width.
+local max_content_width = 175
 
 local gBattle = sdk.find_type_definition("gBattle")
 local sPlayer = gBattle:get_field("Player"):get_data(nil)
@@ -721,6 +724,26 @@ function imgui.multi_color(first_text, second_text, second_text_color)
 	else
 		imgui.text(second_text)
 	end
+	-- Track the widest row so the Battle Data window can size itself to fit.
+	if imgui.calc_text_size then
+		local size = imgui.calc_text_size(tostring(first_text) .. tostring(second_text))
+		if size and size.x then
+			local width = size.x + 10 -- same_line spacing
+			if width > max_content_width then max_content_width = width end
+		end
+	end
+end
+
+-- Like imgui.button, but also tracks the label width for window sizing.
+local function btn(label)
+	if imgui.calc_text_size then
+		local size = imgui.calc_text_size(label:gsub("##.*$", ""))
+		if size and size.x then
+			local width = size.x + 32 -- frame padding x2, border, and margin
+			if width > max_content_width then max_content_width = width end
+		end
+	end
+	return imgui.button(label)
 end
 
 local function get_drive_color(drive)
@@ -790,15 +813,12 @@ local function get_hitbox_range(player, actParam, list)
                         else
                             hitbox_X = posX - sclX / 2
                         end
-						if maxHitboxEdgeX == nil then
+						-- Keep the forward-most edge. The old elseif also ran while
+						-- facing right, so a smaller edge could overwrite the maximum.
+						if maxHitboxEdgeX == nil
+							or (facingRight and hitbox_X > maxHitboxEdgeX)
+							or (not facingRight and hitbox_X < maxHitboxEdgeX) then
 							maxHitboxEdgeX = hitbox_X
-						end
-						if maxHitboxEdgeX ~= nil then
-							if facingRight and hitbox_X > maxHitboxEdgeX then
-								maxHitboxEdgeX = hitbox_X
-							elseif hitbox_X < maxHitboxEdgeX then
-								maxHitboxEdgeX = hitbox_X
-							end
 						end
 					end
 				end
@@ -811,6 +831,23 @@ local function get_hitbox_range(player, actParam, list)
             list.relative_range = abs(maxHitboxEdgeX - playerPosX)
 		end
 	end
+end
+
+-- Returns true while the current action has active hitboxes (i.e. it is an
+-- attack). Used to prevent non-attack actions (walk, jump, block, ...) from
+-- overwriting the last attack's Startup/Active/Recovery/Total frames.
+local function has_active_hitbox(actParam)
+	if actParam == nil then return false end
+	local col = actParam.Collision
+	if col == nil then return false end
+	for _, rect in reverse_pairs(col.Infos._items) do
+		if rect ~= nil and rect:get_field("HitPos") ~= nil then
+			if rect.TypeFlag > 0 or (rect.TypeFlag == 0 and rect.PoseBit > 0) then
+				return true
+			end
+		end
+	end
+	return false
 end
 
 local function extract_player_data(player_index, player_table, engine, opponent_cplayer, display_meter_index)
@@ -856,10 +893,22 @@ local function extract_player_data(player_index, player_table, engine, opponent_
 	player_table.burnout = cplayer.incapacitated or false
 
 	-- Frame Data
-	player_table.startup_frames = player_table.apper_frame_int
-	player_table.active_frames = player_table.mFollowFrame - player_table.mMainFrame
-	player_table.recovery_frames = read_sfix(player_table.mMarginFrame) - player_table.mFollowFrame
-	player_table.total_frames = read_sfix(player_table.mMarginFrame)
+	-- Only refresh attack frame data while the current action has active
+	-- hitboxes; a non-attack action (walk, jump, block, ...) would otherwise
+	-- overwrite the last attack's Startup/Active/Recovery/Total frames.
+	if has_active_hitbox(cplayer.mpActParam) then
+		local margin = read_sfix(player_table.mMarginFrame) or 0
+		player_table.startup_frames = player_table.apper_frame_int
+		player_table.active_frames = player_table.mFollowFrame - player_table.mMainFrame
+		player_table.recovery_frames = margin - player_table.mFollowFrame
+		player_table.total_frames = margin
+	elseif not player_table.recovery_frames then
+		-- No attack seen yet since load: show zeros instead of nil.
+		player_table.startup_frames = 0
+		player_table.active_frames = 0
+		player_table.recovery_frames = 0
+		player_table.total_frames = 0
+	end
 	player_table.advantage = player_table.stun_frame_int
 
 	-- Meter Data
@@ -976,13 +1025,13 @@ local function build_vitals_section()
 	local subbed = string.gsub(hk_str, "%s*Alpha%s*", "")
 
 	if not config.options.display_vitals then
-		if imgui.button("Vitals (" .. subbed .. ")") then
+		if btn("Vitals (" .. subbed .. ")") then
 			config.options.display_vitals = true
 			mark_for_save()
 		end
 		return
 	else
-		if imgui.button("Hide Vitals (" .. subbed .. ")") then
+		if btn("Hide Vitals (" .. subbed .. ")") then
 			config.options.display_vitals = false
 			mark_for_save()
 		end
@@ -1008,7 +1057,7 @@ local function build_vitals_section()
 end
 
 local function build_general_section(player_name, general_config_key, player_data)
-	if imgui.button(string.format("General (%s)##%s_general_info", config.options[general_config_key] and "Hide" or "Show", player_name)) then
+	if btn(string.format("General (%s)##%s_general_info", config.options[general_config_key] and "Hide" or "Show", player_name)) then
 		config.options[general_config_key] = not config.options[general_config_key]
 		mark_for_save()
 	end
@@ -1047,13 +1096,13 @@ local function build_player_section(player_index, player_data, hit_dt)
 	local subbed = string.gsub(hk_str, "%s*[Aa]lpha%s*", "")
 
 	if not config.options[config_key] then
-		if imgui.button(player_name .. " (" .. subbed .. ")") then
+		if btn(player_name .. " (" .. subbed .. ")") then
 			config.options[config_key] = true
 			mark_for_save()
 		end
 		return
 	else
-		if imgui.button("Hide " .. player_name .. " (" .. subbed .. ")") then
+		if btn("Hide " .. player_name .. " (" .. subbed .. ")") then
 			config.options[config_key] = false
 			mark_for_save()
 		end
@@ -1068,7 +1117,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 	imgui.indent(indentation_unit)
 	local label = string.format("State (%s)##%s_state_info", config.options[state_config_key] and "Hide" or "Show", player_name)
 	local subbed = label.gsub(label, " (Show)", "")
-	if imgui.button(subbed) then
+	if btn(subbed) then
 		config.options[state_config_key] = not config.options[state_config_key]
 		mark_for_save()
 	end
@@ -1090,7 +1139,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 	local movement_config_key = player_index == 0 and "display_p1_movement" or "display_p2_movement"
 
 	imgui.indent(indentation_unit)
-	if imgui.button(string.format("Movement (%s)##%s_movement_info", config.options[movement_config_key] and "Hide" or "Show", player_name)) then
+	if btn(string.format("Movement (%s)##%s_movement_info", config.options[movement_config_key] and "Hide" or "Show", player_name)) then
 		config.options[movement_config_key] = not config.options[movement_config_key]
 		mark_for_save()
 	end
@@ -1125,7 +1174,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 	local attack_config_key = player_index == 0 and "display_p1_attack" or "display_p2_attack"
 
 	imgui.indent(indentation_unit)
-	if imgui.button(string.format("Attack (%s)##%s_attack_info", config.options[attack_config_key] and "Hide" or "Show", player_name)) then
+	if btn(string.format("Attack (%s)##%s_attack_info", config.options[attack_config_key] and "Hide" or "Show", player_name)) then
 		config.options[attack_config_key] = not config.options[attack_config_key]
 		mark_for_save()
 	end
@@ -1167,7 +1216,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 
 	if config.options[attack_config_key] then
 		imgui.indent(indentation_unit)
-		if imgui.button(string.format("Latest Attack (%s)##%s_latest_attack_info", config.options[latest_attack_config_key] and "Hide" or "Show", player_name)) then
+		if btn(string.format("Latest Attack (%s)##%s_latest_attack_info", config.options[latest_attack_config_key] and "Hide" or "Show", player_name)) then
 			config.options[latest_attack_config_key] = not config.options[latest_attack_config_key]
 			mark_for_save()
 		end
@@ -1199,7 +1248,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 		local charge_config_key = player_index == 0 and "display_p1_charge" or "display_p2_charge"
 
 		imgui.indent(indentation_unit)
-		if imgui.button(string.format("Charge (%s)##%s_charge_info", config.options[charge_config_key] and "Hide" or "Show", player_name)) then
+		if btn(string.format("Charge (%s)##%s_charge_info", config.options[charge_config_key] and "Hide" or "Show", player_name)) then
 			config.options[charge_config_key] = not config.options[charge_config_key]
 			mark_for_save()
 		end
@@ -1226,7 +1275,7 @@ local function build_player_section(player_index, player_data, hit_dt)
 	local projectiles_config_key = player_index == 0 and "display_p1_projectiles" or "display_p2_projectiles"
 
 	imgui.indent(indentation_unit)
-	if imgui.button(string.format("Projectiles (%s)##%s_projectiles", config.options[projectiles_config_key] and "Hide" or "Show", player_name)) then
+	if btn(string.format("Projectiles (%s)##%s_projectiles", config.options[projectiles_config_key] and "Hide" or "Show", player_name)) then
 		config.options[projectiles_config_key] = not config.options[projectiles_config_key]
 		mark_for_save()
 	end
@@ -1258,7 +1307,8 @@ local function build_unknowns_section()
 end
 
 local function build_data_window()
-	imgui.set_next_window_size({175, 0})
+	-- Width = widest measured row + window padding + margin; height stays auto.
+	imgui.set_next_window_size({max_content_width + 24, 0})
 	imgui.begin_window("Battle Data", true, 8|64)
 	build_vitals_section()
 	build_player_section(0, p1, p1_hit_dt)

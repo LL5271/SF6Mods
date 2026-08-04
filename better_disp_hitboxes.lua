@@ -915,7 +915,7 @@ end
 
 -- Config Management
 
-local CONFIG_PATH = "sf6-hitboxes.json"
+local CONFIG_PATH = "better_disp_hitboxes.json"
 local SAVE_DELAY = 0.5
 
 state.save_pending = nil
@@ -962,6 +962,9 @@ local function create_default_config()
 			hitbox_tick_fade_speed = 1.0,
 			property_text_duration = 20,
 			property_text_fade_speed = 1.0,
+			property_label_combo_only = true,
+			property_label_reverse_attack_intangible = false,
+			property_label_cant_hit_backward = false,
 			hide_all_alerts = false,
 			alert_on_toggle = true,
 			alert_on_presets = true,
@@ -1056,10 +1059,27 @@ local function create_default_presets()
     })
     local outlines_opacity = make_opacity(25, 75, 100, 80)
 
+    -- "Default" matches the current live configuration block
+    -- (data/better_disp_hitboxes.json): pushbox/throwhurtbox outlines off;
+    -- hitbox 50/100, hurtbox outline 100, throwbox 50/75, and
+    -- pushbox/proximitybox/throwhurtbox outlines at 10.
+    local function make_default_opacity()
+        local opacity = make_opacity(25, 25)
+        opacity.hitbox = 50
+        opacity.hitbox_outline = 100
+        opacity.hurtbox_outline = 100
+        opacity.proximitybox_outline = 10
+        opacity.pushbox_outline = 10
+        opacity.throwbox = 50
+        opacity.throwbox_outline = 75
+        opacity.throwhurtbox_outline = 10
+        return opacity
+    end
+
     local presets = {
         ["Default"] = {
-            p1 = {toggle = make_toggle({hitbox_ticks = false}), opacity = make_opacity(25, 25)},
-            p2 = {toggle = make_toggle({hitbox_ticks = false}), opacity = make_opacity(25, 25)}
+            p1 = {toggle = make_toggle({pushboxes_outline = false, throwhurtboxes_outline = false}), opacity = make_default_opacity()},
+            p2 = {toggle = make_toggle({pushboxes_outline = false, throwhurtboxes_outline = false}), opacity = make_default_opacity()}
         },
         ["Dark"] = {
             p1 = {toggle = make_toggle({hitbox_ticks = false}), opacity = make_opacity(50, 50)},
@@ -1530,10 +1550,13 @@ local RIGHT_SPLAT_POS = 585.2
 local LEFT_SPLAT_POS = -1 * RIGHT_SPLAT_POS
 
 
--- Property text persistence: each entry keyed by "player_key|text"
--- Stores the last-seen screen position and counts down for 20 frames after
--- the source hitbox disappears.
--- prop_persist: { [key] = {text,x,y,base_opacity,player_key,timer,last_live_frame} }
+-- Property text persistence: each entry keyed by "player_key|text" so one
+-- label exists per property even when several rectangles carry the same text.
+-- Entries store the rectangle they last came from and its screen corner, and
+-- count down for the property text duration after the label's source state
+-- disappears.  While that rectangle still exists the label keeps tracking its
+-- corner (see draw_prop_persist / live_rect_positions).
+-- prop_persist: { [key] = {text,x,y,base_opacity,player_key,timer,last_live_frame,rect_id,stroke} }
 -- prop_persist_frame: monotonic counter; incremented once per live hitbox pass
 
 state.range_ticks = {
@@ -1542,10 +1565,27 @@ state.range_ticks = {
 }
 state.prop_persist = {}
 state.prop_persist_frame = 0
+-- Per-frame map of rect address -> current screen corner, so fading labels
+-- can track their rectangle while it still exists.
+state.live_rect_positions = {}
+-- Per-battle-frame budget: at most one new range-tick mark may be spawned
+-- per live frame, so rapid movement cannot flood the screen with ticks.
+state.tick_spawn_budget = 0
+-- Per-player flag set while the entity's attack reach is live this frame
+-- (or frozen mid-attack by hitstop/Chronos).  While set, only the active
+-- tick is drawn — one tick mark per active frame — and the ghost trail is
+-- deferred until the attack ends.
+state.range_tick_attack_active = {}
 
 local function apply_opacity(opacity, colorWithoutAlpha)
-	local alpha = math.floor(opacity * 2.55)
-	return alpha * 0x1000000 + (colorWithoutAlpha % 0x1000000)
+    -- Keep fractional percentage values until the final byte conversion.  The
+    -- previous whole-percent rounding made low-opacity fades jump directly to
+    -- zero instead of stepping smoothly through the remaining alpha values.
+    local percent = tonumber(opacity) or 0
+    percent = math.min(math.max(percent, 0), 100)
+    local alpha = math.floor(percent * 2.55 + 0.5)
+    if percent > 0 and alpha < 1 then alpha = 1 end
+    return alpha * 0x1000000 + (colorWithoutAlpha % 0x1000000)
 end
 
 local function get_vectors(rect)
@@ -1574,6 +1614,14 @@ local function property_flag(parts, idx, bit, str, rect)
     return idx
 end
 
+local function property_label_enabled(option_key, default_value)
+    local options = state.config and state.config.options
+    if not options or options[option_key] == nil then
+        return default_value
+    end
+    return options[option_key] == true
+end
+
 local function build_hit_properties(condFlag, rect)
 	if not rect then return end
     local parts = {}
@@ -1582,14 +1630,17 @@ local function build_hit_properties(condFlag, rect)
     idx = property_flag(parts, idx, 32, "Crouching, ", rect)
     idx = property_flag(parts, idx, 64, "Airborne, ", rect)
     idx = property_flag(parts, idx, 256, "Can't Hit Forward, ", rect)
-    idx = property_flag(parts, idx, 512, "Can't Hit Backward, ", rect)
+    if property_label_enabled("property_label_cant_hit_backward", false) then
+        idx = property_flag(parts, idx, 512, "Can't Hit Backward, ", rect)
+    end
     if idx > 0 then
         parts[idx] = string.sub(parts[idx], 1, -3)
         idx = idx + 1
         parts[idx] = "\n"
     end
 
-    if bitand(condFlag, 262144) == 262144 or bitand(condFlag, 524288) == 524288 then
+    if property_label_enabled("property_label_combo_only", true)
+       and (bitand(condFlag, 262144) == 262144 or bitand(condFlag, 524288) == 524288) then
         idx = idx + 1
         parts[idx] = "Combo Only\n"
     end
@@ -1631,7 +1682,8 @@ local function build_hurt_properties(typeFlag, immune)
         parts[idx] = "Behind, "
         intangible = true
     end
-    if bitand(immune, 128) == 128 then
+    if property_label_enabled("property_label_reverse_attack_intangible", false)
+       and bitand(immune, 128) == 128 then
         idx = idx + 1
         parts[idx] = "Reverse, "
         intangible = true
@@ -1746,6 +1798,7 @@ local function classify_hitbox(rect, player_config, entity_context)
         show_outline    = ((box_kind ~= "pushbox" and box_kind ~= "proximitybox") or not is_strict_super_freeze_active()) and (tog[toggle_key .. "_outline"] or false),
         fill_opacity    = opa[fill_key]                    or 25,
         outline_opacity = opa[outline_key]                 or 25,
+        rect_id         = tostring(rect),
         prop_text       = prop_text,
     }
 end
@@ -1760,11 +1813,121 @@ end
 local timestop_frame = 0
 local timestop_total_frames = 0
 local super_freeze_linger_frames = 0
+local hitstop_state = {
+    -- StopAttackFrame is the transient, currently-active hitstop counter.
+    -- The per-player hitStopOwnFrame values can remain nonzero in the training
+    -- snapshot after hitstop ends, so they must not be used as active flags.
+    stop_attack_frame = 0,
+    p1_hitstop_own = 0,
+    p2_hitstop_own = 0,
+}
 local frozen_draw_calls = {}   -- last pre-timestop frame's draw calls
 local draw_call_buffer = nil   -- non-nil while recording a normal frame
 
+-- Renders text with a 1px stroke whose color is tinted by the label's
+-- source rectangle (slightly green over hurtboxes, slightly red over
+-- hitboxes, black otherwise).  The outline shares the text's alpha so
+-- fading labels keep a consistent outline.
+local STROKE_WIDTH = 1
+local STROKE_RGB = {
+    hitbox  = 0x330000,  -- slightly red
+    hurtbox = 0x003300,  -- slightly green
+}
+local STROKE_RGB_DEFAULT = 0x000000
+local function draw_text_stroked(text, x, y, color, stroke_rgb)
+    local alpha = math.floor(color / 0x1000000) % 256
+    local outline = alpha * 0x1000000 + (stroke_rgb or STROKE_RGB_DEFAULT)
+    for dx = -STROKE_WIDTH, STROKE_WIDTH, STROKE_WIDTH do
+        for dy = -STROKE_WIDTH, STROKE_WIDTH, STROKE_WIDTH do
+            if dx ~= 0 or dy ~= 0 then
+                draw.text(text, x + dx, y + dy, outline)
+            end
+        end
+    end
+    draw.text(text, x, y, color)
+end
+
+-- Executes buffered drawing in explicit layers. Rectangles that represent
+-- hitboxes are always submitted after every other rectangle, while text and
+-- position markers remain above all rectangles.
+local function execute_draw_call(call)
+    if call[1] == "filled_rect" then
+        draw.filled_rect(call[2], call[3], call[4], call[5], call[6])
+    elseif call[1] == "outline_rect" then
+        draw.outline_rect(call[2], call[3], call[4], call[5], call[6])
+    elseif call[1] == "text_stroked" then
+        draw_text_stroked(call[2], call[3], call[4], call[5], call[6])
+    elseif call[1] == "circle" then
+        draw.filled_circle(call[2], call[3], call[4], call[5], call[6])
+    end
+end
+
+local function draw_buffered_calls(calls, filter_super_freeze)
+    local function should_skip(call)
+        if not filter_super_freeze then return false end
+        local box_kind = call[7]
+        return is_super_freeze_active()
+           and (box_kind == "pushbox" or box_kind == "proximitybox")
+    end
+
+    local function is_rect_call(call)
+        return call[1] == "filled_rect" or call[1] == "outline_rect"
+    end
+
+    -- Layer 1: every rectangle except attack hitboxes.
+    for _, call in ipairs(calls) do
+        if is_rect_call(call) and call[7] ~= "hitbox" and not should_skip(call) then
+            execute_draw_call(call)
+        end
+    end
+
+    -- Layer 2: attack hitboxes, guaranteeing they remain visible on top.
+    for _, call in ipairs(calls) do
+        if is_rect_call(call) and call[7] == "hitbox" and not should_skip(call) then
+            execute_draw_call(call)
+        end
+    end
+
+    -- Layer 3: labels and position markers stay above every rectangle.
+    for _, call in ipairs(calls) do
+        if not is_rect_call(call) and not should_skip(call) then
+            execute_draw_call(call)
+        end
+    end
+end
+
 is_super_freeze_active = function()
     return super_freeze_linger_frames > 0
+end
+
+-- True for every intermediate Chronos subframe. These are repeated renders of
+-- one gameplay frame, so transient range-tick state must neither be captured
+-- again nor age until Chronos finishes and the game advances.
+local function is_chronos_time_stopped()
+    return timestop_total_frames ~= nil
+       and timestop_frame ~= nil
+       and timestop_total_frames > 0
+       and timestop_frame > 0
+       and timestop_frame < timestop_total_frames
+end
+
+-- StopAttackFrame is the live hitstop signal.  The per-player
+-- hitStopOwnFrame values describe assigned/elapsed hitstop and may remain
+-- nonzero in the training snapshot after the freeze has ended; treating those
+-- values as booleans can leave range ticks frozen indefinitely.
+local function is_hitstop_active(_player_key)
+    return (tonumber(hitstop_state.stop_attack_frame) or 0) > 0
+end
+
+-- True while the player is in hitstun: cPlayer.damage_time is the remaining
+-- damage-stun (hitstun) counter, positive from the moment a hit lands until
+-- the stun ends (blockstun is the separate guard_time field).  A player in
+-- hitstun has no attack hitboxes of its own, so no new range-tick marks may
+-- spawn until the stun ends.
+local function is_entity_in_hitstun(entity)
+    if not entity then return false end
+    local ok, damage_time = pcall(function() return entity.damage_time end)
+    return ok and (tonumber(damage_time) or 0) > 0
 end
 
 is_strict_super_freeze_active = function()
@@ -1785,8 +1948,9 @@ local function draw_union_fills(boxes, full_color, box_kind)
         local b = boxes[1]
         if draw_call_buffer then
             draw_call_buffer[#draw_call_buffer+1] = {"filled_rect", b.x, b.y, b.w, b.h, full_color, box_kind}
+        else
+            draw.filled_rect(b.x, b.y, b.w, b.h, full_color)
         end
-        draw.filled_rect(b.x, b.y, b.w, b.h, full_color)
         return
     end
 
@@ -1814,8 +1978,9 @@ local function draw_union_fills(boxes, full_color, box_kind)
                     local ch = uys[j+1] - uys[j]
                     if draw_call_buffer then
                         draw_call_buffer[#draw_call_buffer+1] = {"filled_rect", uxs[i], uys[j], cw, ch, full_color, box_kind}
+                    else
+                        draw.filled_rect(uxs[i], uys[j], cw, ch, full_color)
                     end
-                    draw.filled_rect(uxs[i], uys[j], cw, ch, full_color)
                     break
                 end
             end
@@ -1823,11 +1988,12 @@ local function draw_union_fills(boxes, full_color, box_kind)
     end
 end
 
-local function draw_text_buffered(text, x, y, color)
+local function draw_text_stroked_buffered(text, x, y, color, stroke_rgb)
     if draw_call_buffer then
-        draw_call_buffer[#draw_call_buffer + 1] = {"text", text, x, y, color}
+        draw_call_buffer[#draw_call_buffer + 1] = {"text_stroked", text, x, y, color, stroke_rgb}
+    else
+        draw_text_stroked(text, x, y, color, stroke_rgb)
     end
-    draw.text(text, x, y, color)
 end
 
 local DEFAULT_PROP_PERSIST_TOTAL = 20
@@ -1835,9 +2001,22 @@ local DEFAULT_PROP_PERSIST_SLOW_RATIO = 5 / 20
 local DEFAULT_PROP_PERSIST_SHARP_RATIO = 10 / 20
 
 local DEFAULT_RANGE_TICK_TOTAL = 60
+-- The tick uniformly dims to nothing over the first part of its lifetime so
+-- marks decay instead of lingering; the spatial ramp profile stays constant.
 local DEFAULT_RANGE_TICK_DIM_WINDOW_RATIO = 19 / 60
-local DEFAULT_RANGE_TICK_MOVE_HOLD_RATIO = 35 / 60
-local DEFAULT_RANGE_TICK_MOVE_WINDOW_RATIO = 20 / 60
+
+-- The tick line fades in from the origin: transparent at the origin, fully
+-- opaque 17% of the way along the line, then opaque to the far edge.
+local RANGE_TICK_RAMP_RATIO = 0.17
+local RANGE_TICK_RAMP_STEPS = 4
+
+-- Hard bounds on concurrent fade elements.  When many ticks and property
+-- labels were on screen at once, the per-frame draw volume saturated the
+-- engine draw queue and the tail-most marks (newest ghost ticks and fading
+-- labels, drawn after the box buffer) were silently dropped instead of
+-- fading out.  These caps keep the per-frame primitive count bounded.
+local MAX_RANGE_TICK_GHOSTS = 24
+local MAX_PROP_PERSIST = 32
 
 local function get_display_duration_frames(option_key, fallback)
     local value = tonumber(state.config and state.config.options and state.config.options[option_key]) or fallback
@@ -1859,8 +2038,10 @@ end
 
 -- Returns an alpha multiplier in [0, 1] given the remaining lifetime timer.
 -- The default configuration matches the original 20-frame decay and fade curve.
-local function prop_persist_fade(timer)
-    local total = get_display_duration_frames("property_text_duration", DEFAULT_PROP_PERSIST_TOTAL)
+local function prop_persist_fade(timer, stored_total)
+    local total = tonumber(stored_total)
+        or get_display_duration_frames("property_text_duration", DEFAULT_PROP_PERSIST_TOTAL)
+    total = math.max(1, total)
     local slow = total * DEFAULT_PROP_PERSIST_SLOW_RATIO
     local sharp = total * DEFAULT_PROP_PERSIST_SHARP_RATIO
     local age = total - timer
@@ -1880,35 +2061,60 @@ local function prop_persist_fade(timer)
     end
 end
 
--- Called instead of draw_text_buffered for every property label.
--- Draws the text immediately (including into the timestop buffer) and
--- registers/refreshes the entry in the persist table so it can ghost
--- for the configured property text duration after the hitbox is gone.
+-- Registers/refreshes the single per-property persist entry so the label
+-- can ghost for the configured property text duration after the hitbox is
+-- gone.  Drawing happens elsewhere: live labels are drawn once per frame
+-- into the frame buffer (process_hitboxes), fading labels in draw_prop_persist.
 -- player_key must be "p1" or "p2".
-local function record_prop_persist(text, x, y, base_opacity, player_key)
-    -- Immediate draw path (unchanged behaviour, also fills draw_call_buffer).
-    draw_text_buffered(text, x, y, apply_opacity(base_opacity, 0xFFFFFF))
-
-    -- Keyed by player + text so that distinct property strings get independent
-    -- ghost timers while the same string on the same player merges into one entry.
-    local key   = player_key .. "|" .. text
+local function record_prop_persist(rect_id, text, x, y, base_opacity, player_key, box_kind)
+    -- Single instance per property: keyed by player + text so the same
+    -- string on a player collapses to one tracked label.  The label itself
+    -- is drawn exactly once per frame in process_hitboxes (live) and in
+    -- draw_prop_persist (fade); nothing is drawn here.  The rectangle
+    -- identity is stored so a fading label can keep tracking its rectangle
+    -- while that rectangle still exists (best-effort, see draw_prop_persist).
+    local key = player_key .. "|" .. text
+    local duration = get_display_duration_frames("property_text_duration", DEFAULT_PROP_PERSIST_TOTAL)
     local entry = state.prop_persist[key]
     if entry then
-        -- Refresh: update live position and reset countdown.
-        entry.x              = x
-        entry.y              = y
-        entry.base_opacity   = base_opacity
-        entry.timer          = get_display_duration_frames("property_text_duration", DEFAULT_PROP_PERSIST_TOTAL)
+        -- Refresh: update live position and reset countdown.  Store the total
+        -- with the entry so changing display settings cannot invalidate the
+        -- fade progress of a label that is already on screen.
+        entry.text            = text
+        entry.x               = x
+        entry.y               = y
+        entry.base_opacity    = base_opacity
+        entry.timer           = duration
+        entry.total           = duration
         entry.last_live_frame = state.prop_persist_frame
+        entry.rect_id         = tostring(rect_id)
+        entry.stroke          = STROKE_RGB[box_kind] or STROKE_RGB_DEFAULT
     else
+        -- Bound the persist table so many simultaneous labels cannot flood
+        -- the frame with text draw calls.  At capacity, evict the entry that
+        -- has gone longest without a live hitbox (the oldest fade).
+        local persist_count = 0
+        for _ in pairs(state.prop_persist) do persist_count = persist_count + 1 end
+        if persist_count >= MAX_PROP_PERSIST then
+            local oldest_key, oldest_frame = nil, math.huge
+            for k, e in pairs(state.prop_persist) do
+                if (e.last_live_frame or 0) < oldest_frame then
+                    oldest_key, oldest_frame = k, e.last_live_frame or 0
+                end
+            end
+            if oldest_key then state.prop_persist[oldest_key] = nil end
+        end
         state.prop_persist[key] = {
             text            = text,
             x               = x,
             y               = y,
             base_opacity    = base_opacity,
             player_key      = player_key,
-            timer           = get_display_duration_frames("property_text_duration", DEFAULT_PROP_PERSIST_TOTAL),
+            timer           = duration,
+            total           = duration,
             last_live_frame = state.prop_persist_frame,
+            rect_id         = tostring(rect_id),
+            stroke          = STROKE_RGB[box_kind] or STROKE_RGB_DEFAULT,
         }
     end
 end
@@ -1916,38 +2122,78 @@ end
 -- Iterates the persist table once per live frame (not during timestop).
 -- Entries seen this frame are skipped (already drawn by record_prop_persist).
 -- Entries not seen this frame are drawn with a fading alpha and ticked down.
+local function is_persisted_property_label_enabled(text)
+    if not text then return true end
+    if text:find("Combo Only", 1, true)
+       and not property_label_enabled("property_label_combo_only", true) then
+        return false
+    end
+    if text:find("Can't Hit Backward", 1, true)
+       and not property_label_enabled("property_label_cant_hit_backward", false) then
+        return false
+    end
+    if text:find("Reverse", 1, true) and text:find("Attack Intangible", 1, true)
+       and not property_label_enabled("property_label_reverse_attack_intangible", false) then
+        return false
+    end
+    return true
+end
+
 local function draw_prop_persist()
     for key, entry in pairs(state.prop_persist) do
         local player_config = state.config[entry.player_key]
 
-        -- Purge if the player toggled properties off.
+        -- Purge if the player toggled properties off or this label was disabled.
         if not player_config or not player_config.toggle.properties then
             state.prop_persist[key] = nil
 
+        elseif not is_persisted_property_label_enabled(entry.text) then
+            state.prop_persist[key] = nil
+
         elseif entry.last_live_frame < state.prop_persist_frame then
-            -- Source hitbox absent this frame: advance decay and draw ghost.
-            entry.timer = entry.timer - 1
+            -- Source hitbox absent this frame: draw every remaining fade step,
+            -- then consume one lifetime frame.  Drawing before decrementing
+            -- prevents short-lived labels from being removed without a ghost
+            -- frame, and fractional opacity avoids abrupt low-alpha cutoffs.
+            -- While the rectangle still exists this frame (e.g. a hurtbox
+            -- whose property flags changed), keep the label anchored to its
+            -- corner instead of freezing at the last seen position.
+            local live_rect = state.live_rect_positions[entry.rect_id]
+            if live_rect then
+                entry.x = live_rect.x
+                entry.y = live_rect.y
+            end
             if entry.timer <= 0 then
                 state.prop_persist[key] = nil
             else
-                local fade          = prop_persist_fade(entry.timer)
-                local faded_opacity = math.max(0, math.floor(entry.base_opacity * fade))
-                draw.text(entry.text, entry.x, entry.y,
-                    apply_opacity(faded_opacity, 0xFFFFFF))
+                entry.total = tonumber(entry.total) or math.max(1, entry.timer)
+                local fade = prop_persist_fade(entry.timer, entry.total)
+                local faded_opacity = math.max(0, entry.base_opacity * fade)
+                draw_text_stroked(entry.text, entry.x, entry.y,
+                    apply_opacity(faded_opacity, 0xFFFFFF), entry.stroke)
+                entry.timer = entry.timer - 1
+                if entry.timer <= 0 then
+                    state.prop_persist[key] = nil
+                end
             end
         end
         -- last_live_frame == prop_persist_frame → already drawn this frame, nothing to do.
     end
 end
 
-local function draw_hitboxes(work, actParam, player_config, player_key, entity_context)
+local function draw_hitboxes(work, actParam, player_config, player_key, entity_context, draw_labels)
     local col = actParam.Collision
 
     -- Pass 1: classify every rect into pure data — no GPU calls yet.
     local classified = {}
     for _, rect in reverse_pairs(col.Infos._items) do
         local info = classify_hitbox(rect, player_config, entity_context)
-        if info then classified[#classified+1] = info end
+        if info then
+            classified[#classified+1] = info
+            -- Track every live rect's corner this frame so fading labels can
+            -- stay anchored to their rectangle while it still exists.
+            state.live_rect_positions[info.rect_id] = {x = info.x, y = info.y}
+        end
     end
 
     -- Pass 2: group fills by (base_color × opacity) and draw the union of each
@@ -1978,15 +2224,17 @@ local function draw_hitboxes(work, actParam, player_config, player_key, entity_c
             local outline_color = apply_opacity(info.outline_opacity, info.base_color)
             if draw_call_buffer then
                 draw_call_buffer[#draw_call_buffer+1] = {"outline_rect", info.x, info.y, info.w, info.h, outline_color, info.box_kind}
+            else
+                draw.outline_rect(info.x, info.y, info.w, info.h, outline_color)
             end
-            draw.outline_rect(info.x, info.y, info.w, info.h, outline_color)
         end
     end
 
-    -- Pass 4: property text drawn at the top-left corner of each box.
+    -- Pass 4: property text drawn at the corner of each box.  Projectiles
+    -- (Global_work entities) get no property labels.
     for _, info in ipairs(classified) do
-        if info.prop_text then
-            record_prop_persist(info.prop_text, info.x, info.y, player_config.opacity.properties, player_key)
+        if info.prop_text and draw_labels ~= false then
+            record_prop_persist(info.rect_id, info.prop_text, info.x, info.y, player_config.opacity.properties, player_key, info.box_kind)
         end
     end
 end
@@ -2015,8 +2263,9 @@ local function draw_position_marker(entity, player_config)
         local circle_color = apply_opacity(player_config.opacity.position, color)
         if draw_call_buffer then
             draw_call_buffer[#draw_call_buffer + 1] = {"circle", screenPos.x, screenPos.y, 10, circle_color, 10}
+        else
+            draw.filled_circle(screenPos.x, screenPos.y, 10, circle_color, 10)
         end
-        draw.filled_circle(screenPos.x, screenPos.y, 10, circle_color, 10)
     end
 end
 
@@ -2083,6 +2332,20 @@ local function update_range_tick(entity, player_key)
 	local player_config = state.config[player_key]
 	if not player_config or not player_config.toggle.hitbox_ticks then return end
 
+    -- A player in hitstun has no attack hitboxes of its own: the reach is
+    -- gone, so the live-attack flag clears (existing ticks may now fade) and
+    -- no new tick marks may spawn until the stun ends.
+    if is_entity_in_hitstun(entity) then
+        state.range_tick_attack_active[player_key] = false
+        return
+    end
+
+    -- Chronos and hitstop can render the same action frame multiple times.
+    -- Updating here would reset the active tick and may emit camera-motion
+    -- ghosts for a frame that has not actually advanced.  The attack is
+    -- still live (frozen), so the active-frame flag keeps its value.
+    if is_chronos_time_stopped() or is_hitstop_active(player_key) then return end
+
 	local x_val = entity.pos and entity.pos.x and entity.pos.x.v
 	local y_val = entity.pos and entity.pos.y and entity.pos.y.v
 	if not x_val or not y_val then return end
@@ -2093,6 +2356,7 @@ local function update_range_tick(entity, player_key)
 
 	local far_sx, far_sy = get_farthest_hitbox_reach(entity)
 	if far_sx and far_sy then
+        state.range_tick_attack_active[player_key] = true
         local tick_state = state.range_ticks[player_key]
         if not tick_state then
             tick_state = { active = nil, ghosts = {} }
@@ -2103,8 +2367,16 @@ local function update_range_tick(entity, player_key)
 		local prev_tick = tick_state.active
 		if prev_tick and prev_tick.timer > 0 then
 			current_age = prev_tick.age or 0
-            if range_tick_changed(prev_tick, origin.x, far_sy, far_sx) then
+            if range_tick_changed(prev_tick, origin.x, far_sy, far_sx)
+               and state.tick_spawn_budget > 0 then
+                -- Bound the ghost trail, keeping the newest marks.  The
+                -- per-frame budget guarantees at most one new tick mark per
+                -- battle frame across both players.
+                if #tick_state.ghosts >= MAX_RANGE_TICK_GHOSTS then
+                    table.remove(tick_state.ghosts, 1)
+                end
                 tick_state.ghosts[#tick_state.ghosts + 1] = clone_range_tick(prev_tick)
+                state.tick_spawn_budget = state.tick_spawn_budget - 1
             end
 		end
 
@@ -2115,10 +2387,13 @@ local function update_range_tick(entity, player_key)
 			timer = get_display_duration_frames("hitbox_tick_duration", DEFAULT_RANGE_TICK_TOTAL),
 			age = current_age + 1
 		}
+	else
+        -- Attack over: the live tick and any deferred trail may now fade.
+        state.range_tick_attack_active[player_key] = false
 	end
 end
 
-local function process_entity(entity, draw_pos)
+local function process_entity(entity, draw_pos, draw_labels)
     local config = nil
     local player_key = nil
     local entity_context = {
@@ -2132,14 +2407,15 @@ local function process_entity(entity, draw_pos)
         player_key = "p2"
     end
     if not config or not config.toggle.toggle_show then return end
-    draw_hitboxes(entity, entity.mpActParam, config, player_key, entity_context)
+    draw_hitboxes(entity, entity.mpActParam, config, player_key, entity_context, draw_labels)
     if draw_pos then
         draw_position_marker(entity, config)
         update_range_tick(entity, player_key)
     end
 end
 
-local function draw_range_ticks()
+local function draw_range_ticks(advance_timers)
+    if advance_timers == nil then advance_timers = true end
 	local TICK_HALF_HEIGHT = 10
 	local BORDER_THICKNESS = 0
 
@@ -2155,50 +2431,68 @@ local function draw_range_ticks()
         end
     end
 
-    local function draw_single_tick(tick, player_config)
+    local function draw_single_tick(tick, player_config, advance_this_tick)
         if not tick or tick.timer <= 0 then return false end
 
         local ox, fy, fx = tick.ox, tick.fy, tick.fx
         local opacity = player_config.opacity.hitbox_tick or 25
+
+        -- Uniform temporal decay: the whole tick dims to nothing over the
+        -- first DEFAULT_RANGE_TICK_DIM_WINDOW_RATIO of its lifetime so marks
+        -- do not linger.  The spatial ramp profile itself stays constant —
+        -- only the overall brightness changes over time.
         local total = get_display_duration_frames("hitbox_tick_duration", DEFAULT_RANGE_TICK_TOTAL)
         local progress = (total - tick.timer) / total
-        local scaled_progress = apply_fade_speed_to_progress(progress, get_display_fade_speed("hitbox_tick_fade_speed"))
-
-        -- Default values reproduce the original timing curve.
-        local dim_fade = math.min(math.max(1.0 - (scaled_progress / DEFAULT_RANGE_TICK_DIM_WINDOW_RATIO), 0), 1)
-
-        -- Movement begins near the end of the tick lifetime, then retracts inward.
-        local move_fade = math.min(math.max(
-            (DEFAULT_RANGE_TICK_MOVE_HOLD_RATIO - scaled_progress) / DEFAULT_RANGE_TICK_MOVE_WINDOW_RATIO,
+        local scaled_progress = apply_fade_speed_to_progress(
+            progress, get_display_fade_speed("hitbox_tick_fade_speed"))
+        local dim_fade = math.min(math.max(
+            1.0 - (scaled_progress / DEFAULT_RANGE_TICK_DIM_WINDOW_RATIO),
             0), 1)
-
-        -- Line and tick mark grow/shrink spatially from origin outward
-        local cur_ox = fx - move_fade * (fx - ox)
-
-        local line_max = opacity * 0.625
-        local LINE_COLOR = apply_opacity(math.floor(line_max * dim_fade), 0xFF0000FF)
-        local TICK_COLOR = apply_opacity(math.floor(opacity * dim_fade), 0xFF0000FF)
-        local BORDER_COLOR = apply_opacity(math.floor(opacity * dim_fade), 0x000000)
 
         -- Shift tick inward to sit on the inside face of the far edge
         local inward = ox < fx and -2 or 2
         local tick_x = fx + inward
 
-        for offset = -BORDER_THICKNESS, BORDER_THICKNESS do
-            draw.line(cur_ox, fy + offset, tick_x, fy + offset, BORDER_COLOR)
+        -- Spatial fade-in at full length: transparent at the origin, fully
+        -- opaque 17% of the way along, opaque to the far edge.  Combined
+        -- with the uniform temporal dim above, the ramp profile never
+        -- changes shape over time.
+        local dx_line = tick_x - ox
+        local ramp_len = math.abs(dx_line) * RANGE_TICK_RAMP_RATIO
+        local ramp_dir = dx_line < 0 and -1 or 1
+
+        local function draw_hline_range(x_start, x_end, base_pct)
+            local line_col = apply_opacity(base_pct * 0.625, 0xFF0000FF)
+            local border_col = apply_opacity(base_pct, 0x000000)
+            for offset = -BORDER_THICKNESS, BORDER_THICKNESS do
+                draw.line(x_start, fy + offset, x_end, fy + offset, border_col)
+            end
+            thick_hline(x_start, fy, x_end, line_col)
+        end
+
+        for i = 1, RANGE_TICK_RAMP_STEPS do
+            local seg_start = ox + ramp_len * ramp_dir * (i - 1) / RANGE_TICK_RAMP_STEPS
+            local seg_end   = ox + ramp_len * ramp_dir * i / RANGE_TICK_RAMP_STEPS
+            local seg_alpha = (i - 0.5) / RANGE_TICK_RAMP_STEPS
+            draw_hline_range(seg_start, seg_end, opacity * dim_fade * seg_alpha)
+        end
+        if math.abs(dx_line) > ramp_len then
+            draw_hline_range(ox + ramp_len * ramp_dir, tick_x, opacity * dim_fade)
         end
 
         for x_off = -BORDER_THICKNESS, BORDER_THICKNESS do
             thick_vline(tick_x + x_off,
                 fy - TICK_HALF_HEIGHT - BORDER_THICKNESS,
                 fy + TICK_HALF_HEIGHT + BORDER_THICKNESS,
-                BORDER_COLOR)
+                apply_opacity(opacity * dim_fade, 0x000000))
         end
 
-        thick_hline(cur_ox, fy, tick_x, LINE_COLOR)
-        thick_vline(tick_x, fy - TICK_HALF_HEIGHT, fy + TICK_HALF_HEIGHT, TICK_COLOR)
+        thick_vline(tick_x, fy - TICK_HALF_HEIGHT, fy + TICK_HALF_HEIGHT,
+            apply_opacity(opacity * dim_fade, 0xFF0000FF))
 
-        tick.timer = tick.timer - 1
+        if advance_this_tick then
+            tick.timer = tick.timer - 1
+        end
         return tick.timer > 0
     end
 
@@ -2207,13 +2501,28 @@ local function draw_range_ticks()
 		if not player_config or not player_config.toggle.hitbox_ticks then
             state.range_ticks[player_key] = { active = nil, ghosts = {} }
         else
-            if tick_state.active and not draw_single_tick(tick_state.active, player_config) then
+            -- Pause tick lifetime only while StopAttackFrame reports active
+            -- hitstop. Unlike hitStopOwnFrame, this counter returns to zero when
+            -- the freeze ends, so existing marks resume fading after the hit.
+            local advance_player_timers = advance_timers and not is_hitstop_active(player_key)
+            if tick_state.active and not draw_single_tick(tick_state.active, player_config, advance_player_timers) then
                 tick_state.active = nil
             end
 
+            -- One tick mark per active frame: while the attack is live only
+            -- the active tick is drawn.  The ghost trail is deferred — aged
+            -- but not rendered — until the attack ends, then fades out.
+            local attack_active = state.range_tick_attack_active[player_key]
             local next_ghosts = {}
             for _, ghost_tick in ipairs(tick_state.ghosts or {}) do
-                if draw_single_tick(ghost_tick, player_config) then
+                if attack_active then
+                    if advance_player_timers then
+                        ghost_tick.timer = ghost_tick.timer - 1
+                    end
+                    if ghost_tick.timer > 0 then
+                        next_ghosts[#next_ghosts + 1] = ghost_tick
+                    end
+                elseif draw_single_tick(ghost_tick, player_config, advance_player_timers) then
                     next_ghosts[#next_ghosts + 1] = ghost_tick
                 end
             end
@@ -2225,18 +2534,30 @@ end
 -- Timestop 
 
 local function update_timestop_state()
-    local ok, BattleChronos = pcall(function()
-        return gBattle:get_field("Chronos"):get_data(nil)
-    end)
-    if not ok or not BattleChronos then return end
-    local frame, frames = BattleChronos.WorldElapsed, BattleChronos.WorldNotch
     local training_super_freeze_active = false
-    local ok_training, active, fm_stop_frame = pcall(function()
+    local ok_training, active, fm_stop_frame, stop_attack_frame, special_state_value,
+        p1_hitstop_own, p2_hitstop_own = pcall(function()
         return read_training_display_super_freeze_state()
     end)
     if ok_training then
         training_super_freeze_active = active and true or false
+        hitstop_state.stop_attack_frame = tonumber(stop_attack_frame) or 0
+        hitstop_state.p1_hitstop_own = tonumber(p1_hitstop_own) or 0
+        hitstop_state.p2_hitstop_own = tonumber(p2_hitstop_own) or 0
+    else
+        hitstop_state.stop_attack_frame = 0
+        hitstop_state.p1_hitstop_own = 0
+        hitstop_state.p2_hitstop_own = 0
     end
+
+    local ok, BattleChronos = pcall(function()
+        return gBattle:get_field("Chronos"):get_data(nil)
+    end)
+    if not ok or not BattleChronos then
+        timestop_frame, timestop_total_frames = 0, 0
+        return
+    end
+    local frame, frames = BattleChronos.WorldElapsed, BattleChronos.WorldNotch
     local chronos_active = frames ~= nil
         and frame ~= nil
         and frames > 0
@@ -2269,22 +2590,7 @@ local function update_timestop_state()
 end
 
 local function replay_frozen_draw_calls()
-    for _, call in ipairs(frozen_draw_calls) do
-        local box_kind = call[7]
-        if is_super_freeze_active() and (box_kind == "pushbox" or box_kind == "proximitybox") then
-            goto continue
-        end
-        if call[1] == "filled_rect" then
-            draw.filled_rect(call[2], call[3], call[4], call[5], call[6])
-        elseif call[1] == "outline_rect" then
-            draw.outline_rect(call[2], call[3], call[4], call[5], call[6])
-        elseif call[1] == "text" then
-            draw.text(call[2], call[3], call[4], call[5])
-        elseif call[1] == "circle" then
-            draw.filled_circle(call[2], call[3], call[4], call[5], call[6])
-        end
-        ::continue::
-    end
+    draw_buffered_calls(frozen_draw_calls, true)
 end
 
 local function should_replay_frozen_draw_calls()
@@ -2317,26 +2623,48 @@ local function process_hitboxes()
 	-- visible during slow-motion and other repeated-render states.
     if should_replay_frozen_draw_calls() then
         replay_frozen_draw_calls()
-        draw_range_ticks()
+        -- Re-render the existing tick without consuming lifetime; this is still
+        -- the same in-game frame even though another display frame was drawn.
+        draw_range_ticks(false)
         return
     end
 
     draw_call_buffer = {}
     state.prop_persist_frame = state.prop_persist_frame + 1
+    -- Fresh budget: at most one new tick mark may be spawned this frame.
+    state.tick_spawn_budget = 1
+    -- Rebuilt each live frame by draw_hitboxes pass 1.
+    state.live_rect_positions = {}
 
-	if not state.sWork or not state.sPlayer then return end
+	if not state.sWork or not state.sPlayer then
+        draw_call_buffer = nil
+        return
+    end
     
     for _, obj in pairs(state.sWork.Global_work) do
-        if obj.mpActParam and not obj:get_IsR0Die() then process_entity(obj, false) end
+        if obj.mpActParam and not obj:get_IsR0Die() then process_entity(obj, false, false) end
     end
     for _, player in pairs(state.sPlayer.mcPlayer) do
-        if player.mpActParam then process_entity(player, true) end
+        if player.mpActParam then process_entity(player, true, true) end
     end
 
-    frozen_draw_calls = draw_call_buffer
+    -- Draw each live property label exactly once (single instance per
+    -- property) into the frame buffer so timestop replay keeps it visible.
+    for _, entry in pairs(state.prop_persist) do
+        if entry.last_live_frame == state.prop_persist_frame then
+            draw_text_stroked_buffered(entry.text, entry.x, entry.y,
+                apply_opacity(entry.base_opacity, 0xFFFFFF), entry.stroke)
+        end
+    end
+
+    local completed_draw_calls = draw_call_buffer
     draw_call_buffer = nil
+    draw_buffered_calls(completed_draw_calls, false)
+    frozen_draw_calls = completed_draw_calls
     draw_prop_persist()
-    draw_range_ticks()
+    -- Other Chronos durations may use the normal draw path. Keep the current
+    -- tick visible, but do not age it until the next advancing gameplay frame.
+    draw_range_ticks(not is_chronos_time_stopped())
 end
 
 state.tree_open = {}
@@ -3562,6 +3890,9 @@ local function reset_display_options_to_defaults()
     state.config.options.hitbox_tick_fade_speed = default.options.hitbox_tick_fade_speed
     state.config.options.property_text_duration = default.options.property_text_duration
     state.config.options.property_text_fade_speed = default.options.property_text_fade_speed
+    state.config.options.property_label_combo_only = default.options.property_label_combo_only
+    state.config.options.property_label_reverse_attack_intangible = default.options.property_label_reverse_attack_intangible
+    state.config.options.property_label_cant_hit_backward = default.options.property_label_cant_hit_backward
     mark_for_save()
 end
 
@@ -3585,6 +3916,26 @@ local function display_option_float_slider(label, option_key, min_val, max_val, 
     imgui.pop_item_width()
 end
 
+local function display_property_label_checkbox(label, option_key)
+    local changed
+    changed, state.config.options[option_key] = build.checkbox(
+        label .. "##" .. option_key, state.config.options[option_key]
+    )
+end
+
+local function display_properties_options()
+    if not build.tree_node_stateful("Properties") then return end
+
+    if build.tree_node_stateful("Property Labels", true) then
+        display_property_label_checkbox("Combo Only", "property_label_combo_only")
+        display_property_label_checkbox("Reverse Attack Intangible", "property_label_reverse_attack_intangible")
+        display_property_label_checkbox("Can't Hit Backward", "property_label_cant_hit_backward")
+        imgui.tree_pop()
+    end
+
+    imgui.tree_pop()
+end
+
 function build.option.display()
     local row_y = imgui.get_cursor_pos().y
     treerow_bg("Display")
@@ -3602,6 +3953,7 @@ function build.option.display()
     display_option_float_slider("Tick Mark Fade Speed:", "hitbox_tick_fade_speed", 0.1, 3.0, "%.1fx")
     display_option_int_slider("Property Text Duration:", "property_text_duration", 1, 120, "%d f")
     display_option_float_slider("Property Text Fade Speed:", "property_text_fade_speed", 0.1, 3.0, "%.1fx")
+    display_properties_options()
 
     imgui.tree_pop()
 end

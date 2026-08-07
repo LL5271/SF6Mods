@@ -28,6 +28,23 @@
 --   purple, or pick a preset / a custom accent color with the color picker.
 --   Settings persist to reframework/data/pause_menu_color.json (saved on
 --   change and on REFramework's own config save).
+--
+--   PERFORMANCE
+--   `on_pre_gui_draw_element` fires for EVERY via.gui element of the whole
+--   game, every frame, so the steady-state cost is what matters:
+--     * When the training pause menu is closed (TrainingManager._MenuState
+--       != 4, read once per frame in on_frame) the callback returns before
+--       touching the element: ZERO RE calls per element.  A 10-frame hold
+--       keeps recoloring during the close transition.
+--     * All reads (get_Color/get_Name/get_Size/get_Child/...) return nil on
+--       failure instead of throwing (REFramework's documented behavior), so
+--       the per-element calls are bare; the whole discovery body and the
+--       apply loop are each wrapped in ONE pcall (named functions, no
+--       per-call closures) so the callback can never throw -- ScriptRunner
+--       disables a callback after a single error.
+--     * The apply loop reuses ONE via.Color ValueType (set_field before each
+--       set_Color; the C# setter copies the struct at call time) instead of
+--       allocating a ValueType + find_type_definition per element per frame.
 
 local DEFAULT_PRESET = "default" -- used until a config file exists
 local CONFIG_PATH = "pause_menu_color.json"
@@ -144,42 +161,55 @@ local menu_drawn = false
 local frame = 0
 local last_build = -999
 
-local function mk_color(rgba)
-    local vt = ValueType.new(sdk.find_type_definition("via.Color"))
-    vt:set_field("rgba", rgba)
-    return vt
+-- Menu-open latch: probe/discover/apply only while the training pause menu is
+-- (recently) open, so the per-element draw callback costs nothing otherwise.
+local tm = nil
+local open_hold = 0
+local menu_open = false
+local OPEN_HOLD = 10
+
+-- Reused via.Color ValueType for the apply loop (the setter copies the struct
+-- at call time, so one instance is safe to mutate before every call).
+local via_color_t = sdk.find_type_definition("via.Color")
+local color_vt = ValueType.new(via_color_t)
+
+local function apply_one(el, vt)
+    return el:call("set_Color", vt)
 end
 
-local function safe_call(el, m)
-    local ok, r = pcall(function() return el:call(m) end)
-    if ok then return r end
-    return nil
+-- One TrainingManager field read per frame; refresh the singleton if it went
+-- stale (scene reload) or the read fails.
+local function read_menu_state()
+    if not tm then tm = sdk.get_managed_singleton("app.training.TrainingManager") end
+    local ms = tm and tm:get_field("_MenuState")
+    if type(ms) ~= "number" then
+        tm = sdk.get_managed_singleton("app.training.TrainingManager")
+        ms = tm and tm:get_field("_MenuState")
+    end
+    return ms
 end
 
 -- Tree walk: collect every purple-family element from one view.
 -- Each entry keeps the native color (orig) so "default"/disabled can restore
--- it, plus the recolor target when a palette is active.
+-- it, plus the recolor target when a palette is active.  Reads return nil on
+-- failure (no throws); the caller wraps the whole walk in one pcall.
 local function collect_view(view)
     local function walk(el)
         if not el then return end
-        local col = safe_call(el, "get_Color")
+        local col = el:call("get_Color")
         local rgba = nil
-        if col then
-            local ok, v = pcall(function() return col:get_field("rgba") end)
-            if ok and type(v) == "number" then rgba = v end
-        end
-        local name = safe_call(el, "get_Name")
-        local sz = safe_call(el, "get_Size")
+        if col then rgba = col:get_field("rgba") end
+        local name = el:call("get_Name")
+        local sz = el:call("get_Size")
         local w, h
         if sz then
-            local okw, ww = pcall(function() return sz:get_field("w") end)
-            local okh, hh = pcall(function() return sz:get_field("h") end)
-            if okw and okh and type(ww) == "number" and type(hh) == "number" then w, h = ww, hh end
+            w = sz:get_field("w")
+            h = sz:get_field("h")
         end
         local structural = rgba and (
-            (name == "e_tex_base" and w and h and w >= 1700 and h >= 900) or -- panel
-            (name == "e_rect_base" and w and h and w >= 1900 and h >= 1000) or -- dimmer
-            (name == "e_mask" and w and h and w >= 1400 and h >= 600) or       -- mask
+            (name == "e_tex_base" and type(w) == "number" and w >= 1700 and h >= 900) or -- panel
+            (name == "e_rect_base" and type(w) == "number" and w >= 1900 and h >= 1000) or -- dimmer
+            (name == "e_mask" and type(w) == "number" and w >= 1400 and h >= 600) or       -- mask
             (name == "e_s9g_add"))                                            -- brightener
         local slot = rgba and FAMILY[rgba & 0xFFFFFF]
         local addr = string.match(tostring(el), "%x+$")
@@ -203,24 +233,22 @@ local function collect_view(view)
                 if s then
                     tgt = (base & 0xFF000000) | (target[s] or target.accent)
                 elseif structural then
-                    if name == "e_tex_base" and w and h and w >= 1700 and h >= 900 then
+                    if name == "e_tex_base" and type(w) == "number" and w >= 1700 and h >= 900 then
                         tgt = (base & 0xFF000000) | target.panel
-                    elseif name == "e_rect_base" and w and h and w >= 1900 and h >= 1000 then
+                    elseif name == "e_rect_base" and type(w) == "number" and w >= 1900 and h >= 1000 then
                         tgt = (base & 0xFF000000) | target.dimmer
-                    elseif name == "e_mask" and w and h and w >= 1400 and h >= 600 then
+                    elseif name == "e_mask" and type(w) == "number" and w >= 1400 and h >= 600 then
                         tgt = (base & 0xFF000000) | target.dark
                     elseif name == "e_s9g_add" then
                         tgt = target.panel_add
-                        pcall(function() return el:call("set_Visible", true) end)
+                        el:call("set_Visible", true)
                     end
                 end
             end
             cached[#cached + 1] = { el = el, tgt = tgt, orig = base }
         end
-        local child = safe_call(el, "get_Child")
-        if child then walk(child) end
-        local nxt = safe_call(el, "get_Next")
-        if nxt then walk(nxt) end
+        walk(el:call("get_Child"))
+        walk(el:call("get_Next"))
     end
     walk(view)
 end
@@ -241,40 +269,49 @@ local function rebuild()
 end
 
 -- Discovery: register every ui11200 view; rebuild at most every 30 frames.
--- Runs always so the cache stays current for palette switches.
-re.on_pre_gui_draw_element(function(element, context)
-    local ok, go = pcall(function() return element:call("get_GameObject") end)
-    if not ok or not go then return end
-    local okn, gon = pcall(function() return go:call("get_Name") end)
-    if tostring(gon) ~= "ui11200" then return end
+-- Runs only while the pause menu is open; wrapped in one pcall by the
+-- callback so it can never throw (ScriptRunner disables a callback after a
+-- single error).
+local function discover_element(element)
+    local go = element:call("get_GameObject")
+    if not go then return end
+    if go:call("get_Name") ~= "ui11200" then return end
     menu_drawn = true
     if frame - last_build < 30 then return end
-    local okc, comps = pcall(function() return go:call("get_Components") end)
-    if not okc or not comps then return end
-    local oklen, len = pcall(function() return comps:get_count() end)
-    if not oklen then oklen, len = pcall(function() return comps:get_Length() end) end
-    if not (oklen and type(len) == "number") then return end
+    local comps = go:call("get_Components")
+    -- SystemArray exposes get_Length; get_count is NOT callable on it (throws
+    -- "method 'get_count' is not callable"), so call get_Length directly.
+    local len = comps and comps:get_Length()
+    if type(len) ~= "number" then return end
     local found = false
     for i = 0, len - 1 do
-        local oki, c = pcall(function() return comps:get_Item(i) end)
-        if not oki or not c then break end
-        local okt, ct = pcall(function() return c:get_type_definition() end)
-        if okt and ct then
-            local okn2, cname = pcall(function() return ct:get_full_name() end)
-            if okn2 and cname == "via.gui.GUI" then
-                local okv, v = pcall(function() return c:call("get_View") end)
-                if okv and v then
-                    views[tostring(v)] = v
-                    found = true
-                end
-                break
+        local c = comps:get_Item(i)
+        if not c then break end
+        local ct = c:get_type_definition()
+        if ct and ct:get_full_name() == "via.gui.GUI" then
+            local v = c:call("get_View")
+            if v then
+                views[tostring(v)] = v
+                found = true
             end
+            break
         end
     end
     if found then
         last_build = frame
-        rebuild()
+        pcall(rebuild)
     end
+end
+
+local discovery_error_logged = false
+re.on_pre_gui_draw_element(function(element)
+    if not menu_open then return true end
+    local ok, err = pcall(discover_element, element)
+    if not ok and not discovery_error_logged then
+        discovery_error_logged = true
+        log.info("pause_menu_color: discovery error: " .. tostring(err))
+    end
+    return true
 end)
 
 -- Apply the cached overrides every frame while the pause menu draws.
@@ -282,10 +319,19 @@ end)
 -- "default" preset restores the native purple.
 re.on_frame(function()
     frame = frame + 1
+    local ok, ms = pcall(read_menu_state)
+    if ok and ms == 4 then
+        open_hold = OPEN_HOLD
+    elseif open_hold > 0 then
+        open_hold = open_hold - 1
+    end
+    menu_open = open_hold > 0
     if not menu_drawn or #cached == 0 then return end
     local recolor = target ~= nil
-    for _, c in ipairs(cached) do
-        pcall(function() return c.el:call("set_Color", mk_color(recolor and c.tgt or c.orig)) end)
+    for i = 1, #cached do
+        local c = cached[i]
+        color_vt:set_field("rgba", recolor and c.tgt or c.orig)
+        pcall(apply_one, c.el, color_vt)
     end
     menu_drawn = false
 end)
@@ -331,7 +377,7 @@ re.on_draw_ui(function()
         imgui.set_next_item_width(120)
         local idx = preset_index()
         local changed = false
-        changed, idx = imgui.combo("##pmc_preset_palette", idx, PRESET_LABELS)
+        changed, idx = imgui.combo("Palette##pmc_preset", idx, PRESET_LABELS)
         if changed then
             config.preset = PRESET_KEYS[idx + 1] or DEFAULT_PRESET
             apply_config_change()
@@ -377,4 +423,4 @@ re.on_config_save(save_config)
 load_config()
 apply_config_change()
 
-log.info("pause_menu_color.lua loaded: preset=" .. config.preset)
+log.info("pause_menu_color.lua loaded: preset=" .. config.preset)

@@ -32,6 +32,11 @@ API::Field* g_game_mode_field = nullptr;
 API::Field* g_ui_flow_handles_field = nullptr;
 API::Method* g_get_texture_data_method = nullptr;
 bool g_training_character_select_active = false;
+// Wider scope for the ownership hooks only: also true on the shared
+// app.UIFlowMatchingSetting flow (Training Battle Settings / matchmaking
+// select), where the game validates the session's active SiRN loadout on
+// entry. Must NOT enable roster injection - see is_sirn_loadout_scope().
+bool g_sirn_loadout_scope_active = false;
 
 std::mutex g_settle_mutex{};
 API::ManagedObject* g_settle_widget = nullptr;
@@ -1259,10 +1264,37 @@ bool is_training() {
     return get_game_mode(mode) && mode == TRAINING_GAME_MODE;
 }
 
-bool has_active_training_character_flow() {
+// Battle Settings opened from the Training menu runs the shared
+// app.UIFlowMatchingSetting flow instead of the Training selector's
+// app.UIFlowGenericCharacterSetting flow (runtime probe 2026-08-27: while that
+// screen is up, app.UIFlowManager._Handles carries UIFlowMatchingSetting.Param
+// and app.training.UIFlowTrainingMenu.Param but NOT the generic character
+// setting param, and GuiManager.mIsMatchingSetting is true). The SAME flow
+// also backs the matchmaking character select reached from that screen, with
+// the Training menu param STILL co-present (runtime probe 2026-08-27 on the
+// failing matchmaking screen), so no combination of these params separates
+// the offline Battle Settings from the matchmaking select - they are one
+// screen.
+//
+// The two bugs on that screen therefore need two scopes:
+// - Loadout scope (ownership hooks): the game validates the session's active
+//   SiRN loadout when the screen opens; without forced ownership it errors
+//   back to the main menu. True whenever any training-scoped flow param is
+//   live (generic OR matching).
+// - Injection scope (roster/visibility hooks): SiRN tiles must exist ONLY in
+//   the Training character selector. True ONLY for the generic param; the
+//   matching flow's grid is the matchmaking roster and injecting 101-103
+//   there leaks SiRN tiles into online matchmaking (regression 2026-08-27).
+struct TrainingFlowScan {
+    bool saw_generic = false;
+    bool saw_matching = false;
+};
+
+TrainingFlowScan scan_training_flow_params() {
+    TrainingFlowScan scan{};
     auto* manager = api().get_managed_singleton("app.UIFlowManager");
     if (manager == nullptr) {
-        return false;
+        return scan;
     }
 
     if (g_ui_flow_handles_field == nullptr) {
@@ -1272,7 +1304,7 @@ bool has_active_training_character_flow() {
             : nullptr;
     }
     if (g_ui_flow_handles_field == nullptr) {
-        return false;
+        return scan;
     }
 
     auto* handles_storage = g_ui_flow_handles_field->get_data_raw(manager, false);
@@ -1280,19 +1312,19 @@ bool has_active_training_character_flow() {
         ? *reinterpret_cast<API::ManagedObject**>(handles_storage)
         : nullptr;
     if (handles == nullptr) {
-        return false;
+        return scan;
     }
 
     auto* get_count = find_method(handles, "get_Count", 0);
     auto* get_item = find_method(handles, "get_Item(System.Int32)", 1);
     if (get_count == nullptr || get_item == nullptr) {
-        return false;
+        return scan;
     }
 
     const auto count_ret = get_count->invoke(handles, std::vector<void*>{});
     const auto count = !count_ret.exception_thrown ? static_cast<int32_t>(count_ret.dword) : 0;
     if (count <= 0 || count > 256) {
-        return false;
+        return scan;
     }
 
     for (int32_t index = 0; index < count; ++index) {
@@ -1303,26 +1335,40 @@ bool has_active_training_character_flow() {
             : nullptr;
         auto* param = invoke_object(handle, "GetParam");
         auto* param_type = param != nullptr ? param->get_type_definition() : nullptr;
-        if (param_type != nullptr &&
-            param_type->get_full_name() == "app.UIFlowGenericCharacterSetting.Param") {
-            return true;
+        if (param_type == nullptr) {
+            continue;
+        }
+        const auto full_name = param_type->get_full_name();
+        if (full_name == "app.UIFlowGenericCharacterSetting.Param") {
+            scan.saw_generic = true;
+        } else if (full_name == "app.UIFlowMatchingSetting.Param") {
+            scan.saw_matching = true;
         }
     }
-    return false;
+    return scan;
 }
 
-bool refresh_training_character_select_scope() {
-    g_training_character_select_active =
-        is_training() && has_active_training_character_flow();
-    return g_training_character_select_active;
+void refresh_training_character_select_scope() {
+    const auto scan = scan_training_flow_params();
+    g_training_character_select_active = is_training() && scan.saw_generic;
+    g_sirn_loadout_scope_active =
+        is_training() && (scan.saw_generic || scan.saw_matching);
 }
 
 // The matching-settings flow temporarily leaves GuiManager.mIsMatchingSetting
-// false while it builds its fighter grid, so that flag is too late to scope the
-// shared hGUI hooks. The actual Training selector has its own active flow param;
-// require that identity and cache it for the hot visibility/focus hooks.
+// false while it builds its fighter grid, so that flag is too late to scope
+// the hot hooks. Both scopes key on live flow params instead and are cached
+// for the hook paths; see scan_training_flow_params() for the split.
 bool is_training_character_select() {
     return g_training_character_select_active;
+}
+
+// Ownership-hook scope: SiRN loadout passes validation on the Training
+// character selector AND on the shared Battle Settings / matchmaking select
+// flow. Roster injection must never key on this - use
+// is_training_character_select().
+bool is_sirn_loadout_scope() {
+    return g_sirn_loadout_scope_active;
 }
 
 void append_unique(API::ManagedObject* list, uint32_t fighter_id) {
@@ -1512,7 +1558,8 @@ void post_get_fighter_id_list(void** ret_val, REFrameworkTypeDefinitionHandle, u
     }
 
     auto* list = reinterpret_cast<API::ManagedObject*>(*ret_val);
-    if (refresh_training_character_select_scope()) {
+    refresh_training_character_select_scope();
+    if (is_training_character_select()) {
         for (auto fighter_id : SIRN_IDS) {
             append_unique(list, fighter_id);
         }
@@ -1527,7 +1574,7 @@ int pre_construct(int argc, void** argv, REFrameworkTypeDefinitionHandle*, unsig
     API::ManagedObject* widget = nullptr;
     if (argc > 1 && argv != nullptr) {
         widget = reinterpret_cast<API::ManagedObject*>(argv[1]);
-        if (refresh_training_character_select_scope()) {
+        if (is_training_character_select()) {
             configure_layout(widget);
         }
     }
@@ -1544,7 +1591,8 @@ void post_construct(void**, REFrameworkTypeDefinitionHandle, unsigned long long)
     if (widget == nullptr) {
         return;
     }
-    if (!refresh_training_character_select_scope()) {
+    refresh_training_character_select_scope();
+    if (!is_training_character_select()) {
         remove_sirn_ids(get_object_field(widget, "mListPlayerType"));
         return;
     }
@@ -1596,7 +1644,7 @@ int pre_inventory_ownership(int argc, void** argv, REFrameworkTypeDefinitionHand
     bool force = false;
     if (argc > 2 && argv != nullptr) {
         const auto fighter_id = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(argv[2]));
-        force = is_training_character_select() && is_sirn_id(fighter_id);
+        force = is_sirn_loadout_scope() && is_sirn_id(fighter_id);
     }
     push_force(tls_inventory_force, force);
     return REFRAMEWORK_HOOK_CALL_ORIGINAL;
@@ -1612,7 +1660,7 @@ int pre_dlc_item_ownership(int argc, void** argv, REFrameworkTypeDefinitionHandl
     bool force = false;
     if (argc > 3 && argv != nullptr) {
         const auto fighter_id = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(argv[3]));
-        force = is_training_character_select() && is_sirn_id(fighter_id);
+        force = is_sirn_loadout_scope() && is_sirn_id(fighter_id);
     }
     push_force(tls_dlc_force, force);
     return REFRAMEWORK_HOOK_CALL_ORIGINAL;
@@ -1628,7 +1676,7 @@ int pre_rental_ownership(int argc, void** argv, REFrameworkTypeDefinitionHandle*
     bool force = false;
     if (argc > 2 && argv != nullptr) {
         const auto fighter_id = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(argv[2]));
-        force = is_training_character_select() && is_sirn_id(fighter_id);
+        force = is_sirn_loadout_scope() && is_sirn_id(fighter_id);
     }
     push_force(tls_rental_force, force);
     return REFRAMEWORK_HOOK_CALL_ORIGINAL;

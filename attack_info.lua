@@ -1322,10 +1322,17 @@ function GameObjects.update_builtin_attack_data_display()
     end)
     if not ok_dict or not view_dict then return end
 
-    local ok_widgets, widget_list = pcall(function()
-        return view_dict:call("get_Item", 3)
+    -- Guard with ContainsKey: the RE Engine dictionary indexer throws
+    -- ArgumentOutOfRangeException for a missing key, which REFramework logs
+    -- every frame even when the Lua error is caught by pcall. Only invoke
+    -- get_Item when the key is actually present.
+    local ok_has, has_key = pcall(function()
+        return view_dict:call("ContainsKey", 3)
     end)
-    if not ok_widgets or not widget_list then return end
+    if not ok_has or not has_key then return end
+
+    local widget_list = view_dict:call("get_Item", 3)
+    if not widget_list then return end
 
     local ok_count, widget_count = pcall(function()
         return tonumber(widget_list:call("get_Count")) or 0
